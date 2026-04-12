@@ -1,0 +1,40 @@
+{
+  "name": "reach",
+  "version": "0.1.0",
+  "description": "Telegram ↔ GitHub Copilot CLI session bridge (personal Windows daemon)",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "start": "node --enable-source-maps dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --ext .ts --max-warnings 0",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "service:install": "node dist/service/install.js install",
+    "service:uninstall": "node dist/service/install.js uninstall"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "grammy": "^1.26.0",
+    "node-windows": "^1.0.0-beta.8"
+  },
+  "optionalDependencies": {
+    "@github/copilot-sdk": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^7.13.0",
+    "@typescript-eslint/parser": "^7.13.0",
+    "@vitest/coverage-v8": "^1.6.0",
+    "eslint": "^8.57.0",
+    "tsx": "^4.15.6",
+    "typescript": "^5.5.2",
+    "vitest": "^1.6.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

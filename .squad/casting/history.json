@@ -1,0 +1,22 @@
+{
+  "assignment_cast_snapshots": {
+    "repl-cast-2026-04-12T06:02:10.427Z": {
+      "created_at": "2026-04-12T06:02:10.427Z",
+      "agents": [
+        "noble six",
+        "carter",
+        "kat",
+        "jun",
+        "scribe",
+        "ralph"
+      ],
+      "universe": "Halo (Reach)"
+    }
+  },
+  "universe_usage_history": [
+    {
+      "universe": "Halo (Reach)",
+      "used_at": "2026-04-12T06:02:10.427Z"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+feat: implement real SDK binding and complete test coverage
+
+- src/copilot/impl.ts: CopilotClientImpl bridges @github/copilot-sdk events
+  to CopilotSessionFactory interface (event-emitter → AsyncIterable adapter)
+- src/main.ts: DI root with env config, platform-aware registry path,
+  graceful shutdown (SIGINT/SIGTERM)
+- tests/idleMonitor.test.ts: 13 tests for timer lifecycle
+- tests/bot/handlers.test.ts: 17 tests for /new, /list, /remove, relay
+- TypeScript compiles clean, 56/56 tests passing
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>

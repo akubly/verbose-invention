@@ -144,6 +144,60 @@ Investigated `@github/copilot-sdk` v0.2.2. Key findings documented in `docs/adr-
 
 ---
 
+### 2026-04-12 — User Directive: Large Context Window Models
+
+Use `claude-opus-4.6-1m` whenever doing any work that might require large context windows.
+
+**By:** Aaron (via Copilot)  
+**Rationale:** Captured for team memory.
+
+---
+
+### 2026-04-12 — SDK Binding Implementation & main.ts DI Wiring
+
+**Author:** Noble Six  
+**Status:** Implemented
+
+#### Decisions
+
+1. **impl.ts — Adapter Pattern Against Real SDK**
+   - `CopilotClientImpl` implements `CopilotSessionFactory` with single long-lived `SdkClient` instance
+   - `CopilotSessionAdapter` bridges SDK event-emitter → `AsyncIterable<string>` via async generator + queue/notify
+   - Trade-off: one extra indirection layer vs. zero relay code changes; chose isolation for testability
+
+2. **resume() — Two-Phase Existence Check**
+   - `getSessionMetadata(sessionName)` checks existence, then `resumeSession()` with try/catch
+   - Alternative rejected: catch-all try/catch masks connection errors as "session not found", risking silent data loss
+
+3. **ensureStarted() — Lazy SDK Start**
+   - SDK client starts on first resume/create call (~1s latency)
+   - Acceptable for daemon with multi-hour lifetime
+
+4. **main.ts — DI Root Pattern**
+   - Flat function composition (env vars → constructors → registerHandlers → registry.load → bot.start)
+   - No DI container — simple and explicit at 5-component scale
+
+5. **Registry Path — Platform-Aware**
+   - Windows: `%APPDATA%\reach\registry.json`
+   - Unix: `~/.config/reach/registry.json` (XDG-compliant)
+   - Hardcoded for v0.1; can add `REACH_REGISTRY_PATH` env var override later
+
+6. **Model Config — Global env var**
+   - `REACH_MODEL` env var, defaults to `claude-sonnet-4`
+   - Alternative deferred: per-session model selection `/new <name> --model <model>`
+
+7. **Graceful Shutdown**
+   - `Promise.allSettled([bot.stop(), factory.stop()])` ensures independent teardown
+   - `process.exit(0)` in `.finally()`
+
+#### Verification
+
+- TypeScript compiles clean
+- All 56 tests pass (no test changes)
+- impl.ts isolated behind interface boundary
+
+---
+
 ## Governance
 
 - All meaningful changes require team consensus

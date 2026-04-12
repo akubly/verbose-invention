@@ -69,4 +69,16 @@ Aligned the implementation to match Jun's TDD tests. The canonical API (now gree
 
 **Bug fixed in tests**: JavaScript default parameters apply when `undefined` is explicitly passed. Test helper `makeMockCtx` now uses `null` (not `undefined`) to omit `message_thread_id`.
 
+### 2026-04-12 — Noble Six Delivers SDK Binding
+
+Noble Six completed `src/copilot/impl.ts` + `src/main.ts`. The real SDK binding is now live:
+
+- **CopilotClientImpl** implements `CopilotSessionFactory` — wraps `@github/copilot-sdk` with singleton lifecycle
+- **CopilotSessionAdapter** bridges SDK event-emitter streaming to `AsyncIterable<string>` via async generator
+- **resume()** uses two-phase existence check (`getSessionMetadata()` → `resumeSession()`) to avoid masking connection errors
+- **create()** delegates to SDK `createSession()` using friendly session names as IDs
+- **main.ts** is the entry point — DI root with platform-aware registry path (`%APPDATA%\reach\registry.json` on Windows, `~/.config/reach/registry.json` on Unix), `REACH_MODEL` env var config, and graceful shutdown (SIGINT/SIGTERM)
+
+My relay code is unchanged — it continues to depend only on `CopilotSessionFactory` interface, with no knowledge of the SDK itself. TypeScript compiles clean. All 56 tests pass. Integration tests can now target the real adapter.
+
 <!-- Append learnings below -->

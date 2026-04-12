@@ -87,3 +87,16 @@ Carter changed the bridge layer API during test alignment:
    Sessions are name-based, not opaque ID-based. Caller tries `resume()` first, falls back to `create()` if null.
 
 **Action for Noble Six:** When building `src/copilot/impl.ts`, update the ADR implementation sketch to match the new `CopilotSessionFactory` interface and plain-string streaming. The relay layer and tests are already aligned; SDK binding is the remaining integration point.
+
+### 2026-04-12 — SDK Binding Implementation & main.ts DI Root
+
+Implemented `src/copilot/impl.ts` and `src/main.ts`. Key learnings:
+
+1. **`getSessionMetadata()` does NOT auto-start the SDK client** — unlike `createSession()`/`resumeSession()` which auto-start when `autoStart: true` (default), `getSessionMetadata()` throws if the client isn't connected. Required adding `ensureStarted()` with lazy `sdk.start()` call.
+2. **Async generator bridge pattern** — Queue-based bridge with `notify` callback. Event listeners (`assistant.message_delta`, `session.idle`, `session.error`) are subscribed BEFORE `sdkSession.send()` is fired. `send()` is fire-and-forget (returns message ID); the generator yields from the queue until `session.idle` signals done. `finally` block cleans up all subscriptions.
+3. **`approveAll` is a `const PermissionHandler`**, not a function — imported and passed directly to both `SessionConfig` and `ResumeSessionConfig`.
+4. **`onPermissionRequest` is required** in both `SessionConfig` and `ResumeSessionConfig` (the `Pick` type preserves the non-optional constraint from `SessionConfig`).
+5. **`resume()` uses two-phase check** — `getSessionMetadata()` returns `undefined` for unknown sessions (no throw), then `resumeSession()` is wrapped in try/catch to handle corrupted session data gracefully (returns `null` instead of throwing).
+6. **Registry path** — Windows: `%APPDATA%\reach\registry.json`, Unix: `~/.config/reach/registry.json`. Platform detected via `os.platform()`.
+7. **Graceful shutdown** — `Promise.allSettled([bot.stop(), factory.stop()])` ensures both teardowns run even if one fails. `process.exit(0)` in `.finally()`.
+8. **All 56 tests pass** — No test changes required. The impl.ts is cleanly isolated behind the `CopilotSessionFactory` interface.

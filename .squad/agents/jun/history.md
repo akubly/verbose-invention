@@ -36,6 +36,34 @@ Test directories: `tests/bot/`, `tests/relay/`, `tests/sessions/`
 
 **Tests must not import `@github/copilot-sdk` directly.** The interface boundary (`src/types.ts`) is what tests mock against — the real SDK binding is Noble Six's concern.
 
-## Learnings
+- `makeMockBot()` with handler capture is a reusable pattern for any future handler tests.
+
+### 2026-04-12 — Noble Six SDK Binding Complete
+
+Noble Six delivered the real SDK binding. My test suite can now target integration tests against the real adapter:
+
+- **CopilotClientImpl** in `src/copilot/impl.ts` implements `CopilotSessionFactory` with proper event-to-AsyncIterable streaming
+- **main.ts** is the DI root — entry point with platform detection, env config, graceful shutdown
+- TypeScript compiles clean
+- All 56 tests passing (no test changes needed)
+
+My test infrastructure remains stable — tests still depend only on interface boundaries (`CopilotSessionFactory`, `ISessionRegistry`, etc.), never on `@github/copilot-sdk` directly. Next phase: integration tests can exercise real relay + real adapter against mock Telegram API.
 
 <!-- Append learnings below -->
+
+**Test count:** 26 → 56 (30 new tests across 2 files).
+
+**IdleMonitor tests** (`tests/idleMonitor.test.ts` — 13 tests):
+- Uses `vi.useFakeTimers()` + `vi.advanceTimersByTime()` — the module reads `IDLE_TIMEOUT_MS` at load time (default 300_000ms), so fake timers work without env var manipulation.
+- Covers: timer fires after timeout, does not fire early, reset cancels previous, reset restarts full window, independent topics, cancel single/all, no-op cancel on unknown topic, cleanup after fire, cancel after fire is harmless.
+- Edge case found: resetting one topic does not disturb another — validated with staggered timer starts.
+
+**Bot handler tests** (`tests/bot/handlers.test.ts` — 17 tests):
+- **Mock strategy:** capture handlers by mocking `bot.command()` and `bot.on()`, then invoke captured handler functions directly with mock contexts. No real grammY Bot needed.
+- Mock context shape: `{ message, match, chat, reply, api: { editMessageText } }` — minimal surface matching what handlers actually touch.
+- Relay handler tests use the real `Relay` class (created internally by `registerHandlers`) with stub registry + mock factory. This gives realistic coverage without mocking internal relay logic.
+- Edge cases: `ctx.match` as undefined (not just empty string), whitespace-padded session names, register throwing, remove returning false.
+
+**Patterns:**
+- `makeStubRegistry()` pattern is now duplicated in relay.test.ts and handlers.test.ts — candidate for extraction into `tests/mocks/registry.ts` if a third test file needs it.
+- `makeMockBot()` with handler capture is a reusable pattern for any future handler tests.

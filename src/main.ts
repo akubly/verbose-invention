@@ -31,6 +31,10 @@ async function main(): Promise<void> {
   const chatId = process.env.TELEGRAM_CHAT_ID
     ? Number(process.env.TELEGRAM_CHAT_ID)
     : undefined;
+  if (chatId !== undefined && !Number.isFinite(chatId)) {
+    console.error('[reach] Fatal: TELEGRAM_CHAT_ID must be a valid number');
+    process.exit(1);
+  }
   const model = process.env.REACH_MODEL ?? 'claude-sonnet-4';
   const registryPath = getRegistryPath();
 
@@ -38,15 +42,19 @@ async function main(): Promise<void> {
   const factory = new CopilotClientImpl(model);
   const bot = createBot(token, chatId);
 
-  registerHandlers({ bot, registry, factory });
+  const relay = registerHandlers({ bot, registry, factory });
 
   await registry.load();
   console.log(`[reach] Model: ${model}`);
   console.log(`[reach] Registry: ${registryPath}`);
   if (chatId !== undefined) console.log(`[reach] Allowed chat: ${chatId}`);
 
+  let shuttingDown = false;
   const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log('\n[reach] Shutting down…');
+    relay.dispose();
     Promise.allSettled([bot.stop(), factory.stop()]).finally(() => {
       console.log('[reach] Bye.');
       process.exit(0);

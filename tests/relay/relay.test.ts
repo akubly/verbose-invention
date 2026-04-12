@@ -209,8 +209,8 @@ describe('Relay', () => {
     });
 
     it('edits placeholder with error message when stream fails mid-response', async () => {
-      // failAfter=1 → yields one chunk then throws
-      const session = makeMockSession(['Partial answer'], 0);
+      // failAfter=1 → yields chunk 0 ("Partial") then throws at chunk 1
+      const session = makeMockSession(['Partial', ' answer'], 1);
       const factory = makeMockFactory(session);
       const registry = makeStubRegistry([SESSION_ENTRY]);
       const relay = new Relay(registry, factory);

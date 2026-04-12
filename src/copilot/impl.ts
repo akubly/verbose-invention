@@ -14,6 +14,8 @@ import {
 } from '@github/copilot-sdk';
 import type { CopilotSession, CopilotSessionFactory } from './factory.js';
 
+const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
+
 type QueueItem =
   | { kind: 'chunk'; value: string }
   | { kind: 'done' }
@@ -33,6 +35,7 @@ class CopilotSessionAdapter implements CopilotSession {
   private async *bridge(message: string): AsyncGenerator<string> {
     const queue: QueueItem[] = [];
     let notify: (() => void) | null = null;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
     const push = (item: QueueItem) => {
       queue.push(item);
@@ -74,11 +77,22 @@ class CopilotSessionAdapter implements CopilotSession {
               return;
           }
         } else {
-          await new Promise<void>((r) => { notify = r; });
+          await Promise.race([
+            new Promise<void>((r) => { notify = r; }),
+            new Promise<void>((_, reject) => {
+              timeoutId = setTimeout(
+                () => reject(new Error('Stream timeout: no response from SDK')),
+                STREAM_TIMEOUT_MS,
+              );
+            }),
+          ]);
+          clearTimeout(timeoutId);
+          timeoutId = undefined;
           notify = null;
         }
       }
     } finally {
+      clearTimeout(timeoutId);
       for (const unsub of unsubs) unsub();
     }
   }
@@ -91,18 +105,22 @@ class CopilotSessionAdapter implements CopilotSession {
  * Starts the SDK lazily on first resume/create call.
  */
 export class CopilotClientImpl implements CopilotSessionFactory {
-  private readonly sdk: SdkClient;
-  private started = false;
+  private sdk!: SdkClient;
+  private startPromise: Promise<void> | null = null;
 
-  constructor(private readonly model = 'claude-sonnet-4') {
-    this.sdk = new SdkClient();
-  }
+  constructor(private readonly model = 'claude-sonnet-4') {}
 
-  private async ensureStarted(): Promise<void> {
-    if (!this.started) {
-      await this.sdk.start();
-      this.started = true;
+  private ensureStarted(): Promise<void> {
+    if (!this.startPromise) {
+      this.startPromise = (async () => {
+        this.sdk = new SdkClient();
+        await this.sdk.start();
+      })().catch((err) => {
+        this.startPromise = null;
+        throw err;
+      });
     }
+    return this.startPromise;
   }
 
   async resume(sessionName: string): Promise<CopilotSession | null> {
@@ -116,9 +134,11 @@ export class CopilotClientImpl implements CopilotSessionFactory {
         onPermissionRequest: approveAll,
       });
       return new CopilotSessionAdapter(sdkSession);
-    } catch {
-      // Metadata existed but resume failed (e.g. corrupted data) — treat as absent
-      return null;
+    } catch (err) {
+      if (err instanceof Error && (err.message.includes('not found') || err.message.includes('does not exist'))) {
+        return null;
+      }
+      throw err;
     }
   }
 
@@ -135,9 +155,10 @@ export class CopilotClientImpl implements CopilotSessionFactory {
 
   /** Gracefully stop the SDK client. Call on daemon shutdown. */
   async stop(): Promise<void> {
-    if (this.started) {
+    if (this.startPromise) {
+      await this.startPromise;
       const errors = await this.sdk.stop();
-      this.started = false;
+      this.startPromise = null;
       if (errors.length > 0) {
         console.error('[copilot] SDK stop errors:', errors);
       }

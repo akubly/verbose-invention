@@ -19,7 +19,7 @@ export interface HandlerOptions {
  *
  * All other text messages in forum topics are relayed to the linked session.
  */
-export function registerHandlers({ bot, registry, factory }: HandlerOptions): void {
+export function registerHandlers({ bot, registry, factory }: HandlerOptions): Relay {
   const relay = new Relay(registry, factory);
 
   // /new <name> — create a Copilot session and link it to this topic
@@ -46,7 +46,11 @@ export function registerHandlers({ bot, registry, factory }: HandlerOptions): vo
     }
 
     try {
-      const chatId = ctx.chat?.id ?? 0;
+      const chatId = ctx.chat?.id;
+      if (!chatId) {
+        await ctx.reply('❌ Could not determine chat ID.', { message_thread_id: topicId });
+        return;
+      }
       await registry.register(topicId, chatId, name);
       await ctx.reply(`✅ Session \`${name}\` created and linked to this topic.`, {
         message_thread_id: topicId,
@@ -97,4 +101,6 @@ export function registerHandlers({ bot, registry, factory }: HandlerOptions): vo
   bot.catch((err) => {
     console.error('[bot] Unhandled error:', err.message, err.error);
   });
+
+  return relay;
 }

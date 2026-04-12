@@ -39,3 +39,15 @@ The runner and retry plugins are not yet wired up — Day 1 bot uses `bot.start(
 ## Learnings
 
 <!-- Append learnings below -->
+
+### 2026-04-12 — Code Review Fix Pass (Carter lockout)
+
+Fixed 5 issues found by review panel in Carter's files, acting as independent author:
+
+1. **Registry crash-safety** — `persist()` now writes to `.tmp` then renames (atomic). `load()` handles corrupt JSON by backing up and starting fresh.
+2. **Registry schema version** — Added `version: 1` to `RegistryData` for future migration support.
+3. **chatId fallback** — Replaced `ctx.chat?.id ?? 0` with an early guard that replies with an error instead of writing bogus data.
+4. **Stub resume()** — Changed `StubCopilotSessionFactory.resume()` from throwing to returning `null`, matching the interface contract (resume→null→create fallback).
+5. **IDLE_TIMEOUT_MS validation** — Added `Number.isFinite` + positive check to prevent NaN/negative timer values.
+
+All 56 tests pass after changes.

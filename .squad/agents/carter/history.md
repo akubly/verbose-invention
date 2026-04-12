@@ -82,3 +82,14 @@ Noble Six completed `src/copilot/impl.ts` + `src/main.ts`. The real SDK binding 
 My relay code is unchanged — it continues to depend only on `CopilotSessionFactory` interface, with no knowledge of the SDK itself. TypeScript compiles clean. All 56 tests pass. Integration tests can now target the real adapter.
 
 <!-- Append learnings below -->
+
+### 2026-04-12 — Code Review Fixes (Independent Author)
+
+Noble Six's impl was flagged by review panel. As independent author, applied six fixes:
+
+1. **Race condition in `ensureStarted()`** — replaced `started` boolean with a startup promise. Two concurrent callers now share the same promise instead of both calling `sdk.start()`.
+2. **Stream timeout** — `bridge()` wait loop could block forever if SDK dies silently. Added 5-minute `Promise.race` timeout with proper cleanup (`clearTimeout` in both success path and `finally`).
+3. **Idempotent shutdown** — double Ctrl+C no longer races. Added `shuttingDown` guard flag.
+4. **Relay disposal on shutdown** — `registerHandlers()` now returns the `Relay` instance so `main.ts` can call `relay.dispose()` during shutdown, cancelling idle monitors.
+5. **TELEGRAM_CHAT_ID NaN guard** — `Number("garbage")` → NaN now caught with `Number.isFinite()` check and fatal exit.
+6. **resume() error discrimination** — no longer swallows all errors. Only "not found"/"does not exist" returns null; other errors propagate to relay's catch block for proper reporting.

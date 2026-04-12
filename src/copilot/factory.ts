@@ -24,7 +24,7 @@ export interface CopilotSessionFactory {
  */
 export class StubCopilotSessionFactory implements CopilotSessionFactory {
   async resume(_sessionName: string): Promise<CopilotSession | null> {
-    throw new Error('StubCopilotSessionFactory: wire in @github/copilot-sdk');
+    return null; // Stub: no sessions exist, always falls through to create()
   }
 
   async create(_sessionName: string): Promise<CopilotSession> {

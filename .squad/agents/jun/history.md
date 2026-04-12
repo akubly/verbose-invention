@@ -67,3 +67,9 @@ My test infrastructure remains stable — tests still depend only on interface b
 **Patterns:**
 - `makeStubRegistry()` pattern is now duplicated in relay.test.ts and handlers.test.ts — candidate for extraction into `tests/mocks/registry.ts` if a third test file needs it.
 - `makeMockBot()` with handler capture is a reusable pattern for any future handler tests.
+
+## Learnings
+
+### 2025-07-18 — `failAfter` semantics in `makeMockSession`
+
+The `failAfter` parameter in `tests/mocks/sdk.ts` is an index check (`i === failAfter`), meaning the error fires *before* yielding the chunk at that index. `failAfter=0` throws before any chunks are yielded — that's a "fails at start" scenario, not mid-stream. To test genuine mid-stream failure, use `failAfter >= 1` with enough chunks so at least one is yielded before the throw. Fixed the "edits placeholder with error message when stream fails mid-response" test to use `makeMockSession(['Partial', ' answer'], 1)` so chunk 0 is yielded successfully before chunk 1 triggers the error.

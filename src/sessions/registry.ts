@@ -5,6 +5,7 @@ import type { SessionEntry } from '../types.js';
 export type { SessionEntry } from '../types.js';
 
 interface RegistryData {
+  version: 1;
   entries: Record<string, SessionEntry>;
 }
 
@@ -30,15 +31,22 @@ export class SessionRegistry implements ISessionRegistry {
     try {
       const raw = await fs.readFile(this.persistPath, 'utf-8');
       const data: RegistryData = JSON.parse(raw);
+      if (data.version !== undefined && data.version !== 1) {
+        console.warn(`[registry] Unsupported registry version ${data.version} at ${this.persistPath}, expected 1. Starting empty.`);
+        return;
+      }
       for (const [key, value] of Object.entries(data.entries)) {
         this.entries.set(Number(key), value);
       }
       console.log(`[registry] Loaded ${this.entries.size} session(s) from ${this.persistPath}`);
     } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw err;
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return; // first run
+      if (err instanceof SyntaxError) {
+        console.warn(`[registry] Corrupt registry at ${this.persistPath}, backing up and starting fresh`);
+        await fs.rename(this.persistPath, this.persistPath + '.corrupt.' + Date.now());
+        return;
       }
-      // First run — no registry file yet, start empty
+      throw err;
     }
   }
 
@@ -72,8 +80,10 @@ export class SessionRegistry implements ISessionRegistry {
   }
 
   private async persist(): Promise<void> {
-    const data: RegistryData = { entries: Object.fromEntries(this.entries) };
+    const data: RegistryData = { version: 1, entries: Object.fromEntries(this.entries) };
     await fs.mkdir(path.dirname(this.persistPath), { recursive: true });
-    await fs.writeFile(this.persistPath, JSON.stringify(data, null, 2), 'utf-8');
+    const tmp = this.persistPath + '.tmp';
+    await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf-8');
+    await fs.rename(tmp, this.persistPath);
   }
 }

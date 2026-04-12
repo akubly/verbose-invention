@@ -1,5 +1,5 @@
 import type { Context } from 'grammy';
-import type { CopilotClient, CopilotSession } from '../types.js';
+import type { CopilotSessionFactory, CopilotSession } from '../copilot/factory.js';
 import type { ISessionRegistry } from '../sessions/registry.js';
 import { IdleMonitor } from '../idleMonitor.js';
 
@@ -13,7 +13,7 @@ export class Relay {
 
   constructor(
     private readonly registry: ISessionRegistry,
-    private readonly client: CopilotClient,
+    private readonly factory: CopilotSessionFactory,
   ) {}
 
   async relay(ctx: Context): Promise<void> {
@@ -34,11 +34,11 @@ export class Relay {
     let session = this.activeSessions.get(topicId);
     if (!session) {
       try {
-        session = await this.client.resumeSession(entry.copilotSessionId);
+        session = await this.factory.resume(entry.sessionName) ?? await this.factory.create(entry.sessionName);
         this.activeSessions.set(topicId, session);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        await ctx.reply(`❌ Could not resume session "${entry.name}": ${msg}`, {
+        await ctx.reply(`❌ Could not open session "${entry.sessionName}": ${msg}`, {
           message_thread_id: topicId,
         });
         return;
@@ -48,7 +48,7 @@ export class Relay {
     // Reset idle timer — evict cached session handle on inactivity
     this.idleMonitor.reset(topicId, () => {
       this.activeSessions.delete(topicId);
-      console.log(`[relay] Session handle evicted (idle): topic ${topicId} → "${entry.name}"`);
+      console.log(`[relay] Session handle evicted (idle): topic ${topicId} → "${entry.sessionName}"`);
     });
 
     const placeholder = await ctx.reply('…', { message_thread_id: topicId });
@@ -58,7 +58,7 @@ export class Relay {
 
     try {
       for await (const chunk of session.send(userText)) {
-        accumulated += chunk.text;
+        accumulated += chunk;
         const now = Date.now();
         if (now - lastEditAt >= STREAM_EDIT_THROTTLE_MS) {
           await this.safeEdit(ctx, placeholder.chat.id, placeholder.message_id, accumulated);

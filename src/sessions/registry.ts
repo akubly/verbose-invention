@@ -2,13 +2,15 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { SessionEntry } from '../types.js';
 
+export type { SessionEntry } from '../types.js';
+
 interface RegistryData {
   entries: Record<string, SessionEntry>;
 }
 
 export interface ISessionRegistry {
   load(): Promise<void>;
-  register(entry: SessionEntry): Promise<void>;
+  register(topicId: number, chatId: number, sessionName: string): Promise<void>;
   resolve(telegramTopicId: number): SessionEntry | undefined;
   list(): SessionEntry[];
   remove(telegramTopicId: number): Promise<boolean>;
@@ -40,10 +42,16 @@ export class SessionRegistry implements ISessionRegistry {
     }
   }
 
-  async register(entry: SessionEntry): Promise<void> {
-    this.entries.set(entry.telegramTopicId, entry);
+  async register(topicId: number, chatId: number, sessionName: string): Promise<void> {
+    const entry: SessionEntry = {
+      sessionName,
+      topicId,
+      chatId,
+      createdAt: new Date().toISOString(),
+    };
+    this.entries.set(topicId, entry);
     await this.persist();
-    console.log(`[registry] Registered topic ${entry.telegramTopicId} → "${entry.name}"`);
+    console.log(`[registry] Registered topic ${topicId} → "${sessionName}"`);
   }
 
   resolve(telegramTopicId: number): SessionEntry | undefined {

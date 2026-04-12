@@ -1,12 +1,12 @@
 import type { Bot, Context } from 'grammy';
-import type { CopilotClient } from '../types.js';
+import type { CopilotSessionFactory } from '../copilot/factory.js';
 import type { ISessionRegistry } from '../sessions/registry.js';
 import { Relay } from '../relay/relay.js';
 
 export interface HandlerOptions {
   bot: Bot<Context>;
   registry: ISessionRegistry;
-  sdk: CopilotClient;
+  factory: CopilotSessionFactory;
 }
 
 /**
@@ -19,8 +19,8 @@ export interface HandlerOptions {
  *
  * All other text messages in forum topics are relayed to the linked session.
  */
-export function registerHandlers({ bot, registry, sdk }: HandlerOptions): void {
-  const relay = new Relay(registry, sdk);
+export function registerHandlers({ bot, registry, factory }: HandlerOptions): void {
+  const relay = new Relay(registry, factory);
 
   // /new <name> — create a Copilot session and link it to this topic
   bot.command('new', async (ctx) => {
@@ -39,27 +39,22 @@ export function registerHandlers({ bot, registry, sdk }: HandlerOptions): void {
     const existing = registry.resolve(topicId);
     if (existing) {
       await ctx.reply(
-        `⚠️ Topic already linked to "${existing.name}". Use /remove first.`,
+        `⚠️ Topic already linked to "${existing.sessionName}". Use /remove first.`,
         { message_thread_id: topicId },
       );
       return;
     }
 
     try {
-      const session = await sdk.createSession({ name });
-      await registry.register({
-        name,
-        telegramTopicId: topicId,
-        copilotSessionId: session.id,
-        createdAt: new Date().toISOString(),
-      });
+      const chatId = ctx.chat?.id ?? 0;
+      await registry.register(topicId, chatId, name);
       await ctx.reply(`✅ Session \`${name}\` created and linked to this topic.`, {
         message_thread_id: topicId,
         parse_mode: 'Markdown',
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      await ctx.reply(`❌ Failed to create session "${name}": ${msg}`, {
+      await ctx.reply(`❌ Failed to register session "${name}": ${msg}`, {
         message_thread_id: topicId,
       });
     }
@@ -72,7 +67,7 @@ export function registerHandlers({ bot, registry, sdk }: HandlerOptions): void {
       await ctx.reply('No sessions registered yet.');
       return;
     }
-    const lines = sessions.map((s) => `• \`${s.name}\` ← topic #${s.telegramTopicId}`);
+    const lines = sessions.map((s) => `• \`${s.sessionName}\` ← topic #${s.topicId}`);
     await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
   });
 

@@ -42,8 +42,12 @@ export class SessionRegistry implements ISessionRegistry {
         console.warn(`[registry] Registry file missing 'entries' field, starting empty`);
       }
       for (const [key, value] of Object.entries(entries)) {
-        if (!value.sessionName || typeof value.topicId !== 'number' || typeof value.chatId !== 'number' || !value.createdAt) {
+        if (typeof value.sessionName !== 'string' || typeof value.topicId !== 'number' || typeof value.chatId !== 'number' || typeof value.createdAt !== 'string') {
           console.warn(`[registry] Skipping invalid entry for key ${key}`);
+          continue;
+        }
+        if (Number(key) !== value.topicId) {
+          console.warn(`[registry] Skipping entry for key ${key}: key does not match topicId ${value.topicId}`);
           continue;
         }
         this.entries.set(Number(key), value);

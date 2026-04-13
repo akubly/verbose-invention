@@ -13,7 +13,8 @@ export interface HandlerOptions {
  * Registers all bot commands and the catch-all relay handler.
  *
  * Commands:
- *   /new <name>   — create a Copilot session and link it to the current topic
+ *   /new <name>   — register a topic→name mapping in the session registry
+ *                    (the SDK session is created lazily on first relayed message)
  *   /list         — list all registered topic→session mappings
  *   /remove       — delete the session linked to the current topic
  *
@@ -22,7 +23,7 @@ export interface HandlerOptions {
 export function registerHandlers({ bot, registry, factory }: HandlerOptions): Relay {
   const relay = new Relay(registry, factory);
 
-  // /new <name> — create a Copilot session and link it to this topic
+  // /new <name> — register a topic→name mapping; SDK session is created lazily on first relay
   bot.command('new', async (ctx) => {
     const topicId = ctx.message?.message_thread_id;
     if (!topicId) {
@@ -52,7 +53,7 @@ export function registerHandlers({ bot, registry, factory }: HandlerOptions): Re
         return;
       }
       await registry.register(topicId, chatId, name);
-      await ctx.reply(`✅ Session \`${name}\` created and linked to this topic.`, {
+      await ctx.reply(`✅ Session \`${name}\` registered and linked to this topic.`, {
         message_thread_id: topicId,
         parse_mode: 'Markdown',
       });

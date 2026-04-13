@@ -5,7 +5,7 @@ import type { SessionEntry } from '../types.js';
 export type { SessionEntry } from '../types.js';
 
 interface RegistryData {
-  version: 1;
+  version?: number;  // absent in legacy files, 1 in current format
   entries: Record<string, SessionEntry>;
 }
 

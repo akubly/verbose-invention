@@ -32,17 +32,17 @@ class CopilotSessionAdapter implements CopilotSession {
   constructor(private readonly sdkSession: SdkSession) {}
 
   send(message: string): AsyncIterable<string> {
+    return this.bridge(message);
+  }
+
+  private async *bridge(message: string): AsyncGenerator<string> {
+    // Acquire the serialization lock inside the generator body so it only
+    // runs when the caller actually starts iterating (first next() call).
+    // This avoids a deadlock when the returned iterable is never consumed.
     let releaseLock!: () => void;
     const gate = this.sendQueue;
     this.sendQueue = new Promise<void>((resolve) => { releaseLock = resolve; });
-    return this.bridge(message, gate, releaseLock);
-  }
 
-  private async *bridge(
-    message: string,
-    gate: Promise<void>,
-    releaseLock: () => void,
-  ): AsyncGenerator<string> {
     // Wait for any prior send() to finish before subscribing to events
     await gate;
     const queue: QueueItem[] = [];

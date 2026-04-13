@@ -3,6 +3,9 @@ import type { CopilotSessionFactory } from '../copilot/factory.js';
 import type { ISessionRegistry } from '../sessions/registry.js';
 import { Relay } from '../relay/relay.js';
 
+/** DNS-label style: lowercase alphanumeric + hyphens, 1–63 chars, no leading hyphen. */
+export const SESSION_NAME_RE = /^[a-z0-9][a-z0-9\-]{0,62}$/;
+
 export interface HandlerOptions {
   bot: Bot<Context>;
   registry: ISessionRegistry;
@@ -34,6 +37,14 @@ export function registerHandlers({ bot, registry, factory }: HandlerOptions): Re
     const name = ctx.match?.trim();
     if (!name) {
       await ctx.reply('❌ Usage: /new <session-name>', { message_thread_id: topicId });
+      return;
+    }
+
+    if (!SESSION_NAME_RE.test(name)) {
+      await ctx.reply(
+        '❌ Invalid session name. Use lowercase letters, numbers, and hyphens (e.g. reach-myapp).',
+        { message_thread_id: topicId },
+      );
       return;
     }
 

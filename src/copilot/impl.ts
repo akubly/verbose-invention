@@ -26,13 +26,25 @@ type QueueItem =
  * Bridges event-emitter streaming → AsyncIterable<string>.
  */
 class CopilotSessionAdapter implements CopilotSession {
+  /** Serializes send() calls so only one generator is active at a time. */
+  private sendQueue: Promise<void> = Promise.resolve();
+
   constructor(private readonly sdkSession: SdkSession) {}
 
   send(message: string): AsyncIterable<string> {
-    return this.bridge(message);
+    let releaseLock!: () => void;
+    const gate = this.sendQueue;
+    this.sendQueue = new Promise<void>((resolve) => { releaseLock = resolve; });
+    return this.bridge(message, gate, releaseLock);
   }
 
-  private async *bridge(message: string): AsyncGenerator<string> {
+  private async *bridge(
+    message: string,
+    gate: Promise<void>,
+    releaseLock: () => void,
+  ): AsyncGenerator<string> {
+    // Wait for any prior send() to finish before subscribing to events
+    await gate;
     const queue: QueueItem[] = [];
     let notify: (() => void) | null = null;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -94,6 +106,7 @@ class CopilotSessionAdapter implements CopilotSession {
     } finally {
       clearTimeout(timeoutId);
       for (const unsub of unsubs) unsub();
+      releaseLock();
     }
   }
 }

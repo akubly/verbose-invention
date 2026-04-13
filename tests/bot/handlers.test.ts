@@ -190,6 +190,26 @@ describe('registerHandlers', () => {
       );
     });
 
+    it('rejects session names with invalid characters', async () => {
+      const { bot, commandHandlers } = makeMockBot();
+      const registry = makeStubRegistry();
+      const factory = makeMockFactory();
+      registerHandlers({ bot: bot as any, registry, factory });
+
+      const handler = commandHandlers.get('new')!;
+
+      for (const bad of ['My-Session', 'has spaces', 'back`tick', '-leading', 'under_score']) {
+        const ctx = makeMockCtx({ match: bad });
+        await handler(ctx);
+
+        expect(registry.register).not.toHaveBeenCalled();
+        expect(ctx.reply).toHaveBeenCalledWith(
+          expect.stringContaining('Invalid session name'),
+          expect.objectContaining({ message_thread_id: 42 }),
+        );
+      }
+    });
+
     it('trims whitespace from session name', async () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry();

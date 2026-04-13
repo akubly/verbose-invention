@@ -29,6 +29,7 @@ export class SessionRegistry implements ISessionRegistry {
   constructor(private readonly persistPath: string) {}
 
   async load(): Promise<void> {
+    this.entries.clear();
     try {
       const raw = await fs.readFile(this.persistPath, 'utf-8');
       const data: RegistryData = JSON.parse(raw);

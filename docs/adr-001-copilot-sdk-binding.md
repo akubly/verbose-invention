@@ -1,46 +1,46 @@
 # ADR-001: Copilot SDK Binding Approach
 
-**Status:** Proposed  
+**Status:** Accepted  
 **Date:** 2026-04-11  
 **Deciders:** Noble Six  
 
 ## Context
 
-Reach bridges Telegram forum topics to GitHub Copilot CLI sessions. The relay layer (`src/relay/relay.ts`) consumes a `CopilotClient` abstraction defined in `src/types.ts` that exposes:
+Reach bridges Telegram forum topics to GitHub Copilot CLI sessions. The relay layer (`src/relay/relay.ts`) consumes a `CopilotSessionFactory` abstraction defined in `src/copilot/factory.ts` that exposes:
 
 ```ts
-interface CopilotClient {
-  createSession(options: { name: string; repoPath?: string }): Promise<CopilotSession>;
-  resumeSession(sessionId: string): Promise<CopilotSession>;
-}
-
 interface CopilotSession {
-  id: string;
-  send(message: string): AsyncIterable<CopilotChunk>;
+  send(message: string): AsyncIterable<string>;
 }
 
-interface CopilotChunk { text: string; }
+interface CopilotSessionFactory {
+  resume(sessionName: string): Promise<CopilotSession | null>;
+  create(sessionName: string): Promise<CopilotSession>;
+}
 ```
 
-The relay streams chunks from `session.send()` with throttled Telegram edits. A `StubCopilotClient` is wired in as a placeholder. We need to bind this to the real `@github/copilot-sdk`.
+The relay streams string chunks from `session.send()` with throttled Telegram edits. A `StubCopilotSessionFactory` is wired in as a placeholder. We need to bind this to the real `@github/copilot-sdk`.
+
+Sessions are created lazily: the `/new` command only registers a topic→sessionName mapping in the registry. The actual SDK session is created on the first relay (message forwarded to Copilot), using `factory.resume()` with a fallback to `factory.create()`.
 
 ### Constraints
 
 - The SDK is in **public preview** (v0.2.2) and may introduce breaking changes.
 - Reach runs as a long-lived Windows daemon — the SDK client must be stable across hours/days.
-- The relay is event-driven and expects `AsyncIterable<CopilotChunk>` for streaming.
+- The relay is event-driven and expects `AsyncIterable<string>` for streaming.
 - Session names are human-readable strings chosen by the user (e.g. `reach-cairn`).
 
 ## Decision
 
 **Adapter pattern.** Implement a thin adapter layer (`src/copilot/impl.ts`) that:
 
-1. Holds a single `CopilotClient` instance for the daemon lifetime.
-2. Maps Reach session names to SDK session IDs (using the name directly as the `sessionId`).
-3. Wraps the SDK's event-emitter streaming API into `AsyncIterable<CopilotChunk>` via an async generator.
-4. Handles `onPermissionRequest` with `approveAll` (personal single-user tool — no untrusted agents).
+1. Holds a single SDK `CopilotClient` instance for the daemon lifetime.
+2. Implements `CopilotSessionFactory` with `resume(sessionName)` and `create(sessionName)`.
+3. Maps Reach session names to SDK session IDs (using the name directly as the `sessionId`).
+4. Wraps the SDK's event-emitter streaming API into `AsyncIterable<string>` via an async generator.
+5. Handles `onPermissionRequest` with `approveAll` (personal single-user tool — no untrusted agents).
 
-**The existing `CopilotClient`/`CopilotSession` interfaces in `src/types.ts` remain unchanged.** They are the correct abstraction for the relay. The adapter bridges the impedance mismatch.
+**The `CopilotSessionFactory`/`CopilotSession` interfaces in `src/copilot/factory.ts` are the relay's contract.** The adapter bridges the impedance mismatch between the SDK's event-emitter model and our async-iterable streaming contract.
 
 ### Alternatives Considered
 
@@ -116,9 +116,9 @@ export function defineTool(...): Tool;                      // custom tool helpe
 
 ```ts
 import { CopilotClient as SdkClient, approveAll } from '@github/copilot-sdk';
-import type { CopilotClient, CopilotSession, CopilotChunk } from '../types.js';
+import type { CopilotSession, CopilotSessionFactory } from './factory.js';
 
-export class CopilotClientImpl implements CopilotClient {
+export class CopilotSessionFactoryImpl implements CopilotSessionFactory {
   private sdk: SdkClient;
   private started = false;
 
@@ -132,21 +132,25 @@ export class CopilotClientImpl implements CopilotClient {
     }
   }
 
-  async createSession(options: { name: string; repoPath?: string }): Promise<CopilotSession> {
+  async resume(sessionName: string): Promise<CopilotSession | null> {
     await this.ensureStarted();
-    const sdkSession = await this.sdk.createSession({
-      sessionId: options.name,        // use friendly name as session ID
+    // Check if the session exists before attempting resume
+    const sessions = await this.sdk.listSessions();
+    const exists = sessions.some((s) => s.sessionId === sessionName);
+    if (!exists) return null;
+
+    const sdkSession = await this.sdk.resumeSession(sessionName, {
       model: this.model,
       streaming: true,
-      workingDirectory: options.repoPath,
       onPermissionRequest: approveAll,
     });
     return new CopilotSessionAdapter(sdkSession);
   }
 
-  async resumeSession(sessionId: string): Promise<CopilotSession> {
+  async create(sessionName: string): Promise<CopilotSession> {
     await this.ensureStarted();
-    const sdkSession = await this.sdk.resumeSession(sessionId, {
+    const sdkSession = await this.sdk.createSession({
+      sessionId: sessionName,
       model: this.model,
       streaming: true,
       onPermissionRequest: approveAll,
@@ -162,21 +166,17 @@ export class CopilotClientImpl implements CopilotClient {
 import { CopilotSession as SdkSession } from '@github/copilot-sdk';
 
 class CopilotSessionAdapter implements CopilotSession {
-  readonly id: string;
+  constructor(private sdk: SdkSession) {}
 
-  constructor(private sdk: SdkSession) {
-    this.id = sdk.sessionId;
-  }
-
-  async *send(message: string): AsyncIterable<CopilotChunk> {
+  async *send(message: string): AsyncIterable<string> {
     // Create a channel: SDK events push into it, async generator pulls from it
-    const chunks: CopilotChunk[] = [];
+    const chunks: string[] = [];
     let resolve: (() => void) | null = null;
     let done = false;
     let error: Error | null = null;
 
     const unsubDelta = this.sdk.on('assistant.message_delta', (event) => {
-      chunks.push({ text: event.data.deltaContent });
+      chunks.push(event.data.deltaContent);
       resolve?.();
     });
 
@@ -216,20 +216,23 @@ class CopilotSessionAdapter implements CopilotSession {
 ### 3. Wiring (`src/main.ts` DI root)
 
 ```ts
-import { CopilotClientImpl } from './copilot/impl.js';
+import { CopilotSessionFactoryImpl } from './copilot/impl.js';
 
-const copilotClient = new CopilotClientImpl(process.env.REACH_MODEL ?? 'claude-sonnet-4');
-// Inject into relay: new Relay(registry, copilotClient, idleMonitor)
+const factory = new CopilotSessionFactoryImpl(process.env.REACH_MODEL ?? 'claude-sonnet-4');
+// Inject into relay: new Relay(registry, factory)
 ```
 
 ### 4. Session Name as Session ID
 
 The SDK's `sessionId` accepts arbitrary strings. We use the Reach session name directly (e.g. `"reach-cairn"`) as the SDK session ID. This means:
 
-- `createSession({ name: "reach-cairn" })` → `sdk.createSession({ sessionId: "reach-cairn" })`
-- `resumeSession("reach-cairn")` → `sdk.resumeSession("reach-cairn", { ... })`
-- The registry's `copilotSessionId` field stores the same value as `name`
+- `factory.create("reach-cairn")` → `sdk.createSession({ sessionId: "reach-cairn" })`
+- `factory.resume("reach-cairn")` → `sdk.resumeSession("reach-cairn", { ... })`
 - `listSessions()` can verify a session exists before attempting resume
+
+### 5. Lazy Session Creation
+
+Sessions are not created at `/new` time. The `/new` command only registers a mapping from a Telegram topic ID to a session name in the `SessionRegistry`. The actual SDK session is created lazily on the first relay call — when a user sends a message in the linked topic, the relay calls `factory.resume()` (falling back to `factory.create()`) and caches the handle.
 
 ### 5. Recommended Session Name Validation
 
@@ -245,9 +248,9 @@ Rationale: lowercase + hyphens mirrors DNS label rules, avoids filesystem/URL en
 
 ### Positive
 
-- **Relay unchanged.** The `AsyncIterable<CopilotChunk>` contract holds — Carter's bridge code needs zero modifications.
-- **Testable.** `StubCopilotClient` remains valid for unit tests. Integration tests can use the real adapter.
-- **Session resumption is free.** The SDK persists session state to disk and resumes by ID. Reach's lazy-recreation pattern maps directly.
+- **Relay unchanged.** The `AsyncIterable<string>` contract holds — the relay's bridge code needs zero modifications.
+- **Testable.** `StubCopilotSessionFactory` remains valid for unit tests. Integration tests can use the real adapter.
+- **Session resumption is free.** The SDK persists session state to disk and resumes by ID. Reach's lazy-creation pattern maps directly.
 - **Streaming works.** The async generator bridge converts `assistant.message_delta` events into the throttle-friendly iterable the relay expects.
 
 ### Negative / Risks
@@ -259,8 +262,8 @@ Rationale: lowercase + hyphens mirrors DNS label rules, avoids filesystem/URL en
 
 ### Neutral
 
-- `CopilotChunk` stays as `{ text: string }` — maps directly to `deltaContent`. No structural change needed.
-- The `SessionEntry.copilotSessionId` field in `src/types.ts` becomes redundant with `name` (they're the same string). Consider removing it to reduce confusion, or keep it for clarity.
+- The relay streams plain `string` chunks — the `deltaContent` from the SDK maps directly with no wrapper type needed.
+- `SessionEntry` in `src/types.ts` contains only `sessionName`, `topicId`, `chatId`, and `createdAt`. No SDK-specific fields leak into the domain model.
 
 ## Open Questions
 
@@ -268,4 +271,3 @@ Rationale: lowercase + hyphens mirrors DNS label rules, avoids filesystem/URL en
 2. **Permission granularity** — `approveAll` is fine for personal use. If Reach ever runs in a shared context, we need a permission policy. Punt for now?
 3. **CLI process lifecycle** — Should Reach restart the SDK's CLI process on crash? The SDK's `autoStart: true` helps but doesn't cover mid-session failures. Worth adding a health check / reconnect wrapper?
 4. **`session.error` event shape** — The generated types are large; need to verify the exact error event type during implementation. The async generator error path may need adjustment.
-5. **SessionEntry.copilotSessionId** — Remove (since it equals `name`) or keep for forward-compat if naming strategy changes?

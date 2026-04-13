@@ -24,6 +24,7 @@ export interface ISessionRegistry {
  */
 export class SessionRegistry implements ISessionRegistry {
   private entries = new Map<number, SessionEntry>();
+  private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly persistPath: string) {}
 
@@ -36,7 +37,11 @@ export class SessionRegistry implements ISessionRegistry {
         this.entries.clear();
         return;
       }
-      for (const [key, value] of Object.entries(data.entries)) {
+      const entries = data.entries && typeof data.entries === 'object' ? data.entries : {};
+      if (!data.entries) {
+        console.warn(`[registry] Registry file missing 'entries' field, starting empty`);
+      }
+      for (const [key, value] of Object.entries(entries)) {
         if (!value.sessionName || typeof value.topicId !== 'number' || typeof value.chatId !== 'number' || !value.createdAt) {
           console.warn(`[registry] Skipping invalid entry for key ${key}`);
           continue;
@@ -85,6 +90,11 @@ export class SessionRegistry implements ISessionRegistry {
   }
 
   private async persist(): Promise<void> {
+    this.writeQueue = this.writeQueue.then(() => this.doPersist()).catch(() => {});
+    return this.writeQueue;
+  }
+
+  private async doPersist(): Promise<void> {
     const data: RegistryData = { version: 1, entries: Object.fromEntries(this.entries) };
     await fs.mkdir(path.dirname(this.persistPath), { recursive: true });
     const tmp = this.persistPath + '.tmp';

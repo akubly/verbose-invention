@@ -89,9 +89,12 @@ export class SessionRegistry implements ISessionRegistry {
     return removed;
   }
 
-  private async persist(): Promise<void> {
-    this.writeQueue = this.writeQueue.then(() => this.doPersist()).catch(() => {});
-    return this.writeQueue;
+  private persist(): Promise<void> {
+    const op = this.writeQueue.then(() => this.doPersist());
+    // Queue always advances — swallow errors for continuation only
+    this.writeQueue = op.catch(() => {});
+    // But return the actual operation so callers see errors
+    return op;
   }
 
   private async doPersist(): Promise<void> {

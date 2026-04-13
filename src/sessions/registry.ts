@@ -33,9 +33,14 @@ export class SessionRegistry implements ISessionRegistry {
       const data: RegistryData = JSON.parse(raw);
       if (data.version !== undefined && data.version !== 1) {
         console.warn(`[registry] Unsupported registry version ${data.version} at ${this.persistPath}, expected 1. Starting empty.`);
+        this.entries.clear();
         return;
       }
       for (const [key, value] of Object.entries(data.entries)) {
+        if (!value.sessionName || typeof value.topicId !== 'number' || typeof value.chatId !== 'number' || !value.createdAt) {
+          console.warn(`[registry] Skipping invalid entry for key ${key}`);
+          continue;
+        }
         this.entries.set(Number(key), value);
       }
       console.log(`[registry] Loaded ${this.entries.size} session(s) from ${this.persistPath}`);

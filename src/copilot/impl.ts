@@ -90,7 +90,11 @@ class CopilotSessionAdapter implements CopilotSession {
           }
         } else {
           await Promise.race([
-            new Promise<void>((r) => { notify = r; }),
+            new Promise<void>((r) => {
+              notify = r;
+              // Re-check after assigning — events may have arrived in the gap
+              if (queue.length > 0) r();
+            }),
             new Promise<void>((_, reject) => {
               timeoutId = setTimeout(
                 () => reject(new Error('Stream timeout: no response from SDK')),

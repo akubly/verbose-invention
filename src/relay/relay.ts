@@ -1,5 +1,5 @@
 import type { Context } from 'grammy';
-import type { CopilotClient, CopilotSession } from '../types.js';
+import type { CopilotSessionFactory, CopilotSession } from '../copilot/factory.js';
 import type { ISessionRegistry } from '../sessions/registry.js';
 import { IdleMonitor } from '../idleMonitor.js';
 
@@ -8,12 +8,12 @@ const STREAM_EDIT_THROTTLE_MS = 800;
 
 export class Relay {
   /** In-memory cache of live SDK session handles, keyed by forum topic ID. */
-  private activeSessions = new Map<number, CopilotSession>();
+  private activeSessions = new Map<number, { sessionName: string; session: CopilotSession }>();
   private idleMonitor = new IdleMonitor();
 
   constructor(
     private readonly registry: ISessionRegistry,
-    private readonly client: CopilotClient,
+    private readonly factory: CopilotSessionFactory,
   ) {}
 
   async relay(ctx: Context): Promise<void> {
@@ -31,14 +31,23 @@ export class Relay {
       return;
     }
 
-    let session = this.activeSessions.get(topicId);
+    const cached = this.activeSessions.get(topicId);
+    let session = cached?.session;
+
+    // Evict stale cache: if the topic was re-linked to a different session name
+    // (e.g. /remove then /new), the cached handle is for the wrong session.
+    if (cached && cached.sessionName !== entry.sessionName) {
+      this.activeSessions.delete(topicId);
+      session = undefined;
+    }
+
     if (!session) {
       try {
-        session = await this.client.resumeSession(entry.copilotSessionId);
-        this.activeSessions.set(topicId, session);
+        session = await this.factory.resume(entry.sessionName) ?? await this.factory.create(entry.sessionName);
+        this.activeSessions.set(topicId, { sessionName: entry.sessionName, session });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        await ctx.reply(`❌ Could not resume session "${entry.name}": ${msg}`, {
+        await ctx.reply(`❌ Could not open session "${entry.sessionName}": ${msg}`, {
           message_thread_id: topicId,
         });
         return;
@@ -48,7 +57,7 @@ export class Relay {
     // Reset idle timer — evict cached session handle on inactivity
     this.idleMonitor.reset(topicId, () => {
       this.activeSessions.delete(topicId);
-      console.log(`[relay] Session handle evicted (idle): topic ${topicId} → "${entry.name}"`);
+      console.log(`[relay] Session handle evicted (idle): topic ${topicId} → "${entry.sessionName}"`);
     });
 
     const placeholder = await ctx.reply('…', { message_thread_id: topicId });
@@ -58,7 +67,7 @@ export class Relay {
 
     try {
       for await (const chunk of session.send(userText)) {
-        accumulated += chunk.text;
+        accumulated += chunk;
         const now = Date.now();
         if (now - lastEditAt >= STREAM_EDIT_THROTTLE_MS) {
           await this.safeEdit(ctx, placeholder.chat.id, placeholder.message_id, accumulated);

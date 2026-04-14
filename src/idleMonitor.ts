@@ -1,4 +1,5 @@
-const IDLE_TIMEOUT_MS = Number(process.env.IDLE_TIMEOUT_MS ?? 300_000); // default 5 minutes
+const raw = Number(process.env.IDLE_TIMEOUT_MS ?? 300_000);
+const IDLE_TIMEOUT_MS = Number.isFinite(raw) && raw > 0 ? raw : 300_000;
 
 /**
  * Tracks per-topic idle timers.

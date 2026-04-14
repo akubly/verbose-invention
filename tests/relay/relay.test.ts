@@ -8,11 +8,11 @@ import { makeMockFactory, makeMockSession, makeStream } from '../mocks/sdk.js';
 /** Minimal grammY Context double for relay tests. */
 function makeMockCtx(
   text = 'Hello Copilot',
-  topicId: number | undefined = 42,
+  topicId: number | undefined | null = 42,
   chatId = -1001234567890,
 ) {
   return {
-    message: topicId !== undefined
+    message: (topicId !== undefined && topicId !== null)
       ? { message_thread_id: topicId, text }
       : { text },
     chat: { id: chatId },
@@ -164,7 +164,7 @@ describe('Relay', () => {
       const factory = makeMockFactory();
       const registry = makeStubRegistry();
       const relay = new Relay(registry, factory);
-      const ctx = makeMockCtx('hello', undefined); // no topicId
+      const ctx = makeMockCtx('hello', null); // no topicId
 
       await relay.relay(ctx as any);
 
@@ -209,8 +209,8 @@ describe('Relay', () => {
     });
 
     it('edits placeholder with error message when stream fails mid-response', async () => {
-      // failAfter=1 → yields one chunk then throws
-      const session = makeMockSession(['Partial answer'], 0);
+      // failAfter=1 → yields chunk 0 ("Partial") then throws at chunk 1
+      const session = makeMockSession(['Partial', ' answer'], 1);
       const factory = makeMockFactory(session);
       const registry = makeStubRegistry([SESSION_ENTRY]);
       const relay = new Relay(registry, factory);

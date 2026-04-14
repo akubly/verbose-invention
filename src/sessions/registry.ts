@@ -2,13 +2,16 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { SessionEntry } from '../types.js';
 
+export type { SessionEntry } from '../types.js';
+
 interface RegistryData {
+  version?: number;  // absent in legacy files, 1 in current format
   entries: Record<string, SessionEntry>;
 }
 
 export interface ISessionRegistry {
   load(): Promise<void>;
-  register(entry: SessionEntry): Promise<void>;
+  register(topicId: number, chatId: number, sessionName: string): Promise<void>;
   resolve(telegramTopicId: number): SessionEntry | undefined;
   list(): SessionEntry[];
   remove(telegramTopicId: number): Promise<boolean>;
@@ -21,29 +24,57 @@ export interface ISessionRegistry {
  */
 export class SessionRegistry implements ISessionRegistry {
   private entries = new Map<number, SessionEntry>();
+  private writeQueue: Promise<void> = Promise.resolve();
 
   constructor(private readonly persistPath: string) {}
 
   async load(): Promise<void> {
+    this.entries.clear();
     try {
       const raw = await fs.readFile(this.persistPath, 'utf-8');
       const data: RegistryData = JSON.parse(raw);
-      for (const [key, value] of Object.entries(data.entries)) {
+      if (data.version !== undefined && data.version !== 1) {
+        console.warn(`[registry] Unsupported registry version ${data.version} at ${this.persistPath}, expected 1. Starting empty.`);
+        this.entries.clear();
+        return;
+      }
+      const entries = data.entries && typeof data.entries === 'object' ? data.entries : {};
+      if (!data.entries) {
+        console.warn(`[registry] Registry file missing 'entries' field, starting empty`);
+      }
+      for (const [key, value] of Object.entries(entries)) {
+        if (typeof value.sessionName !== 'string' || typeof value.topicId !== 'number' || typeof value.chatId !== 'number' || typeof value.createdAt !== 'string') {
+          console.warn(`[registry] Skipping invalid entry for key ${key}`);
+          continue;
+        }
+        if (Number(key) !== value.topicId) {
+          console.warn(`[registry] Skipping entry for key ${key}: key does not match topicId ${value.topicId}`);
+          continue;
+        }
         this.entries.set(Number(key), value);
       }
       console.log(`[registry] Loaded ${this.entries.size} session(s) from ${this.persistPath}`);
     } catch (err: unknown) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw err;
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return; // first run
+      if (err instanceof SyntaxError) {
+        console.warn(`[registry] Corrupt registry at ${this.persistPath}, backing up and starting fresh`);
+        await fs.rename(this.persistPath, this.persistPath + '.corrupt.' + Date.now());
+        return;
       }
-      // First run — no registry file yet, start empty
+      throw err;
     }
   }
 
-  async register(entry: SessionEntry): Promise<void> {
-    this.entries.set(entry.telegramTopicId, entry);
+  async register(topicId: number, chatId: number, sessionName: string): Promise<void> {
+    const entry: SessionEntry = {
+      sessionName,
+      topicId,
+      chatId,
+      createdAt: new Date().toISOString(),
+    };
+    this.entries.set(topicId, entry);
     await this.persist();
-    console.log(`[registry] Registered topic ${entry.telegramTopicId} → "${entry.name}"`);
+    console.log(`[registry] Registered topic ${topicId} → "${sessionName}"`);
   }
 
   resolve(telegramTopicId: number): SessionEntry | undefined {
@@ -63,9 +94,19 @@ export class SessionRegistry implements ISessionRegistry {
     return removed;
   }
 
-  private async persist(): Promise<void> {
-    const data: RegistryData = { entries: Object.fromEntries(this.entries) };
+  private persist(): Promise<void> {
+    const op = this.writeQueue.then(() => this.doPersist());
+    // Queue always advances — swallow errors for continuation only
+    this.writeQueue = op.catch(() => {});
+    // But return the actual operation so callers see errors
+    return op;
+  }
+
+  private async doPersist(): Promise<void> {
+    const data: RegistryData = { version: 1, entries: Object.fromEntries(this.entries) };
     await fs.mkdir(path.dirname(this.persistPath), { recursive: true });
-    await fs.writeFile(this.persistPath, JSON.stringify(data, null, 2), 'utf-8');
+    const tmp = this.persistPath + '.tmp';
+    await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf-8');
+    await fs.rename(tmp, this.persistPath);
   }
 }

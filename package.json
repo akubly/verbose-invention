@@ -17,12 +17,10 @@
     "service:uninstall": "node dist/service/install.js uninstall"
   },
   "dependencies": {
+    "@github/copilot-sdk": "^0.2.2",
     "dotenv": "^16.4.5",
     "grammy": "^1.26.0",
     "node-windows": "^1.0.0-beta.8"
-  },
-  "optionalDependencies": {
-    "@github/copilot-sdk": "*"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

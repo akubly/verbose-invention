@@ -49,14 +49,14 @@ Decisions from Carter's bridge design (merged from inbox):
 1. **Lazy SDK session creation** — sessions are created/resumed on the first relayed message, not at `/new` registration time.
 2. **CopilotSessionFactory interface as abstraction boundary** — relay never imports `@github/copilot-sdk` directly; Noble Six owns the real binding.
 3. **Streaming throttle at 800ms** — Telegram's edit rate limit (~1/s) requires throttling. Mid-stream edits are plain text; final edit uses Markdown with fallback.
-4. **30-minute idle eviction** — in-memory SDK sessions evicted after 30 min idle; registry entry preserved; session recreated lazily.
+4. **5-minute idle eviction** — in-memory SDK sessions evicted after 5 min idle (configurable via `IDLE_TIMEOUT_MS` env var, default 300,000ms); registry entry preserved; session recreated lazily.
 5. **No allowed-chat-ID guard yet** — flagged as open question; `REACH_CHAT_ID` env var guard recommended before any shared deployment.
 
 ---
 
 ### 2026-04-12 — API Alignment — Canonical Bridge Layer Interfaces (Carter)
 
-Implementation and tests had diverged; tests were canonical (written TDD by Jun). All changes below bring implementation into alignment. **All 26 tests now pass.**
+Implementation and tests had diverged; tests were canonical (written TDD by Jun). All changes below bring implementation into alignment. **All 73 tests now pass.**
 
 #### SessionEntry Shape
 

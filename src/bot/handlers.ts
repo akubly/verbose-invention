@@ -83,8 +83,8 @@ export function registerHandlers({ bot, registry, factory }: HandlerOptions): Re
       await ctx.reply('No sessions registered yet.');
       return;
     }
-    const lines = sessions.map((s) => `• \`${s.sessionName}\` ← topic #${s.topicId}`);
-    await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+    const lines = sessions.map((s) => `• ${s.sessionName} ← topic #${s.topicId}`);
+    await ctx.reply(lines.join('\n'));
   });
 
   // /remove — unlink the session from this topic

@@ -74,7 +74,7 @@ describe('registerHandlers', () => {
     vi.restoreAllMocks();
   });
 
-  it('registers /new, /list, /remove commands and message:text handler', () => {
+  it('registers /new, /list, /remove, /help commands and message:text handler', () => {
     const { bot, commandHandlers, onHandlers } = makeMockBot();
     const registry = makeStubRegistry();
     const factory = makeMockFactory();
@@ -84,6 +84,7 @@ describe('registerHandlers', () => {
     expect(commandHandlers.has('new')).toBe(true);
     expect(commandHandlers.has('list')).toBe(true);
     expect(commandHandlers.has('remove')).toBe(true);
+    expect(commandHandlers.has('help')).toBe(true);
     expect(onHandlers.has('message:text')).toBe(true);
     expect(bot.catch).toHaveBeenCalled();
   });
@@ -385,6 +386,44 @@ describe('registerHandlers', () => {
         expect.stringContaining('/new'),
         expect.objectContaining({ message_thread_id: 99 }),
       );
+    });
+  });
+
+  // ── /help command ─────────────────────────────────────────────────────────
+
+  describe('/help command', () => {
+    it('replies with help message containing available commands', async () => {
+      const { bot, commandHandlers } = makeMockBot();
+      const registry = makeStubRegistry();
+      const factory = makeMockFactory();
+      registerHandlers({ bot: bot as any, registry, factory });
+
+      const handler = commandHandlers.get('help')!;
+      const ctx = makeMockCtx();
+      await handler(ctx);
+
+      const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+      expect(replyText).toContain('/new');
+      expect(replyText).toContain('/list');
+      expect(replyText).toContain('/remove');
+      expect(replyText).toContain('/help');
+    });
+
+    it('works without a forum topic (general chat)', async () => {
+      const { bot, commandHandlers } = makeMockBot();
+      const registry = makeStubRegistry();
+      const factory = makeMockFactory();
+      registerHandlers({ bot: bot as any, registry, factory });
+
+      const handler = commandHandlers.get('help')!;
+      const ctx = makeMockCtx({
+        message: { text: '/help' }, // no message_thread_id
+      });
+      await handler(ctx);
+
+      expect(ctx.reply).toHaveBeenCalled();
+      const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+      expect(replyText).toContain('/new');
     });
   });
 });

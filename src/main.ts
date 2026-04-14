@@ -28,10 +28,13 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  const chatId = process.env.TELEGRAM_CHAT_ID
-    ? Number(process.env.TELEGRAM_CHAT_ID)
-    : undefined;
-  if (chatId !== undefined && !Number.isFinite(chatId)) {
+  const rawChatId = process.env.TELEGRAM_CHAT_ID;
+  if (!rawChatId) {
+    console.error('[reach] Fatal: TELEGRAM_CHAT_ID is required');
+    process.exit(1);
+  }
+  const chatId = Number(rawChatId);
+  if (!Number.isFinite(chatId)) {
     console.error('[reach] Fatal: TELEGRAM_CHAT_ID must be a valid number');
     process.exit(1);
   }
@@ -47,7 +50,7 @@ async function main(): Promise<void> {
   await registry.load();
   console.log(`[reach] Model: ${model}`);
   console.log(`[reach] Registry: ${registryPath}`);
-  if (chatId !== undefined) console.log(`[reach] Allowed chat: ${chatId}`);
+  console.log(`[reach] Allowed chat: ***${String(chatId).slice(-4)}`);
 
   let shuttingDown = false;
   const shutdown = () => {

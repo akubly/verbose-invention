@@ -103,6 +103,18 @@ export function registerHandlers({ bot, registry, factory }: HandlerOptions): Re
     }
   });
 
+  // /help — show available commands
+  bot.command('help', async (ctx) => {
+    const helpText = `Reach — Telegram ↔ Copilot CLI bridge
+
+Commands:
+/new <name> — Create a session in this topic
+/list — Show all active sessions
+/remove — Unlink the session from this topic
+/help — Show this message`;
+    await ctx.reply(helpText);
+  });
+
   // Relay all non-command text messages in forum topics to their linked session
   bot.on('message:text', async (ctx) => {
     if (!ctx.message.message_thread_id) return;

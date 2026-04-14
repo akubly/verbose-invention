@@ -93,3 +93,14 @@ Noble Six's impl was flagged by review panel. As independent author, applied six
 4. **Relay disposal on shutdown** — `registerHandlers()` now returns the `Relay` instance so `main.ts` can call `relay.dispose()` during shutdown, cancelling idle monitors.
 5. **TELEGRAM_CHAT_ID NaN guard** — `Number("garbage")` → NaN now caught with `Number.isFinite()` check and fatal exit.
 6. **resume() error discrimination** — no longer swallows all errors. Only "not found"/"does not exist" returns null; other errors propagate to relay's catch block for proper reporting.
+
+### 2026-04-14 — Phase 2 Integration: Kat's Chat ID & Help Changes
+
+Kat (Bot Dev) made two P0/P1 changes affecting bot creation and handler flow:
+
+1. **TELEGRAM_CHAT_ID now required** — `main.ts` fails immediately if unset. `createBot()` signature changed to require `allowedChatId: number` (no longer optional). The chat guard middleware is now unconditional, preventing accidental responses to unintended groups.
+2. **/help command added** — New handler in `src/bot/handlers.ts` lists available commands and links to README. Improves mobile discoverability (user can type `/help` to see what commands exist).
+
+**Impact on Relay:** None — relay code remains unchanged. Handlers API unchanged; new `/help` is additive. Only the bot factory signature changed (requires `allowedChatId` now).
+
+**Test impact:** All 73 tests pass (56 original + Jun's 25 new tests, including 2 for `/help`).

@@ -51,3 +51,14 @@ Fixed 5 issues found by review panel in Carter's files, acting as independent au
 5. **IDLE_TIMEOUT_MS validation** — Added `Number.isFinite` + positive check to prevent NaN/negative timer values.
 
 All 56 tests pass after changes.
+
+### 2026-04-12 — Phase 2 Go Live: Required Chat ID + /help Command
+
+Two P0/P1 changes for the Go Live phase:
+
+1. **TELEGRAM_CHAT_ID now required** — Prevents the bot from responding to all groups if Aaron accidentally adds it to a shared group. `src/main.ts` now fails immediately with a fatal error if `TELEGRAM_CHAT_ID` is missing. `createBot()` signature changed to require `allowedChatId: number` (no longer optional). The chat guard middleware is now unconditional.
+
+2. **/help command added** — New command in `src/bot/handlers.ts` shows the list of available commands and what Reach does. Keeps the UX simple — user can discover commands without reading docs.
+
+TypeScript compilation clean, all 73 tests pass.
+

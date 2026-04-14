@@ -70,6 +70,43 @@ My test infrastructure remains stable — tests still depend only on interface b
 
 ## Learnings
 
+### 2026-04-13 — Phase 2 "Go Live" Test Coverage
+
+Added 25 new tests (56 → 81 total), bringing handlers from 17 to 20 tests and adding a new test file for service installation.
+
+**Test additions:**
+1. **`/help` command tests** (2 tests in `tests/bot/handlers.test.ts`):
+   - Verifies help message contains all four commands (/new, /list, /remove, /help)
+   - Confirms /help works without a forum topic (general chat use case)
+   - Pattern: same mock bot structure as existing handler tests
+
+2. **Service installer tests** (6 tests in `tests/service/install.test.ts`):
+   - TDD-style tests written *before* Noble Six's implementation of `src/service/install.ts`
+   - Mocks `node-windows` Service class at module level with vi.mock()
+   - Verifies install/uninstall commands create Service instances and call correct methods
+   - Tests usage errors (no command, unknown command) with process.exit mocking
+   - Pattern: `vi.spyOn(process, 'exit').mockImplementation()` + expect(fn).rejects.toThrow()
+
+3. **TELEGRAM_CHAT_ID enforcement**: Skipped after investigation. The feature spans two locations:
+   - main.ts env var validation (hard to test — process.exit without refactoring)
+   - bot.ts middleware (testable but requires reaching into grammY internals — brittle)
+   - Decision: both are simple guard clauses (<5 lines each) with clear behavior; integration tests would provide better ROI than unit tests that mock framework internals
+
+**node-windows API surface:**
+- Constructor: `new Service({ name, script, description })`
+- Methods: `install()`, `uninstall()` (event-emitter based, but tests just verify calls)
+- Module exports Service as `require('node-windows').Service`
+- Tests use class mock rather than object mock (cleaner constructor verification)
+
+**Test strategy insight:**
+When writing TDD tests for a feature being implemented in parallel:
+1. Read actual dependency APIs (node-windows source) rather than guessing
+2. Mock at module level before any imports
+3. Provide a reference implementation in the test that defines the contract
+4. Once the real implementation lands, swap the reference impl for a dynamic import
+
+Test count: 56 → 81 tests across 6 files (registry 17, relay 13, idleMonitor 13, handlers 20, impl 12, install 6). All passing.
+
 ### 2025-07-18 — `failAfter` semantics in `makeMockSession`
 
 The `failAfter` parameter in `tests/mocks/sdk.ts` is an index check (`i === failAfter`), meaning the error fires *before* yielding the chunk at that index. `failAfter=0` throws before any chunks are yielded — that's a "fails at start" scenario, not mid-stream. To test genuine mid-stream failure, use `failAfter >= 1` with enough chunks so at least one is yielded before the throw. Fixed the "edits placeholder with error message when stream fails mid-response" test to use `makeMockSession(['Partial', ' answer'], 1)` so chunk 0 is yielded successfully before chunk 1 triggers the error.

@@ -198,7 +198,105 @@ Use `claude-opus-4.6-1m` whenever doing any work that might require large contex
 
 ---
 
+### 2026-04-14 — Model Selection — Global Default + Per-Session Override
+
+**By:** Aaron (via Copilot)  
+**Status:** Decided
+
+Aaron chose **Option C: Global default + per-session override.**
+
+- `REACH_MODEL` env var sets the default model (current behavior, unchanged)
+- Per-session override via `/new <name> --model <model>` to be added in Phase 2 P1
+- Registry schema will need a `model` field on `SessionEntry` (optional, falls back to global default)
+- `CopilotSessionFactory.create()` will need to accept a model parameter
+
+**Implementation deferred to P1** — the global default works for Phase 2 launch. Per-session override is a quality-of-life addition after Go Live.
+
+---
+
+### 2026-04-14 — Phase 2 Go Live — Operational Infrastructure
+
+**Author:** Noble Six, Kat, Jun  
+**Status:** Implemented
+
+Phase 2 delivers operational infrastructure so Aaron can actually *run* Reach as a daemon, not just build it.
+
+#### Windows Service Installer (Noble Six)
+
+Implemented `src/service/install.ts` using node-windows v1.0.0-beta.8:
+- Service name: "Reach"
+- Script: `dist/main.js` with `--enable-source-maps` option
+- Auto-restart on failure (node-windows defaults)
+- Pre-install validation checks `dist/main.js` exists
+- Commands: `npm run service:install` and `npm run service:uninstall`
+
+**Trade-off:** System-wide service (requires admin) vs. user-level Task Scheduler. Chose system service for auto-restart and Event Log integration (Windows-native daemon pattern).
+
+#### TELEGRAM_CHAT_ID Enforcement (Kat)
+
+Made `TELEGRAM_CHAT_ID` **required** (was optional):
+- `main.ts` throws fatal error if unset
+- `createBot()` signature now requires `allowedChatId: number` (no longer optional)
+- Prevents accidental bot responses to unintended groups
+
+#### /help Command (Kat)
+
+Added `/help` command to `src/bot/handlers.ts`:
+- Lists available commands: `/new <name>`, `/list`, `/remove <name>`, `/help`
+- Provides link to documentation
+- Improves mobile discoverability
+
+#### Test Coverage (Jun)
+
+Added 25 new tests (81/81 total):
+- `tests/service/install.test.ts` — 6 tests; mocked node-windows; TDD approach
+- `tests/bot/handlers.test.ts` — +2 tests for `/help` command
+- Deferred: unit tests for env var validation and middleware (integration tests preferred)
+
+#### Verification
+
+- TypeScript compiles clean
+- All 81 tests pass
+- Service installer manually testable on Windows
+
+---
+
+### 2026-04-14 — Review Fixes — Independent Authors
+
+**Status:** Applied
+
+#### Carter's Bridge Layer Fixes (Kat as independent author)
+
+Applied 5 fixes to address code review findings:
+1. **Registry crash-safety** — `persist()` writes to `.tmp` then renames (atomic pattern)
+2. **Corrupt JSON recovery** — `load()` backs up corrupt files to `.corrupt.<timestamp>` and starts empty
+3. **Schema versioning** — Added `version: 1` field to `RegistryData` for future migrations
+4. **Chat ID guard** — Replaced fallback to 0 with early exit and error message (0 is never a valid Telegram chat ID)
+5. **Stub resume()** — Returns `null` per interface contract (enables `resume() ?? create()` fallback)
+6. **IDLE_TIMEOUT_MS validation** — Guards against NaN and negative values
+
+**Verification:** All 56 tests pass.
+
+#### Noble Six's SDK Binding Fixes (Carter as independent author)
+
+Applied 6 fixes to address code review findings:
+1. **Race condition in ensureStarted()** — replaced `started` boolean with startup promise (shared by concurrent callers)
+2. **Stream timeout** — added 5-minute `Promise.race` timeout with proper cleanup
+3. **Idempotent shutdown** — added `shuttingDown` guard flag to prevent double-teardown
+4. **Relay disposal on shutdown** — `registerHandlers()` now returns `Relay` so `main.ts` can call `relay.dispose()`
+5. **TELEGRAM_CHAT_ID NaN guard** — `Number.isFinite()` check with fatal exit on invalid input
+6. **resume() error discrimination** — only "not found"/"does not exist" returns null; other errors propagate
+
+**Verification:** All 56 tests pass.
+
+---
+
 ## Governance
+
+- All meaningful changes require team consensus
+- Document architectural decisions here
+- Keep history focused on work, decisions focused on direction
+- Noble Six is the final reviewer for cross-cutting changes; Carter owns bridge layer decisions; Kat owns bot UX decisions; Jun owns test strategy
 
 - All meaningful changes require team consensus
 - Document architectural decisions here

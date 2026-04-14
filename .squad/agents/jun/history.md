@@ -110,3 +110,30 @@ Test count: 56 → 81 tests across 6 files (registry 17, relay 13, idleMonitor 1
 ### 2025-07-18 — `failAfter` semantics in `makeMockSession`
 
 The `failAfter` parameter in `tests/mocks/sdk.ts` is an index check (`i === failAfter`), meaning the error fires *before* yielding the chunk at that index. `failAfter=0` throws before any chunks are yielded — that's a "fails at start" scenario, not mid-stream. To test genuine mid-stream failure, use `failAfter >= 1` with enough chunks so at least one is yielded before the throw. Fixed the "edits placeholder with error message when stream fails mid-response" test to use `makeMockSession(['Partial', ' answer'], 1)` so chunk 0 is yielded successfully before chunk 1 triggers the error.
+
+### 2025-07-18 — Review fixes F2 and F9
+
+**F2 — Service tests now test real code:**
+- Refactored `src/service/install.ts`: exported `install`, `uninstall`, `createService` functions and added a `process.argv[1]` guard around `main()` so importing the module no longer triggers side effects.
+- Rewrote `tests/service/install.test.ts` to import the real functions from `src/service/install.ts` instead of defining a local mock `runInstaller`. Mocks `node-windows` (with `vi.mock` providing a mock `Service` class that captures constructor config and supports `on()`/`install()`/`uninstall()`/`start()`), `fs` (for `existsSync`), and `process.exit` (with `vi.spyOn`).
+- Test cases cover: install when script exists, install when script missing (exit 1), .env missing warning, `alreadyinstalled` event exits 0, uninstall creates service and calls `svc.uninstall()`, `createService()` returns correct config.
+- Pattern note: the `process.argv[1]` guard (`endsWith('install.js') || endsWith('install.ts')`) is more reliable than `import.meta.url` comparison on Windows.
+
+**F9 — /help in registration test:**
+- Added `expect(commandHandlers.has('help')).toBe(true)` to the registration test in `tests/bot/handlers.test.ts` and updated the test description to include `/help`.
+
+All 81 tests pass. TypeScript compiles clean.
+
+### 2026-04-14 — Service Installer Tests: TDD Rewrite (Independent Author)
+
+Persona review flagged service installer test strategy. As independent author, refactored install tests to import real code instead of mocks:
+
+1. **install.ts exports refactored** — Extracted `install()`, `uninstall()`, `createService()` functions and added `process.argv[1]` guard around `main()` so importing the module no longer triggers side effects.
+
+2. **tests/service/install.test.ts rewritten** — Imports real functions from `src/service/install.ts` instead of defining local mocks. Still mocks `node-windows` and `fs`, but now validates actual function behavior. Test cases cover: install when script exists, install when script missing (exit 1), .env missing warning, `alreadyinstalled` event exits 0, uninstall creates service and calls methods, `createService()` returns correct config.
+
+3. **Handler tests enhanced** — Added 2 new tests for `/help` command registration and message content in `tests/bot/handlers.test.ts`.
+
+4. **/help added to registration test** — Added `expect(commandHandlers.has('help')).toBe(true)` to verify the `/help` command is properly registered alongside `/new`, `/list`, `/remove`.
+
+**Verification:** All 81 tests pass (6 install-specific, 2 /help, 73 others). TypeScript compiles clean.

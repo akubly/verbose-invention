@@ -104,3 +104,15 @@ Kat (Bot Dev) made two P0/P1 changes affecting bot creation and handler flow:
 **Impact on Relay:** None — relay code remains unchanged. Handlers API unchanged; new `/help` is additive. Only the bot factory signature changed (requires `allowedChatId` now).
 
 **Test impact:** All 73 tests pass (56 original + Jun's 25 new tests, including 2 for `/help`).
+
+### 2026-04-14 — Service Installer Review Fixes (Independent Author)
+
+Noble Six's `src/service/install.ts` was flagged by persona review. As independent author (reviewer rejection protocol), applied 5 findings:
+
+1. **F1 BLOCKING — workingDirectory + env vars** — `workingDirectory` resolved to `dist/` but `.env` lives at project root. Fixed to `path.resolve(__dirname, '..', '..')`. Added `.env` preflight warning. Forwarded `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and `REACH_MODEL` in the service env array.
+2. **F3 IMPORTANT — Local System privilege** — Added comment documenting the tradeoff (Local System vs NetworkService). Added guidance in install success output suggesting services.msc reconfiguration.
+3. **F4 IMPORTANT — Handlers don't exit** — Added `process.exit(0)` in `start`, `uninstall`, `alreadyinstalled`, and `alreadyuninstalled` handlers. Changed `alreadyinstalled` from exit 1 to exit 0 (idempotent success).
+4. **F6 MINOR — @ts-ignore** — Replaced with `@ts-expect-error TS7016` on the import line. Removed redundant second suppression.
+5. **F7 MINOR — return type** — Changed `createService()` return type from `typeof Service.prototype` to `any`.
+
+**Verification:** TypeScript compiles clean. All 81 tests pass.

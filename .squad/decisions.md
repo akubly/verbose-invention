@@ -261,6 +261,38 @@ Added 25 new tests (81/81 total):
 
 ---
 
+### 2026-04-14 — Service Installer Review Fixes
+
+**Author:** Carter (independent author, reviewer rejection protocol)  
+**Date:** 2026-04-14  
+**Status:** Applied
+
+Noble Six's `src/service/install.ts` was flagged by persona review panel with 5 findings. Carter applied fixes as independent revision author.
+
+#### workingDirectory Handling
+
+The service no longer sets `workingDirectory` in the Service config. node-windows runs the script from the process CWD, which is correct for multi-user scenarios. Environment variables (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `REACH_MODEL`) are forwarded from the installer process environment.
+
+#### Exit Code Convention
+
+Changed `alreadyinstalled` from exit code 1 to exit code 0. Already-installed is an idempotent success, not an error.
+
+#### Local System Account
+
+Kept Local System as the default logon account. Added documentation comment suggesting NetworkService via services.msc for greater security, but a personal single-user tool doesn't warrant setup complexity at install time.
+
+#### ts-expect-error Rationale
+
+Added clarifying comment for `@ts-expect-error` on node-windows `Service` type (node-windows lacks type export despite runtime support).
+
+#### Return Type Correction
+
+Corrected install() return type from `void` to `Promise<void>` to match async implementation.
+
+**Verification:** All 81 tests pass.
+
+---
+
 ### 2026-04-14 — Review Fixes — Independent Authors
 
 **Status:** Applied
@@ -292,11 +324,6 @@ Applied 6 fixes to address code review findings:
 ---
 
 ## Governance
-
-- All meaningful changes require team consensus
-- Document architectural decisions here
-- Keep history focused on work, decisions focused on direction
-- Noble Six is the final reviewer for cross-cutting changes; Carter owns bridge layer decisions; Kat owns bot UX decisions; Jun owns test strategy
 
 - All meaningful changes require team consensus
 - Document architectural decisions here

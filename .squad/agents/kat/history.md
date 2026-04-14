@@ -62,3 +62,13 @@ Two P0/P1 changes for the Go Live phase:
 
 TypeScript compilation clean, all 73 tests pass.
 
+### 2026-04-14 — Phase 2 Review Cycle: Env & Security Fixes (Independent Author)
+
+Persona review flagged two env/main.ts items. As independent author, applied 2 fixes:
+
+1. **.env.example alignment** — Inconsistent variable names and missing documentation. Aligned all environment variable names to match code constants, removed alternate spellings, added clarification for required vs optional vars. Each var now documents its purpose, example value, and format.
+
+2. **Masked chat ID in main.ts** — Removed hardcoded test chat ID from source code. Added safety guidance to documentation on setting `TELEGRAM_CHAT_ID` securely without committing secrets.
+
+**Verification:** All 81 tests pass. No behavioral changes.
+

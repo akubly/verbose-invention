@@ -98,9 +98,10 @@ export function defineTool(...): Tool;                      // custom tool helpe
 - `attachments?: Array<...>` — file/blob attachments
 
 **Streaming events** (via `session.on()`):
-- `"assistant.message_delta"` → `{ deltaContent: string, messageId: string }`
-- `"assistant.message"` → `{ content: string, messageId: string }`
+- `"assistant.message_delta"` → `{ data: { deltaContent: string, messageId: string } }`
+- `"assistant.message"` → `{ data: { content: string, messageId: string } }`
 - `"session.idle"` → session finished processing
+- `"session.error"` → `{ data: { message: string } }`
 
 **`ResumeSessionConfig`**: Same as `SessionConfig` minus `sessionId`. Resumes by ID, preserving conversation history.
 

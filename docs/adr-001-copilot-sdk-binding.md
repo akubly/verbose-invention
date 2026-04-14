@@ -19,7 +19,7 @@ interface CopilotSessionFactory {
 }
 ```
 
-The relay streams string chunks from `session.send()` with throttled Telegram edits. A `StubCopilotSessionFactory` is wired in as a placeholder. We need to bind this to the real `@github/copilot-sdk`.
+The relay streams string chunks from `session.send()` with throttled Telegram edits. The real `CopilotClientImpl` is wired in via `src/main.ts` (bound to the `@github/copilot-sdk`).
 
 Sessions are created lazily: the `/new` command only registers a topic→sessionName mapping in the registry. The actual SDK session is created on the first relay (message forwarded to Copilot), using `factory.resume()` with a fallback to `factory.create()`.
 
@@ -112,115 +112,23 @@ export function defineTool(...): Tool;                      // custom tool helpe
 
 ## Implementation Plan
 
-### 1. Adapter Class (`src/copilot/impl.ts`)
+### 1. Session Adapter & Factory (`src/copilot/impl.ts`)
 
-```ts
-import { CopilotClient as SdkClient, approveAll } from '@github/copilot-sdk';
-import type { CopilotSession, CopilotSessionFactory } from './factory.js';
+The implementation uses three key patterns:
 
-export class CopilotSessionFactoryImpl implements CopilotSessionFactory {
-  private sdk: SdkClient;
-  private started = false;
+**Startup memoization:** The `CopilotClientImpl` memoizes the startup promise in `startPromise` (not a boolean flag). If startup fails, the promise is cleared so retry is possible.
 
-  constructor(private model = 'claude-sonnet-4') {}
+**Session metadata check:** On `resume()`, the factory calls `getSessionMetadata(sessionName)` to verify the session exists before attempting to resume. This mirrors SDK semantics (a missing session returns `null`, not an error).
 
-  private async ensureStarted(): Promise<void> {
-    if (!this.started) {
-      this.sdk = new SdkClient();
-      await this.sdk.start();
-      this.started = true;
-    }
-  }
+**Async generator bridge:** `CopilotSessionAdapter.send()` returns an async generator that bridges SDK events into `AsyncIterable<string>`. Key details:
+- Events are queued as `{ kind, value }` items until consumed
+- Serialization lock (`sendQueue` promise chain) ensures only one `send()` is active at a time; this prevents race conditions in event subscription
+- Lock is acquired inside the generator body (at first `next()`) not before, so unresumed generators don't deadlock
+- `Promise.race` combines event notification with a stream timeout; if no events arrive for 5 minutes, the generator throws
+- All listeners are unsubscribed in `finally` to prevent leaks
+- `send()` is fire-and-forget; errors are caught and queued
 
-  async resume(sessionName: string): Promise<CopilotSession | null> {
-    await this.ensureStarted();
-    // Check if the session exists before attempting resume
-    const sessions = await this.sdk.listSessions();
-    const exists = sessions.some((s) => s.sessionId === sessionName);
-    if (!exists) return null;
-
-    const sdkSession = await this.sdk.resumeSession(sessionName, {
-      model: this.model,
-      streaming: true,
-      onPermissionRequest: approveAll,
-    });
-    return new CopilotSessionAdapter(sdkSession);
-  }
-
-  async create(sessionName: string): Promise<CopilotSession> {
-    await this.ensureStarted();
-    const sdkSession = await this.sdk.createSession({
-      sessionId: sessionName,
-      model: this.model,
-      streaming: true,
-      onPermissionRequest: approveAll,
-    });
-    return new CopilotSessionAdapter(sdkSession);
-  }
-}
-```
-
-### 2. Session Adapter (event → AsyncIterable bridge)
-
-```ts
-import { CopilotSession as SdkSession } from '@github/copilot-sdk';
-
-class CopilotSessionAdapter implements CopilotSession {
-  constructor(private sdk: SdkSession) {}
-
-  async *send(message: string): AsyncIterable<string> {
-    // Create a channel: SDK events push into it, async generator pulls from it
-    const chunks: string[] = [];
-    let resolve: (() => void) | null = null;
-    let done = false;
-    let error: Error | null = null;
-
-    const unsubDelta = this.sdk.on('assistant.message_delta', (event) => {
-      chunks.push(event.data.deltaContent);
-      resolve?.();
-    });
-
-    const unsubIdle = this.sdk.on('session.idle', () => {
-      done = true;
-      resolve?.();
-    });
-
-    const unsubError = this.sdk.on('session.error', (event) => {
-      error = new Error(event.data?.message ?? 'SDK session error');
-      done = true;
-      resolve?.();
-    });
-
-    try {
-      await this.sdk.send({ prompt: message });
-
-      while (!done || chunks.length > 0) {
-        if (chunks.length > 0) {
-          yield chunks.shift()!;
-        } else if (!done) {
-          await new Promise<void>((r) => { resolve = r; });
-          resolve = null;
-        }
-      }
-
-      if (error) throw error;
-    } finally {
-      unsubDelta();
-      unsubIdle();
-      unsubError();
-    }
-  }
-}
-```
-
-### 3. Wiring (`src/main.ts` DI root)
-
-```ts
-import { CopilotSessionFactoryImpl } from './copilot/impl.js';
-
-const factory = new CopilotSessionFactoryImpl(process.env.REACH_MODEL ?? 'claude-sonnet-4');
-// Inject into relay: new Relay(registry, factory)
-```
+**Wiring:** `src/main.ts` instantiates `CopilotClientImpl(model)` and passes it to the relay. The factory starts the SDK lazily on first `resume()`/`create()` call.
 
 ### 4. Session Name as Session ID
 

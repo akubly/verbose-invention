@@ -99,7 +99,7 @@ Noble Six's impl was flagged by review panel. As independent author, applied six
 Kat (Bot Dev) made two P0/P1 changes affecting bot creation and handler flow:
 
 1. **TELEGRAM_CHAT_ID now required** — `main.ts` fails immediately if unset. `createBot()` signature changed to require `allowedChatId: number` (no longer optional). The chat guard middleware is now unconditional, preventing accidental responses to unintended groups.
-2. **/help command added** — New handler in `src/bot/handlers.ts` lists available commands and links to README. Improves mobile discoverability (user can type `/help` to see what commands exist).
+2. **/help command added** — New handler in `src/bot/handlers.ts` replies with a list of available commands. Improves mobile discoverability (user can type `/help` to see what commands exist).
 
 **Impact on Relay:** None — relay code remains unchanged. Handlers API unchanged; new `/help` is additive. Only the bot factory signature changed (requires `allowedChatId` now).
 

@@ -84,12 +84,28 @@ describe('Service installer', () => {
       expect(mockSvcInstall).not.toHaveBeenCalled();
     });
 
-    it('logs a warning but continues when .env file is missing', () => {
-      // First call: existsSync(scriptPath) → true
-      // Second call: existsSync(envPath) → false
+    it('exits with error when .env file is missing and env vars are not set', () => {
       mockExistsSync
         .mockReturnValueOnce(true)   // script exists
         .mockReturnValueOnce(false); // .env missing
+
+      delete process.env.TELEGRAM_BOT_TOKEN;
+      delete process.env.TELEGRAM_CHAT_ID;
+
+      expect(() => install()).toThrow('process.exit(1)');
+      expect(mockConsoleError).toHaveBeenCalledWith(
+        expect.stringContaining('required env vars are not set'),
+      );
+      expect(mockSvcInstall).not.toHaveBeenCalled();
+    });
+
+    it('warns but continues when .env is missing but env vars are set', () => {
+      mockExistsSync
+        .mockReturnValueOnce(true)   // script exists
+        .mockReturnValueOnce(false); // .env missing
+
+      process.env.TELEGRAM_BOT_TOKEN = 'test-token';
+      process.env.TELEGRAM_CHAT_ID = '12345';
 
       install();
 
@@ -97,6 +113,9 @@ describe('Service installer', () => {
         expect.stringContaining('WARNING'),
       );
       expect(mockSvcInstall).toHaveBeenCalledOnce();
+
+      delete process.env.TELEGRAM_BOT_TOKEN;
+      delete process.env.TELEGRAM_CHAT_ID;
     });
 
     it('exits 0 when alreadyinstalled event fires', () => {

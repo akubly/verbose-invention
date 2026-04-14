@@ -137,7 +137,7 @@ Implemented `src/service/install.ts` — a CLI tool for registering/unregisterin
 **Key design choices:**
 
 1. **Service configuration** — name: "Reach", description: "Telegram ↔ GitHub Copilot CLI session bridge", script: `dist/main.js`, auto-restart enabled via node-windows defaults (maxRestarts: 3, wait: 1s, grow: 0.25).
-2. **Working directory set explicitly** — `workingDirectory: path.resolve(__dirname, '..')` points to `dist/`, ensuring dotenv loads `.env` from project root.
+2. **Working directory set explicitly** — `workingDirectory: path.resolve(__dirname, '..', '..')` points to the project root, ensuring the service can access `.env` and registry files from the project directory.
 3. **Pre-install validation** — checks `dist/main.js` exists before attempting installation; exits with helpful message if not found.
 4. **Error handling** — listens for `alreadyinstalled`, `error`, and `alreadyuninstalled` events; provides admin privilege hints when permission errors occur.
 5. **Event-driven flow** — `install` → `start` on success; uninstall cleans up and exits gracefully.

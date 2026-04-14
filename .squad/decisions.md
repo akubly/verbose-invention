@@ -242,8 +242,7 @@ Made `TELEGRAM_CHAT_ID` **required** (was optional):
 #### /help Command (Kat)
 
 Added `/help` command to `src/bot/handlers.ts`:
-- Lists available commands: `/new <name>`, `/list`, `/remove <name>`, `/help`
-- Provides link to documentation
+- Lists available commands: `/new <name>`, `/list`, `/remove`, `/help`
 - Improves mobile discoverability
 
 #### Test Coverage (Jun)

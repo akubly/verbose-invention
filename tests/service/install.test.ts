@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 
 // ─── Mock node-windows ───────────────────────────────────────────────────────
 
@@ -34,23 +34,29 @@ vi.mock('fs', async (importOriginal) => {
   return { ...actual, existsSync: (...args: any[]) => mockExistsSync(...args) };
 });
 
-// ─── Mock process.exit ───────────────────────────────────────────────────────
+// ─── Spy declarations (initialized in beforeAll) ────────────────────────────
 
-const mockExit = vi.spyOn(process, 'exit').mockImplementation((code?: number) => {
-  throw new Error(`process.exit(${code})`);
-});
-
-const mockConsoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
-const mockConsoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
-const mockConsoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+let mockExit: ReturnType<typeof vi.spyOn<typeof process, 'exit'>>;
+let mockConsoleLog: ReturnType<typeof vi.spyOn<typeof console, 'log'>>;
+let mockConsoleError: ReturnType<typeof vi.spyOn<typeof console, 'error'>>;
+let mockConsoleWarn: ReturnType<typeof vi.spyOn<typeof console, 'warn'>>;
 
 // ─── Import the REAL module under test ───────────────────────────────────────
 
-import { install, uninstall, createService } from '../../src/service/install.js';
+import { install, uninstall, createService, main } from '../../src/service/install.js';
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('Service installer', () => {
+  beforeAll(() => {
+    mockExit = vi.spyOn(process, 'exit').mockImplementation((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    });
+    mockConsoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
+    mockConsoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockConsoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     constructedConfig = undefined;
@@ -60,6 +66,10 @@ describe('Service installer', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterAll(() => {
+    vi.restoreAllMocks();
   });
 
   // ── install() ─────────────────────────────────────────────────────────────
@@ -151,6 +161,56 @@ describe('Service installer', () => {
       expect(constructedConfig!.name).toBe('Reach');
       expect(constructedConfig!.script).toMatch(/main\.js$/);
       expect(constructedConfig!.workingDirectory).toBeDefined();
+    });
+  });
+
+  // ── main() ──────────────────────────────────────────────────────────────
+
+  describe('main()', () => {
+    let originalArgv: string[];
+
+    beforeEach(() => {
+      originalArgv = process.argv;
+    });
+
+    afterEach(() => {
+      process.argv = originalArgv;
+    });
+
+    it('exits with error when no command is provided', () => {
+      process.argv = ['node', 'install.js'];
+
+      expect(() => main()).toThrow('process.exit(1)');
+      expect(mockExit).toHaveBeenCalledWith(1);
+      expect(mockConsoleError).toHaveBeenCalledWith(
+        expect.stringContaining('Usage'),
+      );
+    });
+
+    it('exits with error when an unknown command is provided', () => {
+      process.argv = ['node', 'install.js', 'restart'];
+
+      expect(() => main()).toThrow('process.exit(1)');
+      expect(mockExit).toHaveBeenCalledWith(1);
+      expect(mockConsoleError).toHaveBeenCalledWith(
+        expect.stringContaining('Usage'),
+      );
+    });
+
+    it('calls install() when command is "install"', () => {
+      process.argv = ['node', 'install.js', 'install'];
+
+      main();
+
+      expect(mockSvcInstall).toHaveBeenCalledOnce();
+    });
+
+    it('calls uninstall() when command is "uninstall"', () => {
+      process.argv = ['node', 'install.js', 'uninstall'];
+
+      main();
+
+      expect(mockSvcUninstall).toHaveBeenCalledOnce();
     });
   });
 });

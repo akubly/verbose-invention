@@ -153,7 +153,7 @@ export function uninstall(): void {
   svc.uninstall();
 }
 
-function main(): void {
+export function main(): void {
   const args = process.argv.slice(2);
   const command = args[0];
 

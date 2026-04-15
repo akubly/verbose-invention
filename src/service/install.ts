@@ -27,14 +27,33 @@ function getProjectRoot(): string {
   return path.resolve(__dirname, '..', '..');
 }
 
-export function createService(): any {
+export interface CreateServiceOptions {
+  /** Embed secrets from process.env into the service config (used when no .env file exists). */
+  embedEnv?: boolean;
+}
+
+export function createService(options: CreateServiceOptions = {}): any {
   const scriptPath = getScriptPath();
   const workingDirectory = getProjectRoot();
+  const { embedEnv = false } = options;
 
-  // node-windows defaults to Local System (highest privilege).
-  // Reach only needs network access + file I/O, so NetworkService would suffice.
-  // To change: set logOnAs in the config below, or reconfigure via services.msc.
-  // Keeping Local System for now — simpler setup for a personal single-user tool.
+  const env: Array<{ name: string; value: string }> = [
+    { name: 'NODE_ENV', value: 'production' },
+  ];
+
+  // Only embed secrets when .env is absent — otherwise main.ts loads them
+  // from .env at runtime via dotenv, so changes take effect without reinstalling.
+  if (embedEnv) {
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+      env.push({ name: 'TELEGRAM_BOT_TOKEN', value: process.env.TELEGRAM_BOT_TOKEN });
+    }
+    if (process.env.TELEGRAM_CHAT_ID) {
+      env.push({ name: 'TELEGRAM_CHAT_ID', value: process.env.TELEGRAM_CHAT_ID });
+    }
+    if (process.env.REACH_MODEL) {
+      env.push({ name: 'REACH_MODEL', value: process.env.REACH_MODEL });
+    }
+  }
 
   const svc = new Service({
     name: 'Reach',
@@ -42,18 +61,9 @@ export function createService(): any {
     script: scriptPath,
     nodeOptions: ['--enable-source-maps'],
     workingDirectory: workingDirectory,
-    env: [
-      { name: 'NODE_ENV', value: 'production' },
-      ...(process.env.TELEGRAM_BOT_TOKEN
-        ? [{ name: 'TELEGRAM_BOT_TOKEN', value: process.env.TELEGRAM_BOT_TOKEN }]
-        : []),
-      ...(process.env.TELEGRAM_CHAT_ID
-        ? [{ name: 'TELEGRAM_CHAT_ID', value: process.env.TELEGRAM_CHAT_ID }]
-        : []),
-      ...(process.env.REACH_MODEL
-        ? [{ name: 'REACH_MODEL', value: process.env.REACH_MODEL }]
-        : []),
-    ]
+    env,
+    logOnAs: { domain: 'NT AUTHORITY', account: 'NetworkService' },
+    allowServiceLogon: true,
   });
 
   return svc;
@@ -86,7 +96,7 @@ export function install(): void {
     console.warn('[reach] Proceeding because both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set in the environment.');
   }
 
-  const svc = createService();
+  const svc = createService({ embedEnv: !hasEnvFile });
 
   svc.on('install', () => {
     console.log('[reach] Service installed successfully.');
@@ -101,11 +111,13 @@ export function install(): void {
     console.log('[reach]   NET START Reach');
     console.log('[reach]   NET STOP Reach');
     console.log('[reach]');
-    console.log('[reach] Required env vars: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID');
-    console.log('[reach] Optional env var:  REACH_MODEL (default: claude-sonnet-4)');
-    console.log('[reach]');
-    console.log('[reach] NOTE: Service runs as Local System. If you prefer reduced privileges,');
-    console.log('[reach]       change the logon account to NetworkService via services.msc.');
+    if (hasEnvFile) {
+      console.log('[reach] Config: reading from .env at runtime (edit .env without reinstalling).');
+    } else {
+      console.log('[reach] Config: env vars embedded at install time (reinstall to change).');
+    }
+    console.log('[reach] Required: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID');
+    console.log('[reach] Optional: REACH_MODEL (default: claude-sonnet-4)');
     process.exit(0);
   });
 

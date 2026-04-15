@@ -43,7 +43,7 @@ let mockConsoleWarn: ReturnType<typeof vi.spyOn<typeof console, 'warn'>>;
 
 // ─── Import the REAL module under test ───────────────────────────────────────
 
-import { install, uninstall, createService, main } from '../../src/service/install.js';
+import { install, uninstall, createService, main, type CreateServiceOptions } from '../../src/service/install.js';
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -57,7 +57,14 @@ describe('Service installer', () => {
     mockConsoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   });
 
+  let savedEnv: Record<string, string | undefined>;
+
   beforeEach(() => {
+    savedEnv = {
+      TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
+      TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID,
+      REACH_MODEL: process.env.REACH_MODEL,
+    };
     vi.clearAllMocks();
     constructedConfig = undefined;
     eventHandlers.clear();
@@ -65,6 +72,10 @@ describe('Service installer', () => {
   });
 
   afterEach(() => {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     vi.clearAllMocks();
   });
 
@@ -122,8 +133,6 @@ describe('Service installer', () => {
         expect.stringContaining('required env vars are not set'),
       );
       expect(mockSvcInstall).not.toHaveBeenCalled();
-
-      delete process.env.TELEGRAM_BOT_TOKEN;
     });
 
     it('exits with error when .env is missing and only TELEGRAM_CHAT_ID is set', () => {
@@ -139,8 +148,6 @@ describe('Service installer', () => {
         expect.stringContaining('required env vars are not set'),
       );
       expect(mockSvcInstall).not.toHaveBeenCalled();
-
-      delete process.env.TELEGRAM_CHAT_ID;
     });
 
     it('warns but continues when .env is missing but env vars are set', () => {
@@ -157,9 +164,6 @@ describe('Service installer', () => {
         expect.stringContaining('WARNING'),
       );
       expect(mockSvcInstall).toHaveBeenCalledOnce();
-
-      delete process.env.TELEGRAM_BOT_TOKEN;
-      delete process.env.TELEGRAM_CHAT_ID;
     });
 
     it('exits 0 when alreadyinstalled event fires', () => {
@@ -195,6 +199,52 @@ describe('Service installer', () => {
       expect(constructedConfig!.name).toBe('Reach');
       expect(constructedConfig!.script).toMatch(/main\.js$/);
       expect(constructedConfig!.workingDirectory).toBeDefined();
+    });
+
+    it('runs as NetworkService via logOnAs', () => {
+      createService();
+
+      expect(constructedConfig!.logOnAs).toEqual({
+        domain: 'NT AUTHORITY',
+        account: 'NetworkService',
+      });
+      expect(constructedConfig!.allowServiceLogon).toBe(true);
+    });
+
+    it('does not embed secrets when embedEnv is false (default)', () => {
+      process.env.TELEGRAM_BOT_TOKEN = 'tok';
+      process.env.TELEGRAM_CHAT_ID = '999';
+      process.env.REACH_MODEL = 'gpt-4';
+
+      createService();
+
+      const envNames = constructedConfig!.env.map((e: any) => e.name);
+      expect(envNames).toContain('NODE_ENV');
+      expect(envNames).not.toContain('TELEGRAM_BOT_TOKEN');
+      expect(envNames).not.toContain('TELEGRAM_CHAT_ID');
+      expect(envNames).not.toContain('REACH_MODEL');
+
+      delete process.env.TELEGRAM_BOT_TOKEN;
+      delete process.env.TELEGRAM_CHAT_ID;
+      delete process.env.REACH_MODEL;
+    });
+
+    it('embeds secrets when embedEnv is true', () => {
+      process.env.TELEGRAM_BOT_TOKEN = 'tok';
+      process.env.TELEGRAM_CHAT_ID = '999';
+      process.env.REACH_MODEL = 'gpt-4';
+
+      createService({ embedEnv: true });
+
+      const envNames = constructedConfig!.env.map((e: any) => e.name);
+      expect(envNames).toContain('NODE_ENV');
+      expect(envNames).toContain('TELEGRAM_BOT_TOKEN');
+      expect(envNames).toContain('TELEGRAM_CHAT_ID');
+      expect(envNames).toContain('REACH_MODEL');
+
+      delete process.env.TELEGRAM_BOT_TOKEN;
+      delete process.env.TELEGRAM_CHAT_ID;
+      delete process.env.REACH_MODEL;
     });
   });
 

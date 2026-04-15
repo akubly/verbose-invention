@@ -278,7 +278,7 @@ Changed `alreadyinstalled` from exit code 1 to exit code 0. Already-installed is
 
 #### Local System Account
 
-Kept Local System as the default logon account. Added documentation comment suggesting NetworkService via services.msc for greater security, but a personal single-user tool doesn't warrant setup complexity at install time.
+Changed the default logon account to NetworkService via `logOnAs: { domain: 'NT AUTHORITY', account: 'NetworkService' }`. Provides better security isolation than Local System without imposing setup complexity at install time.
 
 #### ts-expect-error Rationale
 

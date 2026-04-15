@@ -74,16 +74,16 @@ export function install(): void {
   const hasToken = !!process.env.TELEGRAM_BOT_TOKEN;
   const hasChatId = !!process.env.TELEGRAM_CHAT_ID;
 
-  if (!hasEnvFile && !hasToken && !hasChatId) {
+  if (!hasEnvFile && (!hasToken || !hasChatId)) {
     console.error(`[reach] ERROR: No .env file found at ${envPath} and required env vars are not set.`);
-    console.error('[reach] The service requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to run.');
-    console.error('[reach] Either create a .env file at the project root or export the env vars before installing.');
+    console.error('[reach] The service requires both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to run.');
+    console.error('[reach] Either create a .env file at the project root or export both env vars before installing.');
     process.exit(1);
   }
 
   if (!hasEnvFile) {
     console.warn(`[reach] WARNING: No .env file found at ${envPath}`);
-    console.warn('[reach] Proceeding because TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are set in the environment.');
+    console.warn('[reach] Proceeding because both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set in the environment.');
   }
 
   const svc = createService();

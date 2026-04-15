@@ -109,6 +109,40 @@ describe('Service installer', () => {
       expect(mockSvcInstall).not.toHaveBeenCalled();
     });
 
+    it('exits with error when .env is missing and only TELEGRAM_BOT_TOKEN is set', () => {
+      mockExistsSync
+        .mockReturnValueOnce(true)   // script exists
+        .mockReturnValueOnce(false); // .env missing
+
+      process.env.TELEGRAM_BOT_TOKEN = 'test-token';
+      delete process.env.TELEGRAM_CHAT_ID;
+
+      expect(() => install()).toThrow('process.exit(1)');
+      expect(mockConsoleError).toHaveBeenCalledWith(
+        expect.stringContaining('required env vars are not set'),
+      );
+      expect(mockSvcInstall).not.toHaveBeenCalled();
+
+      delete process.env.TELEGRAM_BOT_TOKEN;
+    });
+
+    it('exits with error when .env is missing and only TELEGRAM_CHAT_ID is set', () => {
+      mockExistsSync
+        .mockReturnValueOnce(true)   // script exists
+        .mockReturnValueOnce(false); // .env missing
+
+      delete process.env.TELEGRAM_BOT_TOKEN;
+      process.env.TELEGRAM_CHAT_ID = '12345';
+
+      expect(() => install()).toThrow('process.exit(1)');
+      expect(mockConsoleError).toHaveBeenCalledWith(
+        expect.stringContaining('required env vars are not set'),
+      );
+      expect(mockSvcInstall).not.toHaveBeenCalled();
+
+      delete process.env.TELEGRAM_CHAT_ID;
+    });
+
     it('warns but continues when .env is missing but env vars are set', () => {
       mockExistsSync
         .mockReturnValueOnce(true)   // script exists

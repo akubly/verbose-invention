@@ -402,6 +402,7 @@ describe('registerHandlers', () => {
       const ctx = makeMockCtx();
       await handler(ctx);
 
+      expect(ctx.reply).toHaveBeenCalledOnce();
       const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
       expect(replyText).toContain('/new');
       expect(replyText).toContain('/list');

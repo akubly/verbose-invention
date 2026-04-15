@@ -43,7 +43,7 @@ let mockConsoleWarn: ReturnType<typeof vi.spyOn<typeof console, 'warn'>>;
 
 // ─── Import the REAL module under test ───────────────────────────────────────
 
-import { install, uninstall, createService, main, type CreateServiceOptions } from '../../src/service/install.js';
+import { install, uninstall, createService, main } from '../../src/service/install.js';
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -107,6 +107,7 @@ describe('Service installer', () => {
 
     it('exits with error when .env file is missing and env vars are not set', () => {
       mockExistsSync
+        .mockReturnValueOnce(true)   // package.json found (getProjectRoot)
         .mockReturnValueOnce(true)   // script exists
         .mockReturnValueOnce(false); // .env missing
 
@@ -122,6 +123,7 @@ describe('Service installer', () => {
 
     it('exits with error when .env is missing and only TELEGRAM_BOT_TOKEN is set', () => {
       mockExistsSync
+        .mockReturnValueOnce(true)   // package.json found (getProjectRoot)
         .mockReturnValueOnce(true)   // script exists
         .mockReturnValueOnce(false); // .env missing
 
@@ -137,6 +139,7 @@ describe('Service installer', () => {
 
     it('exits with error when .env is missing and only TELEGRAM_CHAT_ID is set', () => {
       mockExistsSync
+        .mockReturnValueOnce(true)   // package.json found (getProjectRoot)
         .mockReturnValueOnce(true)   // script exists
         .mockReturnValueOnce(false); // .env missing
 
@@ -152,6 +155,7 @@ describe('Service installer', () => {
 
     it('warns but continues when .env is missing but env vars are set', () => {
       mockExistsSync
+        .mockReturnValueOnce(true)   // package.json found (getProjectRoot)
         .mockReturnValueOnce(true)   // script exists
         .mockReturnValueOnce(false); // .env missing
 

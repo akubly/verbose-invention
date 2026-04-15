@@ -24,6 +24,14 @@ function getScriptPath(): string {
 }
 
 function getProjectRoot(): string {
+  let dir = __dirname;
+  while (dir !== path.dirname(dir)) {
+    if (fs.existsSync(path.join(dir, 'package.json'))) {
+      return dir;
+    }
+    dir = path.dirname(dir);
+  }
+  // Fallback: assume 2 levels up (best effort)
   return path.resolve(__dirname, '..', '..');
 }
 

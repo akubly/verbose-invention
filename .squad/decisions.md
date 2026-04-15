@@ -270,7 +270,7 @@ Noble Six's `src/service/install.ts` was flagged by persona review panel with 5 
 
 #### workingDirectory Handling
 
-The service no longer sets `workingDirectory` in the Service config. node-windows runs the script from the process CWD, which is correct for multi-user scenarios. Environment variables (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `REACH_MODEL`) are forwarded from the installer process environment.
+The service sets `workingDirectory` to the project root via `getProjectRoot()` in the Service config. Environment variables (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `REACH_MODEL`) are forwarded from the installer process environment.
 
 #### Exit Code Convention
 
@@ -286,7 +286,7 @@ Added clarifying comment for `@ts-expect-error` on node-windows `Service` type (
 
 #### Return Type Correction
 
-Corrected install() return type from `void` to `Promise<void>` to match async implementation.
+Confirmed install() return type is `void` (synchronous).
 
 **Verification:** All 81 tests pass.
 

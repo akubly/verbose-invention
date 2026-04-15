@@ -20,6 +20,7 @@ export interface HandlerOptions {
  *                    (the SDK session is created lazily on first relayed message)
  *   /list         — list all registered topic→session mappings
  *   /remove       — delete the session linked to the current topic
+ *   /help         — show available commands
  *
  * All other text messages in forum topics are relayed to the linked session.
  */
@@ -105,6 +106,7 @@ export function registerHandlers({ bot, registry, factory }: HandlerOptions): Re
 
   // /help — show available commands
   bot.command('help', async (ctx) => {
+    const topicId = ctx.message?.message_thread_id;
     const helpText = `Reach — Telegram ↔ Copilot CLI bridge
 
 Commands:
@@ -112,7 +114,7 @@ Commands:
 /list — Show all active sessions
 /remove — Unlink the session from this topic
 /help — Show this message`;
-    await ctx.reply(helpText);
+    await ctx.reply(helpText, topicId ? { message_thread_id: topicId } : undefined);
   });
 
   // Relay all non-command text messages in forum topics to their linked session

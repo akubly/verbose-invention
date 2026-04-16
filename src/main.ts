@@ -34,8 +34,8 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   const chatId = Number(rawChatId);
-  if (!Number.isFinite(chatId)) {
-    console.error('[reach] Fatal: TELEGRAM_CHAT_ID must be a valid number');
+  if (!Number.isInteger(chatId)) {
+    console.error('[reach] Fatal: TELEGRAM_CHAT_ID must be a valid integer');
     process.exit(1);
   }
   const model = process.env.REACH_MODEL ?? 'claude-sonnet-4';

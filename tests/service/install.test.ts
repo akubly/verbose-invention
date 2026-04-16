@@ -230,14 +230,22 @@ describe('Service installer', () => {
       expect(mockSvcInstall).toHaveBeenCalledOnce();
     });
 
-    it('does not warn when .env is missing a var but process.env has it', () => {
+    it('warns and embeds when .env is missing a var but process.env has it', () => {
       mockReadFileSync.mockReturnValue('TELEGRAM_BOT_TOKEN=abc\n');
       process.env.TELEGRAM_CHAT_ID = '999';
 
       install();
 
-      expect(mockConsoleWarn).not.toHaveBeenCalled();
+      expect(mockConsoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('embedded from the current environment'),
+      );
+      expect(mockConsoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('TELEGRAM_CHAT_ID'),
+      );
       expect(mockSvcInstall).toHaveBeenCalledOnce();
+      // The missing var should be embedded in service config
+      const envNames = constructedConfig!.env.map((e: any) => e.name);
+      expect(envNames).toContain('TELEGRAM_CHAT_ID');
     });
 
     it('exits 0 when alreadyinstalled event fires', () => {
@@ -285,7 +293,7 @@ describe('Service installer', () => {
       expect(constructedConfig!.allowServiceLogon).toBe(true);
     });
 
-    it('does not embed secrets when embedEnv is false (default)', () => {
+    it('does not embed extra env vars by default', () => {
       process.env.TELEGRAM_BOT_TOKEN = 'tok';
       process.env.TELEGRAM_CHAT_ID = '999';
       process.env.REACH_MODEL = 'gpt-4';
@@ -303,12 +311,14 @@ describe('Service installer', () => {
       delete process.env.REACH_MODEL;
     });
 
-    it('embeds secrets when embedEnv is true', () => {
-      process.env.TELEGRAM_BOT_TOKEN = 'tok';
-      process.env.TELEGRAM_CHAT_ID = '999';
-      process.env.REACH_MODEL = 'gpt-4';
-
-      createService({ embedEnv: true });
+    it('embeds provided envOverrides into service config', () => {
+      createService({
+        envOverrides: [
+          { name: 'TELEGRAM_BOT_TOKEN', value: 'tok' },
+          { name: 'TELEGRAM_CHAT_ID', value: '999' },
+          { name: 'REACH_MODEL', value: 'gpt-4' },
+        ],
+      });
 
       const envNames = constructedConfig!.env.map((e: any) => e.name);
       expect(envNames).toContain('NODE_ENV');
@@ -316,9 +326,8 @@ describe('Service installer', () => {
       expect(envNames).toContain('TELEGRAM_CHAT_ID');
       expect(envNames).toContain('REACH_MODEL');
 
-      delete process.env.TELEGRAM_BOT_TOKEN;
-      delete process.env.TELEGRAM_CHAT_ID;
-      delete process.env.REACH_MODEL;
+      const tokenEntry = constructedConfig!.env.find((e: any) => e.name === 'TELEGRAM_BOT_TOKEN');
+      expect(tokenEntry!.value).toBe('tok');
     });
   });
 

@@ -50,33 +50,28 @@ function parseEnvFile(filePath: string): Map<string, string> {
   return vars;
 }
 
-export interface CreateServiceOptions {
-  /** Embed secrets from process.env into the service config (used when no .env file exists). */
-  embedEnv?: boolean;
+/** Minimal type for the object returned by node-windows Service constructor. */
+export interface ServiceInstance {
+  on(event: string, handler: (...args: any[]) => void): void;
+  install(): void;
+  uninstall(): void;
+  start(): void;
 }
 
-export function createService(options: CreateServiceOptions = {}): any {
+export interface CreateServiceOptions {
+  /** Specific env vars to embed in the service config (e.g., vars missing from .env but available in process.env). */
+  envOverrides?: Array<{ name: string; value: string }>;
+}
+
+export function createService(options: CreateServiceOptions = {}): ServiceInstance {
   const scriptPath = getScriptPath();
   const workingDirectory = getProjectRoot();
-  const { embedEnv = false } = options;
+  const { envOverrides = [] } = options;
 
   const env: Array<{ name: string; value: string }> = [
     { name: 'NODE_ENV', value: 'production' },
+    ...envOverrides,
   ];
-
-  // Only embed secrets when .env is absent — otherwise main.ts loads them
-  // from .env at runtime via dotenv, so changes take effect without reinstalling.
-  if (embedEnv) {
-    if (process.env.TELEGRAM_BOT_TOKEN) {
-      env.push({ name: 'TELEGRAM_BOT_TOKEN', value: process.env.TELEGRAM_BOT_TOKEN });
-    }
-    if (process.env.TELEGRAM_CHAT_ID) {
-      env.push({ name: 'TELEGRAM_CHAT_ID', value: process.env.TELEGRAM_CHAT_ID });
-    }
-    if (process.env.REACH_MODEL) {
-      env.push({ name: 'REACH_MODEL', value: process.env.REACH_MODEL });
-    }
-  }
 
   const svc = new Service({
     name: 'Reach',
@@ -89,7 +84,7 @@ export function createService(options: CreateServiceOptions = {}): any {
     allowServiceLogon: true,
   });
 
-  return svc;
+  return svc as ServiceInstance;
 }
 
 export function install(): void {
@@ -114,25 +109,55 @@ export function install(): void {
     process.exit(1);
   }
 
+  const envOverrides: Array<{ name: string; value: string }> = [];
+
   if (!hasEnvFile) {
     console.warn(`[reach] WARNING: No .env file found at ${envPath}`);
     console.warn('[reach] Proceeding because both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set in the environment.');
+    // No .env — embed all available secrets from process.env
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+      envOverrides.push({ name: 'TELEGRAM_BOT_TOKEN', value: process.env.TELEGRAM_BOT_TOKEN });
+    }
+    if (process.env.TELEGRAM_CHAT_ID) {
+      envOverrides.push({ name: 'TELEGRAM_CHAT_ID', value: process.env.TELEGRAM_CHAT_ID });
+    }
+    if (process.env.REACH_MODEL) {
+      envOverrides.push({ name: 'REACH_MODEL', value: process.env.REACH_MODEL });
+    }
   } else {
+    // .env exists — embed only required vars missing from the file
     const envVars = parseEnvFile(envPath);
     const requiredKeys = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'] as const;
-    const missing = requiredKeys.filter(
-      key => !envVars.get(key) && !process.env[key],
-    );
-    if (missing.length > 0) {
+    const missingFromBoth: string[] = [];
+
+    for (const key of requiredKeys) {
+      if (!envVars.get(key)) {
+        if (process.env[key]) {
+          envOverrides.push({ name: key, value: process.env[key]! });
+        } else {
+          missingFromBoth.push(key);
+        }
+      }
+    }
+
+    if (envOverrides.length > 0) {
+      console.warn('[reach] WARNING: The following required vars are missing from .env and will be');
+      console.warn('[reach] embedded from the current environment (reinstall to change):');
+      for (const entry of envOverrides) {
+        console.warn(`[reach]   - ${entry.name}`);
+      }
+    }
+
+    if (missingFromBoth.length > 0) {
       console.warn(`[reach] WARNING: Required vars appear missing or empty in ${envPath}:`);
-      for (const key of missing) {
+      for (const key of missingFromBoth) {
         console.warn(`[reach]   - ${key}`);
       }
       console.warn('[reach] The service may fail to start without them.');
     }
   }
 
-  const svc = createService({ embedEnv: !hasEnvFile });
+  const svc = createService({ envOverrides });
 
   svc.on('install', () => {
     console.log('[reach] Service installed successfully.');
@@ -147,7 +172,10 @@ export function install(): void {
     console.log('[reach]   NET START Reach');
     console.log('[reach]   NET STOP Reach');
     console.log('[reach]');
-    if (hasEnvFile) {
+    if (hasEnvFile && envOverrides.length > 0) {
+      console.log('[reach] Config: reading from .env at runtime; some vars embedded at install time.');
+      console.log('[reach] Embedded vars require reinstall to change; .env vars do not.');
+    } else if (hasEnvFile) {
       console.log('[reach] Config: reading from .env at runtime (edit .env without reinstalling).');
     } else {
       console.log('[reach] Config: env vars embedded at install time (reinstall to change).');

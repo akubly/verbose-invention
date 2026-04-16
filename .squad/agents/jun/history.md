@@ -151,18 +151,3 @@ Exported `main()` from `src/service/install.ts` (added `export` keyword). Added 
 
 **Comment #4 — History accuracy:**
 Removed false claim that original 6 tests covered usage errors (no command / unknown command). Corrected `expect(fn).rejects.toThrow()` pattern to `expect(() => fn()).toThrow()` (synchronous, not async).
-
-### PR Review Fixes — Comments #4, #6, #8
-
-**Comment #6 — Spy leak prevention:**
-Moved `vi.spyOn(process, 'exit')`, `vi.spyOn(console, 'log/error/warn')` from module scope into `beforeAll` inside the describe block. Added `vi.restoreAllMocks()` in `afterAll` so spies are cleaned up when the test file finishes, preventing leaks if Vitest shares workers across files.
-
-**Comment #8 — `main()` CLI entrypoint coverage (4 new tests):**
-Exported `main()` from `src/service/install.ts` (added `export` keyword). Added a `main()` describe block with `process.argv` save/restore in local `beforeEach`/`afterEach`. Tests:
-- No command (`['node', 'install.js']`) → exits 1, prints Usage
-- Unknown command (`['node', 'install.js', 'restart']`) → exits 1, prints Usage
-- `install` command → calls `svc.install()` via `install()`
-- `uninstall` command → calls `svc.uninstall()` via `uninstall()`
-
-**Comment #4 — History accuracy:**
-Removed false claim that original 6 tests covered usage errors (no command / unknown command). Corrected `expect(fn).rejects.toThrow()` pattern to `expect(() => fn()).toThrow()` (synchronous, not async).

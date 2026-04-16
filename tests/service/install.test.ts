@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
+import * as path from 'path';
 
 // ─── Mock node-windows ───────────────────────────────────────────────────────
 
@@ -77,7 +78,8 @@ describe('Service installer', () => {
     mockExistsSync.mockImplementation((filePath: unknown) => {
       const p = String(filePath);
       if (p.endsWith('main.js')) return true;        // script exists
-      if (p.endsWith('package.json')) return true;   // project root found
+      // Only match project root package.json, not subdirectory ones
+      if (p.endsWith('package.json')) return p === path.join(process.cwd(), 'package.json');
       if (p.endsWith('.env')) return true;            // .env exists
       return false;
     });
@@ -111,7 +113,7 @@ describe('Service installer', () => {
       mockExistsSync.mockImplementation((filePath: unknown) => {
         const p = String(filePath);
         if (p.endsWith('main.js')) return false;       // script missing
-        if (p.endsWith('package.json')) return true;    // project root found
+        if (p.endsWith('package.json')) return p === path.join(process.cwd(), 'package.json');
         if (p.endsWith('.env')) return true;             // .env exists
         return false;
       });
@@ -128,7 +130,7 @@ describe('Service installer', () => {
       mockExistsSync.mockImplementation((filePath: unknown) => {
         const p = String(filePath);
         if (p.endsWith('main.js')) return true;        // script exists
-        if (p.endsWith('package.json')) return true;   // project root found
+        if (p.endsWith('package.json')) return p === path.join(process.cwd(), 'package.json');
         if (p.endsWith('.env')) return false;           // .env missing
         return false;
       });
@@ -147,7 +149,7 @@ describe('Service installer', () => {
       mockExistsSync.mockImplementation((filePath: unknown) => {
         const p = String(filePath);
         if (p.endsWith('main.js')) return true;        // script exists
-        if (p.endsWith('package.json')) return true;   // project root found
+        if (p.endsWith('package.json')) return p === path.join(process.cwd(), 'package.json');
         if (p.endsWith('.env')) return false;           // .env missing
         return false;
       });
@@ -166,7 +168,7 @@ describe('Service installer', () => {
       mockExistsSync.mockImplementation((filePath: unknown) => {
         const p = String(filePath);
         if (p.endsWith('main.js')) return true;        // script exists
-        if (p.endsWith('package.json')) return true;   // project root found
+        if (p.endsWith('package.json')) return p === path.join(process.cwd(), 'package.json');
         if (p.endsWith('.env')) return false;           // .env missing
         return false;
       });
@@ -185,7 +187,7 @@ describe('Service installer', () => {
       mockExistsSync.mockImplementation((filePath: unknown) => {
         const p = String(filePath);
         if (p.endsWith('main.js')) return true;        // script exists
-        if (p.endsWith('package.json')) return true;   // project root found
+        if (p.endsWith('package.json')) return p === path.join(process.cwd(), 'package.json');
         if (p.endsWith('.env')) return false;           // .env missing
         return false;
       });
@@ -280,7 +282,7 @@ describe('Service installer', () => {
       expect(constructedConfig).toBeDefined();
       expect(constructedConfig!.name).toBe('Reach');
       expect(constructedConfig!.script).toMatch(/main\.js$/);
-      expect(constructedConfig!.workingDirectory).toBeDefined();
+      expect(constructedConfig!.workingDirectory).toBe(process.cwd());
     });
 
     it('runs as NetworkService via logOnAs', () => {

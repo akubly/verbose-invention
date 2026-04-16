@@ -31,8 +31,8 @@ function getProjectRoot(): string {
     }
     dir = path.dirname(dir);
   }
-  // Fallback: getScriptPath() points at dist/main.js → two levels up is project root
-  return path.resolve(getScriptPath(), '..', '..');
+  // Fallback: getScriptPath() points at dist/main.js → dirname gives dist/, one level up is project root
+  return path.resolve(path.dirname(getScriptPath()), '..');
 }
 
 function parseEnvFile(filePath: string): Map<string, string> {
@@ -126,7 +126,14 @@ export function install(): void {
     }
   } else {
     // .env exists — embed only required vars missing from the file
-    const envVars = parseEnvFile(envPath);
+    let envVars: Map<string, string>;
+    try {
+      envVars = parseEnvFile(envPath);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`[reach] ERROR: Could not read .env file: ${message}`);
+      process.exit(1);
+    }
     const requiredKeys = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'] as const;
     const missingFromBoth: string[] = [];
 

@@ -29,9 +29,14 @@ vi.mock('node-windows', () => {
 // ─── Mock fs ─────────────────────────────────────────────────────────────────
 
 const mockExistsSync = vi.fn(() => true);
+const mockReadFileSync = vi.fn(() => 'TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_CHAT_ID=12345\n');
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
-  return { ...actual, existsSync: (...args: any[]) => mockExistsSync(...args) };
+  return {
+    ...actual,
+    existsSync: (...args: any[]) => mockExistsSync(...args),
+    readFileSync: (...args: any[]) => mockReadFileSync(...args),
+  };
 });
 
 // ─── Spy declarations (initialized in beforeAll) ────────────────────────────
@@ -68,7 +73,15 @@ describe('Service installer', () => {
     vi.clearAllMocks();
     constructedConfig = undefined;
     eventHandlers.clear();
-    mockExistsSync.mockReturnValue(true);
+    // Path-aware default: all key files exist
+    mockExistsSync.mockImplementation((filePath: unknown) => {
+      const p = String(filePath);
+      if (p.endsWith('main.js')) return true;        // script exists
+      if (p.endsWith('package.json')) return true;   // project root found
+      if (p.endsWith('.env')) return true;            // .env exists
+      return false;
+    });
+    mockReadFileSync.mockReturnValue('TELEGRAM_BOT_TOKEN=test-token\nTELEGRAM_CHAT_ID=12345\n');
   });
 
   afterEach(() => {
@@ -95,7 +108,13 @@ describe('Service installer', () => {
     });
 
     it('exits with error when dist/main.js is missing', () => {
-      mockExistsSync.mockReturnValue(false);
+      mockExistsSync.mockImplementation((filePath: unknown) => {
+        const p = String(filePath);
+        if (p.endsWith('main.js')) return false;       // script missing
+        if (p.endsWith('package.json')) return true;    // project root found
+        if (p.endsWith('.env')) return true;             // .env exists
+        return false;
+      });
 
       expect(() => install()).toThrow('process.exit(1)');
       expect(mockExit).toHaveBeenCalledWith(1);
@@ -106,10 +125,13 @@ describe('Service installer', () => {
     });
 
     it('exits with error when .env file is missing and env vars are not set', () => {
-      mockExistsSync
-        .mockReturnValueOnce(true)   // package.json found (getProjectRoot)
-        .mockReturnValueOnce(true)   // script exists
-        .mockReturnValueOnce(false); // .env missing
+      mockExistsSync.mockImplementation((filePath: unknown) => {
+        const p = String(filePath);
+        if (p.endsWith('main.js')) return true;        // script exists
+        if (p.endsWith('package.json')) return true;   // project root found
+        if (p.endsWith('.env')) return false;           // .env missing
+        return false;
+      });
 
       delete process.env.TELEGRAM_BOT_TOKEN;
       delete process.env.TELEGRAM_CHAT_ID;
@@ -122,10 +144,13 @@ describe('Service installer', () => {
     });
 
     it('exits with error when .env is missing and only TELEGRAM_BOT_TOKEN is set', () => {
-      mockExistsSync
-        .mockReturnValueOnce(true)   // package.json found (getProjectRoot)
-        .mockReturnValueOnce(true)   // script exists
-        .mockReturnValueOnce(false); // .env missing
+      mockExistsSync.mockImplementation((filePath: unknown) => {
+        const p = String(filePath);
+        if (p.endsWith('main.js')) return true;        // script exists
+        if (p.endsWith('package.json')) return true;   // project root found
+        if (p.endsWith('.env')) return false;           // .env missing
+        return false;
+      });
 
       process.env.TELEGRAM_BOT_TOKEN = 'test-token';
       delete process.env.TELEGRAM_CHAT_ID;
@@ -138,10 +163,13 @@ describe('Service installer', () => {
     });
 
     it('exits with error when .env is missing and only TELEGRAM_CHAT_ID is set', () => {
-      mockExistsSync
-        .mockReturnValueOnce(true)   // package.json found (getProjectRoot)
-        .mockReturnValueOnce(true)   // script exists
-        .mockReturnValueOnce(false); // .env missing
+      mockExistsSync.mockImplementation((filePath: unknown) => {
+        const p = String(filePath);
+        if (p.endsWith('main.js')) return true;        // script exists
+        if (p.endsWith('package.json')) return true;   // project root found
+        if (p.endsWith('.env')) return false;           // .env missing
+        return false;
+      });
 
       delete process.env.TELEGRAM_BOT_TOKEN;
       process.env.TELEGRAM_CHAT_ID = '12345';
@@ -154,10 +182,13 @@ describe('Service installer', () => {
     });
 
     it('warns but continues when .env is missing but env vars are set', () => {
-      mockExistsSync
-        .mockReturnValueOnce(true)   // package.json found (getProjectRoot)
-        .mockReturnValueOnce(true)   // script exists
-        .mockReturnValueOnce(false); // .env missing
+      mockExistsSync.mockImplementation((filePath: unknown) => {
+        const p = String(filePath);
+        if (p.endsWith('main.js')) return true;        // script exists
+        if (p.endsWith('package.json')) return true;   // project root found
+        if (p.endsWith('.env')) return false;           // .env missing
+        return false;
+      });
 
       process.env.TELEGRAM_BOT_TOKEN = 'test-token';
       process.env.TELEGRAM_CHAT_ID = '12345';
@@ -167,6 +198,45 @@ describe('Service installer', () => {
       expect(mockConsoleWarn).toHaveBeenCalledWith(
         expect.stringContaining('WARNING'),
       );
+      expect(mockSvcInstall).toHaveBeenCalledOnce();
+    });
+
+    it('warns when .env exists but is missing required vars', () => {
+      mockReadFileSync.mockReturnValue('# empty config\nREACH_MODEL=gpt-4\n');
+      delete process.env.TELEGRAM_BOT_TOKEN;
+      delete process.env.TELEGRAM_CHAT_ID;
+
+      install();
+
+      expect(mockConsoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('Required vars appear missing'),
+      );
+      expect(mockConsoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('TELEGRAM_BOT_TOKEN'),
+      );
+      expect(mockConsoleWarn).toHaveBeenCalledWith(
+        expect.stringContaining('TELEGRAM_CHAT_ID'),
+      );
+      // Still proceeds with install
+      expect(mockSvcInstall).toHaveBeenCalledOnce();
+    });
+
+    it('does not warn when .env has both required vars', () => {
+      mockReadFileSync.mockReturnValue('TELEGRAM_BOT_TOKEN=abc\nTELEGRAM_CHAT_ID=123\n');
+
+      install();
+
+      expect(mockConsoleWarn).not.toHaveBeenCalled();
+      expect(mockSvcInstall).toHaveBeenCalledOnce();
+    });
+
+    it('does not warn when .env is missing a var but process.env has it', () => {
+      mockReadFileSync.mockReturnValue('TELEGRAM_BOT_TOKEN=abc\n');
+      process.env.TELEGRAM_CHAT_ID = '999';
+
+      install();
+
+      expect(mockConsoleWarn).not.toHaveBeenCalled();
       expect(mockSvcInstall).toHaveBeenCalledOnce();
     });
 

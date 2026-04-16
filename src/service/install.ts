@@ -31,8 +31,23 @@ function getProjectRoot(): string {
     }
     dir = path.dirname(dir);
   }
-  // Fallback: assume 2 levels up (best effort)
-  return path.resolve(__dirname, '..', '..');
+  // Fallback: getScriptPath() points at dist/main.js → two levels up is project root
+  return path.resolve(getScriptPath(), '..', '..');
+}
+
+function parseEnvFile(filePath: string): Map<string, string> {
+  const vars = new Map<string, string>();
+  const content = fs.readFileSync(filePath, 'utf-8');
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eqIdx = trimmed.indexOf('=');
+    if (eqIdx === -1) continue;
+    const key = trimmed.slice(0, eqIdx).trim();
+    const value = trimmed.slice(eqIdx + 1).trim();
+    vars.set(key, value);
+  }
+  return vars;
 }
 
 export interface CreateServiceOptions {
@@ -102,6 +117,19 @@ export function install(): void {
   if (!hasEnvFile) {
     console.warn(`[reach] WARNING: No .env file found at ${envPath}`);
     console.warn('[reach] Proceeding because both TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set in the environment.');
+  } else {
+    const envVars = parseEnvFile(envPath);
+    const requiredKeys = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'] as const;
+    const missing = requiredKeys.filter(
+      key => !envVars.get(key) && !process.env[key],
+    );
+    if (missing.length > 0) {
+      console.warn(`[reach] WARNING: Required vars appear missing or empty in ${envPath}:`);
+      for (const key of missing) {
+        console.warn(`[reach]   - ${key}`);
+      }
+      console.warn('[reach] The service may fail to start without them.');
+    }
   }
 
   const svc = createService({ embedEnv: !hasEnvFile });

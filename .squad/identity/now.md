@@ -1,13 +1,24 @@
 ---
-updated_at: 2026-04-12T06:02:11Z
-focus_area: Project kickoff — Reach scaffold
+updated_at: 2026-04-14T04:40:00Z
+focus_area: Phase 2 — Go Live
 active_issues: []
 ---
 
 # What We're Focused On
 
-**Project Kickoff: Reach**
+**Phase 2: Go Live**
 
-Reach is a TypeScript daemon that bridges Telegram to GitHub Copilot CLI sessions on a personal Windows machine. It runs as an external background process using `@github/copilot-sdk` to create, resume, and relay messages to named Copilot sessions. Users interact via Telegram forum topics (one topic = one session/repo).
+PR #1 (core bridge layer) merged. Phase 2 goal: Aaron can install Reach as a Windows Service and control Copilot from his phone.
 
-**Current sprint:** Initial scaffold — TypeScript project structure, grammY wiring, session registry design, test harness.
+**Completed P0 items:**
+- Windows Service installer (`src/service/install.ts`) — Noble Six
+- TELEGRAM_CHAT_ID required — Kat
+- /help command — Kat
+- Session name validation (already in PR #1) — Carter
+- 81 tests passing across 6 files — Jun
+
+**Remaining:**
+- README & setup guide (P0 — next)
+- SDK crash auto-recovery (P1)
+- Per-session model override (P1 — Aaron chose global default + per-session override)
+- HUD footer, permissions, pairing codes (P2 — deferred)

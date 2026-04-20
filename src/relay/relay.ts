@@ -43,7 +43,7 @@ export class Relay {
 
     if (!session) {
       try {
-        session = await this.factory.resume(entry.sessionName) ?? await this.factory.create(entry.sessionName);
+        session = await this.factory.resume(entry.sessionName, entry.model) ?? await this.factory.create(entry.sessionName, entry.model);
         this.activeSessions.set(topicId, { sessionName: entry.sessionName, session });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

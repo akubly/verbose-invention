@@ -151,3 +151,38 @@ Exported `main()` from `src/service/install.ts` (added `export` keyword). Added 
 
 **Comment #4 — History accuracy:**
 Removed false claim that original 6 tests covered usage errors (no command / unknown command). Corrected `expect(fn).rejects.toThrow()` pattern to `expect(() => fn()).toThrow()` (synchronous, not async).
+
+### 2026-04-14 — Phase 3: TDD Tests for Per-Session Model Override
+
+Wrote 13 TDD tests defining the contract for per-session model override feature (other agents implementing in parallel). 
+
+**Test additions:**
+1. **Registry tests** (4 new tests in `tests/sessions/registry.test.ts`):
+   - `register() with model persists model in entry` — validates model field is stored
+   - `register() without model does not include model field` — backward compatibility
+   - `load() reads back model from persisted data` — persistence round-trip
+   - `load() handles legacy entries without model field` — legacy data compatibility
+   - All 4 tests **PASSED** ✓ (registry already has model support)
+
+2. **Relay tests** (3 new tests in `tests/relay/relay.test.ts`):
+   - `relay passes entry.model to factory.create()` — model passed to create
+   - `relay passes entry.model to factory.resume()` — model passed to resume
+   - `relay passes undefined model when entry has no model` — backward compatibility
+   - All 3 tests **PASSED** ✓ (relay already passes model parameter)
+
+3. **Handler tests** (6 new tests in `tests/bot/handlers.test.ts`):
+   - `/new name --model claude-opus-4.5 registers with model` — flag parsing
+   - `/new name registers without model (backward compat)` — default behavior
+   - `/new name --model (no value) shows error` — validation
+   - `/new name --model with spaces in model name` — model name handling
+   - `/list shows model when set` — display model in list output
+   - `/help includes --model flag documentation` — help text update
+   - All 6 tests **FAILED** ⏳ (waiting for handler implementation)
+
+**Test count:** 107 total (101 passed, 6 waiting for implementation). All failures are expected TDD failures.
+
+**TDD observations:**
+- Registry and relay already had model support from other agents' work — tests passed immediately
+- Handler tests define the UX contract: flag parsing (`--model <model>`), error messages, help text
+- Mock factory pattern updated to accept model parameter (comment-only change for now)
+- SessionEntry interface already had `model?: string` field from parallel work

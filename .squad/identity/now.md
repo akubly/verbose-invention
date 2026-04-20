@@ -1,24 +1,23 @@
 ---
-updated_at: 2026-04-14T04:40:00Z
-focus_area: Phase 2 — Go Live
+updated_at: 2026-04-20T09:40:00Z
+focus_area: Phase 3 — Complete Feature Set
 active_issues: []
 ---
 
 # What We're Focused On
 
-**Phase 2: Go Live**
+**Phase 3: Complete Feature Set**
 
-PR #1 (core bridge layer) merged. Phase 2 goal: Aaron can install Reach as a Windows Service and control Copilot from his phone.
+PR #2 (Phase 2 Go Live) merged. Phase 3 combines all remaining work.
 
-**Completed P0 items:**
-- Windows Service installer (`src/service/install.ts`) — Noble Six
-- TELEGRAM_CHAT_ID required — Kat
-- /help command — Kat
-- Session name validation (already in PR #1) — Carter
-- 81 tests passing across 6 files — Jun
+**Completed (Wave 1):**
+- README.md & setup guide — Kat ✅
+- Per-session model override (`/new <name> --model <model>`) — Noble Six + Carter + Kat ✅
+- Per-session model tests (13 new, 107 total) — Jun ✅
+- Architecture designs for P1/P2 features — Noble Six ✅
 
-**Remaining:**
-- README & setup guide (P0 — next)
-- SDK crash auto-recovery (P1)
-- Per-session model override (P1 — Aaron chose global default + per-session override)
-- HUD footer, permissions, pairing codes (P2 — deferred)
+**Ready for implementation (pending Aaron's review):**
+- SDK crash auto-recovery (P1) — error-triggered restart with backoff (~40 LOC)
+- HUD footer (P2) — session name + model in reply footer (~20 LOC)
+- Two-tier permissions (P2) — configurable policy via env var (~30 LOC)
+- Pairing codes (P2) — one-time 6-digit code on startup (~100 LOC)

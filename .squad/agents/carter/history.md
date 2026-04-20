@@ -116,3 +116,23 @@ Noble Six's `src/service/install.ts` was flagged by persona review. As independe
 5. **F7 MINOR — return type** — Changed `createService()` return type from `typeof Service.prototype` to `any`.
 
 **Verification:** TypeScript compiles clean. All 81 tests pass.
+
+### 2026-04-14 — Phase 3: Per-Session Model Override (Registry + Relay)
+
+Updated registry and relay to support per-session model overrides:
+
+**Registry changes** (`src/sessions/registry.ts`):
+- `ISessionRegistry.register()` signature extended with `model?: string` parameter
+- `SessionRegistry.register()` now accepts `model` and includes it in the `SessionEntry` only when specified using conditional spread: `...(model !== undefined && { model })`
+- Backward compatible — existing registry files without `model` fields load correctly
+
+**Relay changes** (`src/relay/relay.ts`):
+- Factory calls updated to pass `entry.model` as second parameter: `factory.resume(entry.sessionName, entry.model)` and `factory.create(entry.sessionName, entry.model)`
+- When `entry.model` is `undefined` (no per-session override), the factory falls back to the global `REACH_MODEL` env var internally
+
+**Test updates** (`tests/relay/relay.test.ts`):
+- Updated two test expectations to include the new `model` parameter (`undefined` in those cases)
+
+**Pattern:** Optional field inclusion strategy — using conditional spread to avoid writing `undefined` to JSON. Keeps registry files clean and backward compatible.
+
+**Verification:** TypeScript compiles clean. All relay and registry tests pass (37 tests). Handler tests fail (expected — Kat needs to update `/new` command parser).

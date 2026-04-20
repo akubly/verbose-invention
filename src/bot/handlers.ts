@@ -27,7 +27,7 @@ export interface HandlerOptions {
 export function registerHandlers({ bot, registry, factory }: HandlerOptions): Relay {
   const relay = new Relay(registry, factory);
 
-  // /new <name> — register a topic→name mapping; SDK session is created lazily on first relay
+  // /new <name> [--model <model>] — register a topic→name mapping; SDK session is created lazily on first relay
   bot.command('new', async (ctx) => {
     const topicId = ctx.message?.message_thread_id;
     if (!topicId) {
@@ -35,10 +35,29 @@ export function registerHandlers({ bot, registry, factory }: HandlerOptions): Re
       return;
     }
 
-    const name = ctx.match?.trim();
-    if (!name) {
-      await ctx.reply('❌ Usage: /new <session-name>', { message_thread_id: topicId });
+    const input = ctx.match?.trim();
+    if (!input) {
+      await ctx.reply('❌ Usage: /new <session-name> [--model <model>]', { message_thread_id: topicId });
       return;
+    }
+
+    // Parse name and optional --model flag
+    let name = input;
+    let model: string | undefined;
+    
+    // Check for --model flag
+    if (input.includes('--model')) {
+      const modelMatch = input.match(/^(.+?)\s+--model\s+(\S+)$/);
+      if (modelMatch && modelMatch[1] && modelMatch[2]) {
+        name = modelMatch[1].trim();
+        model = modelMatch[2].trim();
+      } else {
+        // --model flag present but no value provided
+        await ctx.reply('❌ --model flag requires a model value (e.g., --model claude-opus-4.5)', {
+          message_thread_id: topicId,
+        });
+        return;
+      }
     }
 
     if (!SESSION_NAME_RE.test(name)) {
@@ -64,8 +83,9 @@ export function registerHandlers({ bot, registry, factory }: HandlerOptions): Re
         await ctx.reply('❌ Could not determine chat ID.', { message_thread_id: topicId });
         return;
       }
-      await registry.register(topicId, chatId, name);
-      await ctx.reply(`✅ Session \`${name}\` registered and linked to this topic.`, {
+      await registry.register(topicId, chatId, name, model);
+      const modelNote = model ? ` (model: ${model})` : '';
+      await ctx.reply(`✅ Session \`${name}\` registered and linked to this topic${modelNote}.`, {
         message_thread_id: topicId,
         parse_mode: 'Markdown',
       });
@@ -84,7 +104,10 @@ export function registerHandlers({ bot, registry, factory }: HandlerOptions): Re
       await ctx.reply('No sessions registered yet.');
       return;
     }
-    const lines = sessions.map((s) => `• ${s.sessionName} ← topic #${s.topicId}`);
+    const lines = sessions.map((s) => {
+      const modelNote = s.model ? ` (model: ${s.model})` : '';
+      return `• ${s.sessionName} ← topic #${s.topicId}${modelNote}`;
+    });
     await ctx.reply(lines.join('\n'));
   });
 
@@ -110,7 +133,7 @@ export function registerHandlers({ bot, registry, factory }: HandlerOptions): Re
     const helpText = `Reach — Telegram ↔ Copilot CLI bridge
 
 Commands:
-/new <name> — Create a session in this topic
+/new <name> [--model <model>] — Create a session in this topic
 /list — Show all active sessions
 /remove — Unlink the session from this topic
 /help — Show this message`;

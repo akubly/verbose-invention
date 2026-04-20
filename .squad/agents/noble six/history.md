@@ -58,6 +58,39 @@ Other open questions: registry file location (recommend `%APPDATA%\reach\registr
 
 ## Learnings
 
+### 2026-04-14 — Phase 3 Interface Changes — Per-Session Model Override
+
+Implemented the interface changes for per-session model override (already decided in `decisions.md`). Key changes:
+
+1. **`SessionEntry.model?: string`** — Added optional model field to `SessionEntry` in `src/types.ts`. Falls back to global `REACH_MODEL` if undefined.
+
+2. **`CopilotSessionFactory` signature update** — Added optional `model?: string` parameter to both `resume()` and `create()` methods in `src/copilot/factory.ts`. Updated `StubCopilotSessionFactory` stub to match.
+
+3. **`CopilotClientImpl` model override** — Updated `resume()` and `create()` in `src/copilot/impl.ts` to use `model ?? this.model` when calling SDK. Constructor `model` becomes the global default; per-call `model` param overrides it.
+
+**Verification:**
+- TypeScript compiles clean (`npx tsc --noEmit` ✅)
+- Tests: 101 passed, 6 failed. Failures are expected — Jun wrote TDD tests for Phase 3 command handler features (`/new --model`, `/list` showing model, `/help` documenting `--model`) which aren't implemented yet. The interface changes are backward-compatible and correct.
+
+**Architecture designs written** — `.squad/decisions/inbox/noble six-phase3-designs.md` covers:
+
+1. **SDK Crash Auto-Recovery (P1)** — Recommended error-triggered restart with backoff. Reactive approach (no polling). Evict sessions on SDK errors, null out `startPromise`, let next message trigger fresh SDK start. SDK session history survives (persisted to disk), so users don't lose context.
+
+2. **HUD Footer (P2)** — Recommended session name + model appended to every final message (e.g., `📎 reach-myapp · claude-sonnet-4`). Always available, minimal noise, actionable. Deferred repo/branch until SDK API is verified to expose them.
+
+3. **Two-Tier Permissions (P2)** — Recommended configurable policy via `REACH_PERMISSION_POLICY` env var. Three modes: `approveAll` (default, current behavior), `interactiveDestructive` (Telegram prompts for destructive tools), `denyAll` (read-only). Implement policy switch now, defer Telegram prompts to Phase 4.
+
+4. **Pairing Codes (P2)** — Recommended one-time 6-digit code on daemon startup. User sends `/pair <code>` in Telegram, daemon validates and persists chat ID to `config.json`. Proves ownership of both machine and group without manual chat ID lookup. Backward-compat: if `TELEGRAM_CHAT_ID` env var is set, skip pairing.
+
+**Trade-off analysis principle:** Every recommendation includes alternatives considered, trade-offs, and rationale. Named the constraints (latency, complexity, UX friction, security risk) so Aaron can override with context I lack.
+
+**File paths:**
+- Interface changes: `src/types.ts`, `src/copilot/factory.ts`, `src/copilot/impl.ts`
+- Design doc: `.squad/decisions/inbox/noble six-phase3-designs.md`
+- Test updates: `tests/relay/relay.test.ts` (updated assertions to account for optional `model` param)
+
+
+
 ### 2026-04-11 — SDK API Surface Discovery
 
 Investigated `@github/copilot-sdk` v0.2.2 (public preview). Key findings:

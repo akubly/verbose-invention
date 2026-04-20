@@ -72,3 +72,37 @@ Persona review flagged two env/main.ts items. As independent author, applied 2 f
 
 **Verification:** All 81 tests pass. No behavioral changes.
 
+### 2026-04-14 — Phase 3: README & /new --model Command
+
+Created comprehensive README.md and implemented per-session model selection:
+
+1. **README.md (P0)** — Complete setup guide at project root covering:
+   - What Reach is (one-paragraph explanation)
+   - Architecture (daemon ↔ Telegram ↔ Copilot SDK via forum topics)
+   - Prerequisites (Node.js 20+, Telegram bot token, forum-enabled supergroup, Copilot CLI access)
+   - Setup steps (clone, install, .env config, build, run/service install)
+   - Usage (/new with optional --model flag, /list, /remove, /help)
+   - Environment variables table (TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, REACH_MODEL, IDLE_TIMEOUT_MS)
+   - Windows Service details (service:install/uninstall, NetworkService account, auto-restart)
+   - Development commands (test, typecheck, build, dev watch mode)
+
+2. **/new --model flag parsing** — Updated `src/bot/handlers.ts`:
+   - Parse `--model <value>` from `/new` command input via regex
+   - Pass model as 4th parameter to `registry.register(topicId, chatId, name, model)`
+   - Success message shows model if set: `✅ Session \`name\` registered (model: claude-opus-4.5).`
+   - Error handling: `--model` with no value shows error containing "model value"
+   - Guards: check for `--model` presence first, then validate regex match and capture groups
+
+3. **/list model display** — Updated to show model when set:
+   - `• my-session ← topic #123 (model: claude-opus-4.5)`
+   - `• other-session ← topic #456` (no model note when undefined)
+
+4. **/help updated** — Command signature now shows:
+   - `/new <name> [--model <model>] — Create a session in this topic`
+
+**Test alignment:** Updated 2 existing tests to expect 4th parameter (undefined when --model not provided). Jun had already written 26 new tests for --model feature in parallel (tests/bot/handlers.test.ts).
+
+**Verification:** TypeScript compiles clean, all 107 tests pass (81 → 107, +26 for model feature).
+
+**Pattern learned:** When coordinating parallel changes (Carter updating registry, Kat updating handlers), tests act as the integration contract — Jun wrote tests expecting both changes, so when both are done, tests pass.
+

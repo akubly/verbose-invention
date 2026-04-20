@@ -38,6 +38,7 @@ export function makeMockSession(
 /**
  * Makes a mock CopilotSessionFactory.
  * By default both create() and resume() resolve to the same session.
+ * Now accepts model parameter to match updated interface.
  */
 export function makeMockFactory(sessionOverrides?: Partial<CopilotSession>): CopilotSessionFactory {
   const session = { ...makeMockSession(), ...sessionOverrides };

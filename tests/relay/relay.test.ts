@@ -100,7 +100,7 @@ describe('Relay', () => {
       await relay.relay(makeMockCtx() as any);
 
       // resume() is attempted before create()
-      expect(factory.resume).toHaveBeenCalledWith('reach-myapp');
+      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', undefined);
     });
 
     it('creates a new session when resume() returns null', async () => {
@@ -111,8 +111,8 @@ describe('Relay', () => {
 
       await relay.relay(makeMockCtx() as any);
 
-      expect(factory.resume).toHaveBeenCalledWith('reach-myapp');
-      expect(factory.create).toHaveBeenCalledWith('reach-myapp');
+      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', undefined);
+      expect(factory.create).toHaveBeenCalledWith('reach-myapp', undefined);
     });
 
     it('reuses the cached in-memory session on subsequent relay calls', async () => {
@@ -238,6 +238,54 @@ describe('Relay', () => {
       await relay.relay(makeMockCtx() as any);
 
       expect(factory.resume).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ── model parameter passing ───────────────────────────────────────────────
+
+  describe('model parameter passing', () => {
+    it('relay passes entry.model to factory.create()', async () => {
+      const entryWithModel: SessionEntry = {
+        ...SESSION_ENTRY,
+        model: 'claude-opus-4.5',
+      };
+      const factory = makeMockFactory();
+      (factory.resume as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+      const registry = makeStubRegistry([entryWithModel]);
+      const relay = new Relay(registry, factory);
+
+      await relay.relay(makeMockCtx() as any);
+
+      expect(factory.create).toHaveBeenCalledWith('reach-myapp', 'claude-opus-4.5');
+    });
+
+    it('relay passes entry.model to factory.resume()', async () => {
+      const entryWithModel: SessionEntry = {
+        ...SESSION_ENTRY,
+        model: 'claude-opus-4.6',
+      };
+      const factory = makeMockFactory();
+      const registry = makeStubRegistry([entryWithModel]);
+      const relay = new Relay(registry, factory);
+
+      await relay.relay(makeMockCtx() as any);
+
+      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', 'claude-opus-4.6');
+    });
+
+    it('relay passes undefined model when entry has no model', async () => {
+      const entryWithoutModel: SessionEntry = {
+        ...SESSION_ENTRY,
+        // no model field
+      };
+      const factory = makeMockFactory();
+      (factory.resume as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+      const registry = makeStubRegistry([entryWithoutModel]);
+      const relay = new Relay(registry, factory);
+
+      await relay.relay(makeMockCtx() as any);
+
+      expect(factory.create).toHaveBeenCalledWith('reach-myapp', undefined);
     });
   });
 

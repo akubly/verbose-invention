@@ -11,7 +11,7 @@ interface RegistryData {
 
 export interface ISessionRegistry {
   load(): Promise<void>;
-  register(topicId: number, chatId: number, sessionName: string): Promise<void>;
+  register(topicId: number, chatId: number, sessionName: string, model?: string): Promise<void>;
   resolve(telegramTopicId: number): SessionEntry | undefined;
   list(): SessionEntry[];
   remove(telegramTopicId: number): Promise<boolean>;
@@ -65,12 +65,13 @@ export class SessionRegistry implements ISessionRegistry {
     }
   }
 
-  async register(topicId: number, chatId: number, sessionName: string): Promise<void> {
+  async register(topicId: number, chatId: number, sessionName: string, model?: string): Promise<void> {
     const entry: SessionEntry = {
       sessionName,
       topicId,
       chatId,
       createdAt: new Date().toISOString(),
+      ...(model !== undefined && { model }),
     };
     this.entries.set(topicId, entry);
     await this.persist();

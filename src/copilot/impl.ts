@@ -140,13 +140,13 @@ export class CopilotClientImpl implements CopilotSessionFactory {
     return this.startPromise;
   }
 
-  async resume(sessionName: string): Promise<CopilotSession | null> {
+  async resume(sessionName: string, model?: string): Promise<CopilotSession | null> {
     await this.ensureStarted();
     const metadata = await this.sdk.getSessionMetadata(sessionName);
     if (!metadata) return null;
     try {
       const sdkSession = await this.sdk.resumeSession(sessionName, {
-        model: this.model,
+        model: model ?? this.model,
         streaming: true,
         onPermissionRequest: approveAll,
       });
@@ -159,11 +159,11 @@ export class CopilotClientImpl implements CopilotSessionFactory {
     }
   }
 
-  async create(sessionName: string): Promise<CopilotSession> {
+  async create(sessionName: string, model?: string): Promise<CopilotSession> {
     await this.ensureStarted();
     const sdkSession = await this.sdk.createSession({
       sessionId: sessionName,
-      model: this.model,
+      model: model ?? this.model,
       streaming: true,
       onPermissionRequest: approveAll,
     });

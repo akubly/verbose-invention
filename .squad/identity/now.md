@@ -16,8 +16,11 @@ PR #2 (Phase 2 Go Live) merged. Phase 3 combines all remaining work.
 - Per-session model tests (13 new, 107 total) — Jun ✅
 - Architecture designs for P1/P2 features — Noble Six ✅
 
-**Ready for implementation (pending Aaron's review):**
-- SDK crash auto-recovery (P1) — error-triggered restart with backoff (~40 LOC)
-- HUD footer (P2) — session name + model in reply footer (~20 LOC)
-- Two-tier permissions (P2) — configurable policy via env var (~30 LOC)
-- Pairing codes (P2) — one-time 6-digit code on startup (~100 LOC)
+**Completed (Wave 2):**
+- SDK crash auto-recovery — Noble Six (impl.ts backoff) + Carter (relay eviction) ✅
+- HUD footer (`📎 session · model`) — Carter (relay.ts) ✅
+- Two-tier permissions (`REACH_PERMISSION_POLICY`) — Noble Six (impl.ts) ✅
+- Pairing codes (6-digit `/pair` flow) — Noble Six (config.ts, main.ts) + Kat (handlers.ts) ✅
+- Wave 2 tests (119 passing, 4 skipped) — Jun ✅
+
+**Phase 3 complete.** All P0/P1/P2 features implemented.

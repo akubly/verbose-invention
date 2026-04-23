@@ -249,4 +249,49 @@ describe('CopilotClientImpl', () => {
       expect(chunks).toEqual(['resumed']);
     });
   });
+
+  // ── Phase 3 Wave 2 features (NOT testable with mocked SDK) ───────────────
+
+  describe('SDK crash recovery (integration-level behavior)', () => {
+    // The crash recovery logic (restartCount, lastRestartAt, exponential backoff,
+    // resetForRestart()) exists in CopilotClientImpl but cannot be unit tested
+    // without importing the real SDK, which these tests explicitly avoid.
+    //
+    // These features would be verified by:
+    // - Integration tests that start the real SDK, simulate crashes, and verify backoff
+    // - Manual verification during daemon testing
+    //
+    // The relevant code paths:
+    // - CopilotClientImpl.ensureStarted() checks restartCount and delays if needed
+    // - CopilotClientImpl.resetForRestart() nulls out startPromise
+    // - Relay calls factory.resetForRestart() on non-timeout SDK errors
+
+    it.skip('would test exponential backoff after rapid restarts', () => {
+      // Cannot test: requires real SDK lifecycle events
+    });
+
+    it.skip('would test resetForRestart() nulls out startPromise', () => {
+      // Cannot test: startPromise is private and SDK mock is too coarse
+    });
+  });
+
+  describe('Permission policy (integration-level behavior)', () => {
+    // makePermissionHandler() is not exported, and testing it would require
+    // starting the real SDK to verify the permission handlers work as expected.
+    //
+    // The PermissionPolicy type is exported from impl.ts and used in the
+    // CopilotClientImpl constructor, but the handler selection logic is internal.
+    //
+    // These features would be verified by:
+    // - Integration tests that trigger tool permission requests and verify behavior
+    // - Type safety at compile time (PermissionPolicy = 'approveAll' | 'denyAll')
+
+    it.skip('would test makePermissionHandler returns approveAll for approveAll policy', () => {
+      // Cannot test: makePermissionHandler is not exported
+    });
+
+    it.skip('would test makePermissionHandler returns denyAll handler for denyAll policy', () => {
+      // Cannot test: makePermissionHandler is not exported
+    });
+  });
 });

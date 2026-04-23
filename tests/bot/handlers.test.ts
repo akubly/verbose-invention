@@ -79,7 +79,7 @@ describe('registerHandlers', () => {
     const registry = makeStubRegistry();
     const factory = makeMockFactory();
 
-    registerHandlers({ bot: bot as any, registry, factory });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
     expect(commandHandlers.has('new')).toBe(true);
     expect(commandHandlers.has('list')).toBe(true);
@@ -96,7 +96,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry();
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('new')!;
       const ctx = makeMockCtx();
@@ -113,7 +113,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry();
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('new')!;
       const ctx = makeMockCtx({
@@ -129,7 +129,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry();
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('new')!;
       const ctx = makeMockCtx({ match: '' });
@@ -146,7 +146,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry();
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('new')!;
       const ctx = makeMockCtx({ match: undefined });
@@ -159,7 +159,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry([ENTRY]);
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('new')!;
       const ctx = makeMockCtx();
@@ -179,7 +179,7 @@ describe('registerHandlers', () => {
         new Error('Disk full'),
       );
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('new')!;
       const ctx = makeMockCtx();
@@ -195,7 +195,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry();
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('new')!;
 
@@ -215,7 +215,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry();
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('new')!;
       const ctx = makeMockCtx({ match: '  spaced-name  ' });
@@ -232,7 +232,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry([]);
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('list')!;
       const ctx = makeMockCtx();
@@ -249,7 +249,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry(entries);
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('list')!;
       const ctx = makeMockCtx();
@@ -270,7 +270,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry([ENTRY]);
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('remove')!;
       const ctx = makeMockCtx();
@@ -287,7 +287,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry([ENTRY]);
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('remove')!;
       const ctx = makeMockCtx({
@@ -304,7 +304,7 @@ describe('registerHandlers', () => {
       const registry = makeStubRegistry(); // empty — remove returns false
       (registry.remove as ReturnType<typeof vi.fn>).mockResolvedValue(false);
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('remove')!;
       const ctx = makeMockCtx();
@@ -324,7 +324,7 @@ describe('registerHandlers', () => {
       const { bot, onHandlers } = makeMockBot();
       const registry = makeStubRegistry([ENTRY]);
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = onHandlers.get('message:text')!;
       const ctx = makeMockCtx({
@@ -339,7 +339,7 @@ describe('registerHandlers', () => {
       const { bot, onHandlers } = makeMockBot();
       const registry = makeStubRegistry([ENTRY]);
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = onHandlers.get('message:text')!;
       const ctx = makeMockCtx({
@@ -356,7 +356,7 @@ describe('registerHandlers', () => {
       const { bot, onHandlers } = makeMockBot();
       const registry = makeStubRegistry([ENTRY]);
       const factory = makeMockFactory(session);
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = onHandlers.get('message:text')!;
       const ctx = makeMockCtx({
@@ -374,7 +374,7 @@ describe('registerHandlers', () => {
       const { bot, onHandlers } = makeMockBot();
       const registry = makeStubRegistry(); // no entries
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = onHandlers.get('message:text')!;
       const ctx = makeMockCtx({
@@ -396,7 +396,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry();
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('new')!;
       const ctx = makeMockCtx({ match: 'my-session --model claude-opus-4.5' });
@@ -414,7 +414,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry();
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('new')!;
       const ctx = makeMockCtx({ match: 'my-session' });
@@ -432,7 +432,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry();
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('new')!;
       const ctx = makeMockCtx({ match: 'my-session --model' });
@@ -449,7 +449,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry();
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('new')!;
       const ctx = makeMockCtx({ match: 'my-session --model claude-opus-4.5' });
@@ -486,7 +486,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry(entries);
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('list')!;
       const ctx = makeMockCtx();
@@ -506,7 +506,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry();
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('help')!;
       const ctx = makeMockCtx();
@@ -524,7 +524,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry();
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('help')!;
       const ctx = makeMockCtx();
@@ -535,6 +535,7 @@ describe('registerHandlers', () => {
       expect(replyText).toContain('/new');
       expect(replyText).toContain('/list');
       expect(replyText).toContain('/remove');
+      expect(replyText).toContain('/pair');
       expect(replyText).toContain('/help');
     });
 
@@ -542,7 +543,7 @@ describe('registerHandlers', () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry();
       const factory = makeMockFactory();
-      registerHandlers({ bot: bot as any, registry, factory });
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
       const handler = commandHandlers.get('help')!;
       const ctx = makeMockCtx({
@@ -554,5 +555,20 @@ describe('registerHandlers', () => {
       const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
       expect(replyText).toContain('/new');
     });
+
+    it('/help text includes /pair command', async () => {
+      const { bot, commandHandlers } = makeMockBot();
+      const registry = makeStubRegistry();
+      const factory = makeMockFactory();
+      registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+
+      const handler = commandHandlers.get('help')!;
+      const ctx = makeMockCtx();
+      await handler(ctx);
+
+      const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+      expect(replyText).toContain('/pair');
+    });
   });
 });
+

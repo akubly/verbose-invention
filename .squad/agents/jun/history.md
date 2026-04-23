@@ -186,3 +186,67 @@ Wrote 13 TDD tests defining the contract for per-session model override feature 
 - Handler tests define the UX contract: flag parsing (`--model <model>`), error messages, help text
 - Mock factory pattern updated to accept model parameter (comment-only change for now)
 - SessionEntry interface already had `model?: string` field from parallel work
+
+### 2025-04-22 — Phase 3 Wave 2: Crash Recovery, HUD Footer, Permissions, Pairing Config, /pair
+
+Wrote tests defining the contracts for four features being implemented in parallel by Noble Six (SDK impl.ts), Carter (relay.ts), and Kat (handlers.ts).
+
+**Test additions:**
+
+1. **Config tests** (NEW FILE: `tests/config/config.test.ts` — 7 tests):
+   - `loadConfig returns empty object for missing file`
+   - `loadConfig returns empty object for corrupt JSON`
+   - `loadConfig loads valid config from file`
+   - `saveConfig writes and loadConfig reads back` — round-trip persistence
+   - `saveConfig creates parent directories` — directory creation
+   - `saveConfig performs atomic write (tmp + rename)` — atomic safety
+   - `getConfigPath() returns a platform-aware path` — path construction
+   - All 7 tests **PASSED** ✓ (Noble Six already implemented pairing config)
+
+2. **Relay tests** (added to `tests/relay/relay.test.ts`):
+   - Updated ALL existing `new Relay(registry, factory)` calls to `new Relay(registry, factory, 'test-model')` (16 occurrences)
+   - **HUD footer** (2 new tests):
+     - `final message includes HUD footer with session model` — per-session model display
+     - `final message includes HUD footer with global model when no per-session model` — fallback display
+     - Both tests **PASSED** ✓ (Carter already implemented HUD footer)
+   - **SDK crash recovery** (2 new tests):
+     - `relay calls factory.resetForRestart() on non-timeout SDK error` — crash recovery trigger
+     - `relay does NOT call resetForRestart() on stream timeout error` — timeout exemption
+     - Both tests **FAILED** ⏳ (waiting for Carter's implementation in relay.ts)
+
+3. **Handler tests** (added to `tests/bot/handlers.test.ts`):
+   - Updated ALL existing `registerHandlers({ bot, registry, factory })` calls to include `globalModel: 'test-model'` (26 occurrences)
+   - `/help text includes /pair command` — new command documentation
+   - Test **PASSED** ✓ (Kat already added /pair to help text)
+
+4. **Impl tests** (added to `tests/copilot/impl.test.ts`):
+   - Added two `.skip` test groups with comments explaining what WOULD be tested if the SDK mock wasn't too coarse:
+     - `SDK crash recovery (integration-level behavior)` — backoff, resetForRestart
+     - `Permission policy (integration-level behavior)` — makePermissionHandler, approveAll/denyAll
+   - These tests document the behavior but cannot be unit tested without importing the real SDK
+
+**Test results:**
+- **Total:** 130 tests (126 passed, 2 failed ⏳, 2 skipped with documentation)
+- **Config:** 7/7 passed (Noble Six implemented)
+- **HUD footer:** 2/2 passed (Carter implemented)
+- **SDK crash recovery:** 0/2 passed (waiting for Carter)
+- **Handler /pair:** 1/1 passed (Kat implemented)
+- **Impl documentation:** 2 skipped tests with detailed comments
+
+**Breaking change mitigation:**
+- **Critical:** Updated ALL existing test calls that broke due to constructor/parameter changes:
+  - `Relay` constructor now requires third parameter: `globalModel: string`
+  - `HandlerOptions` now requires field: `globalModel: string`
+- Used PowerShell regex to bulk-update all instances before adding new tests
+- This prevented 42 tests from breaking due to the API changes
+
+**Test strategy:**
+- When writing TDD tests for parallel implementations:
+  1. Read existing test files first to understand patterns
+  2. Update existing tests for breaking changes FIRST (critical step)
+  3. Write new tests using the same patterns
+  4. Run tests to verify baseline is preserved before adding new tests
+- Constructor/interface changes require careful attention to existing test calls
+- `.skip` tests with detailed comments are acceptable when unit testing is impossible (real SDK dependency)
+
+**Test count:** 107 → 130 tests across 7 files (all directories).

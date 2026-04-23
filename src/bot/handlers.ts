@@ -10,6 +10,7 @@ export interface HandlerOptions {
   bot: Bot<Context>;
   registry: ISessionRegistry;
   factory: CopilotSessionFactory;
+  globalModel: string;
 }
 
 /**
@@ -24,8 +25,8 @@ export interface HandlerOptions {
  *
  * All other text messages in forum topics are relayed to the linked session.
  */
-export function registerHandlers({ bot, registry, factory }: HandlerOptions): Relay {
-  const relay = new Relay(registry, factory);
+export function registerHandlers({ bot, registry, factory, globalModel }: HandlerOptions): Relay {
+  const relay = new Relay(registry, factory, globalModel);
 
   // /new <name> [--model <model>] — register a topic→name mapping; SDK session is created lazily on first relay
   bot.command('new', async (ctx) => {
@@ -136,6 +137,7 @@ Commands:
 /new <name> [--model <model>] — Create a session in this topic
 /list — Show all active sessions
 /remove — Unlink the session from this topic
+/pair <code> — Pair this chat with the Reach daemon
 /help — Show this message`;
     await ctx.reply(helpText, topicId ? { message_thread_id: topicId } : undefined);
   });

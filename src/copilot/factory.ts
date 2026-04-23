@@ -17,6 +17,8 @@ export interface CopilotSessionFactory {
   resume(sessionName: string, model?: string): Promise<CopilotSession | null>;
   /** Create a new session with the given name. */
   create(sessionName: string, model?: string): Promise<CopilotSession>;
+  /** Optional — called by relay on SDK errors to force restart on next call. */
+  resetForRestart?(): void;
 }
 
 /**

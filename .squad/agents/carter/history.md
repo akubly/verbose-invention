@@ -136,3 +136,32 @@ Updated registry and relay to support per-session model overrides:
 **Pattern:** Optional field inclusion strategy — using conditional spread to avoid writing `undefined` to JSON. Keeps registry files clean and backward compatible.
 
 **Verification:** TypeScript compiles clean. All relay and registry tests pass (37 tests). Handler tests fail (expected — Kat needs to update `/new` command parser).
+
+### 2026-04-14 — Phase 3 Wave 2: HUD Footer + Crash Recovery
+
+Phase 3 Wave 2 changes to `relay.ts`:
+
+**1. Added `globalModel` constructor parameter:**
+- Relay now accepts a third parameter `globalModel: string` in the constructor
+- Used for fallback when `entry.model` is undefined in the HUD footer
+
+**2. HUD Footer:**
+- Final message edit now includes a compact footer: `\n\n📎 {sessionName} · {model}`
+- Model shown is `entry.model ?? this.globalModel` (per-session override or global default)
+- Footer applies to both normal responses and empty responses
+
+**3. Crash Recovery:**
+- Enhanced error handler in `relay()` to detect SDK crashes vs timeouts
+- On non-timeout errors, calls `factory.resetForRestart()` if available (optional method)
+- Timeout detection: checks if error message includes "Stream timeout"
+- Logs "SDK error detected — factory marked for restart" when restart is triggered
+
+**Test updates** (`tests/relay/relay.test.ts`):
+- Updated all 16 Relay constructor calls to include third parameter `'test-model'`
+- Updated two test expectations to verify footer is appended correctly
+
+**Coordination with team:**
+- Noble Six: adding `resetForRestart?(): void` to `CopilotSessionFactory` interface
+- Kat: updating `HandlerOptions` and `registerHandlers()` to pass `globalModel` from main
+
+**Verification:** All 16 relay tests pass. TypeScript compilation blocked by expected missing `globalModel` parameter in `main.ts` (Noble Six's file) — this is expected until the full wave integrates.

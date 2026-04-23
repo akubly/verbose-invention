@@ -106,3 +106,19 @@ Created comprehensive README.md and implemented per-session model selection:
 
 **Pattern learned:** When coordinating parallel changes (Carter updating registry, Kat updating handlers), tests act as the integration contract — Jun wrote tests expecting both changes, so when both are done, tests pass.
 
+### 2026-04-14 — Phase 3 Wave 2: /pair Command Documentation + globalModel Parameter
+
+Coordinated parallel changes with Noble Six (main.ts, impl.ts, config.ts) and Carter (relay.ts) for pairing infrastructure:
+
+1. **HandlerOptions.globalModel** — Added `globalModel: string` to `HandlerOptions` interface. This parameter flows from config → main.ts → registerHandlers → Relay constructor, where it's used to populate the HUD footer's default model display.
+
+2. **registerHandlers() signature** — Updated to destructure and pass `globalModel` to `new Relay(registry, factory, globalModel)`.
+
+3. **/help updated for /pair** — Added `/pair <code> — Pair this chat with the Reach daemon` to the help text. The actual /pair handler lives in main.ts (pairing mode runs before normal handlers), but documenting it in /help ensures discoverability.
+
+4. **Test alignment** — Updated all 26 `registerHandlers()` calls in tests to include `globalModel: 'test-model'`. Added `/pair` assertion to the main /help test (`expect(replyText).toContain('/pair')`).
+
+**Verification deferred:** TypeScript compilation shows expected errors (Relay constructor signature, missing config.ts) because Noble Six and Carter are changing those files in parallel. Once all Wave 2 changes land, `npx tsc --noEmit` and `npx vitest run` should pass.
+
+**Coordination pattern learned:** When three agents modify interdependent files simultaneously, each owns their file scope completely and makes assumptions about the others' work based on the task spec. Integration happens at compile/test time, not during individual edits.
+

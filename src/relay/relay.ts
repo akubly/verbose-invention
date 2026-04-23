@@ -14,6 +14,7 @@ export class Relay {
   constructor(
     private readonly registry: ISessionRegistry,
     private readonly factory: CopilotSessionFactory,
+    private readonly globalModel: string,
   ) {}
 
   async relay(ctx: Context): Promise<void> {
@@ -76,17 +77,26 @@ export class Relay {
       }
 
       // Final edit: full response with Markdown, fallback to plain text
+      const footer = `\n\n📎 ${entry.sessionName} · ${entry.model ?? this.globalModel}`;
       await this.safeEdit(
         ctx,
         placeholder.chat.id,
         placeholder.message_id,
-        accumulated || '_(empty response)_',
+        (accumulated || '_(empty response)_') + footer,
         true,
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[relay] Stream error on topic ${topicId}:`, err);
-      this.activeSessions.delete(topicId); // evict — session may be stale
+      this.activeSessions.delete(topicId); // evict cached session
+
+      // If this looks like an SDK crash (not a timeout), trigger factory restart
+      const isTimeout = msg.includes('Stream timeout');
+      if (!isTimeout && this.factory.resetForRestart) {
+        this.factory.resetForRestart();
+        console.log(`[relay] SDK error detected — factory marked for restart`);
+      }
+      
       await this.safeEdit(ctx, placeholder.chat.id, placeholder.message_id, `❌ Error: ${msg}`);
     }
   }

@@ -322,6 +322,84 @@ Applied 6 fixes to address code review findings:
 
 ---
 
+### 2026-04-23 — Phase 3 Wave 2: SDK Crash Recovery + Permissions + Pairing Config
+
+**Author:** Noble Six, Carter, Kat, Jun  
+**Status:** Implemented
+
+Phase 3 Wave 2 adds three architectural enhancements for reliability, security, and first-run UX:
+
+#### SDK Crash Auto-Recovery with Exponential Backoff
+
+Added to `CopilotClientImpl.ensureStarted()` to handle Copilot CLI SDK subprocess crashes. Implements exponential backoff (1s → 2s → 4s → ... → 30s max) within a 60-second time window. Restarts are attempted on-demand when relay needs a session. After 60 seconds of successful uptime, the backoff counter resets.
+
+**Key choices:**
+- Time-windowed backoff prevents "backoff debt" from old failures
+- Exponential (capped at 30s) balances patience with responsiveness
+- Relay calls `factory.resetForRestart?.()` on SDK errors to force restart on next demand
+
+**Trade-off:** Daemon self-heals from transient SDK crashes vs. added complexity in SDK binding layer. Chosen because SDK crashes are unpredictable and self-recovery improves reliability.
+
+#### Two-Tier Permissions Policy
+
+Added `PermissionPolicy` type (`'approveAll'` | `'denyAll'`) wired to `REACH_PERMISSION_POLICY` env var. Factory function `makePermissionHandler()` returns appropriate SDK permission handler.
+
+- `'approveAll'` (default): Current behavior, all tools approved
+- `'denyAll'`: Blocks all tool execution (read-only mode for security-conscious users)
+
+**Design:** Env var over config file (security-critical settings should be environment-controlled). No runtime toggle (requires restart to change policy, prevents accidental escalation).
+
+**Future extension (Phase 4):** `'interactiveDestructive'` mode—auto-approve read-only tools, prompt Telegram for destructive tools. Deferred due to complexity (tool classification + async Telegram interaction).
+
+#### Persistent Pairing Config (src/config/config.ts)
+
+New module manages `config.json` (platform-aware paths: Windows `%APPDATA%\reach\config.json`, Unix `~/.config/reach/config.json`). Stores optional `telegramChatId` field.
+
+**main.ts chat ID resolution order:**
+1. `TELEGRAM_CHAT_ID` env var (backward compatible; skips pairing if set)
+2. `config.json` → `telegramChatId` field (persisted from prior pairing)
+3. Pairing mode (if neither above): Generate random 6-digit code, listen for `/pair <code>`, save chat ID to config, exit
+
+**UX flow (first run):**
+- Service starts → daemon prints pairing code to console/Event Viewer
+- User sends `/pair 123456` in Telegram
+- Daemon validates, saves chat ID, exits
+- Service auto-restarts daemon → normal operation
+
+**Design choices:**
+- 6-digit code (100,000–999,999): Balances security with UX (short enough to type), 5-minute expiry limits exposure
+- One-time pairing: Code consumed on first use, config persisted (no code needed on restart)
+- Unguarded pairing bot: Temporarily accepts messages from any chat; after pairing, daemon exits and restarts with guarded bot
+- Atomic writes: `config.json` written to `.tmp` then renamed (prevents corruption on crash)
+- Backward compatible: Existing deployments with `TELEGRAM_CHAT_ID` env var unaffected
+
+**Security:** Config file is plaintext (chat ID is not secret; anyone in group knows it). Rely on OS file permissions (user-scoped).
+
+#### Handler Updates (Kat)
+
+- Added `globalModel: string` parameter to `HandlerOptions` type
+- Handler functions receive active model for display (e.g., in `/help` output)
+- Added `/pair` command documentation to `/help` text
+- Updated all handler tests to pass model parameter
+
+#### Test Results (Jun)
+
+**119 tests passing** (12 new in Phase 3 Wave 2):
+- Config: 8 tests (load/save, atomic writes, path resolution)
+- HUD: 2 tests (footer injection in relay response)
+- Crash recovery: 1 test (backoff verification)
+- Permissions: 1 test (policy enforcement)
+- Skipped: 4 integration-only tests (SDK-dependent, expected)
+
+Coordinator fixed 2 crash recovery test mocks post-run (AsyncIterable contract mismatch).
+
+**Interface changes:**
+- `CopilotSessionFactory` gained optional `resetForRestart?()` method
+- `CopilotClientImpl` constructor gained `permissionPolicy` parameter
+- `relay.ts` calls `factory.resetForRestart?.()` on stream errors
+
+---
+
 ## Governance
 
 - All meaningful changes require team consensus

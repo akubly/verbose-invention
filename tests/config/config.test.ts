@@ -2,29 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { loadConfig, saveConfig, getConfigPath } from '../../src/config/config.js';
 
-// We'll import the actual functions once they exist
-// For now, define the interface we expect
 interface ReachConfig {
   telegramChatId?: number;
-}
-
-// TDD: define what the API should look like
-let loadConfig: (configPath: string) => Promise<ReachConfig>;
-let saveConfig: (configPath: string, config: ReachConfig) => Promise<void>;
-let getConfigPath: () => string;
-
-// Placeholder implementations (will be replaced with real imports)
-try {
-  const configModule = await import('../../src/config/config.js');
-  loadConfig = configModule.loadConfig;
-  saveConfig = configModule.saveConfig;
-  getConfigPath = configModule.getConfigPath;
-} catch {
-  // Module doesn't exist yet - provide stubs
-  loadConfig = async () => ({});
-  saveConfig = async () => {};
-  getConfigPath = () => '';
 }
 
 describe('Config (Pairing Config)', () => {

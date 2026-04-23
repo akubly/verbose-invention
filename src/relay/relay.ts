@@ -89,13 +89,15 @@ export class Relay {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[relay] Stream error on topic ${topicId}:`, err);
-      this.activeSessions.delete(topicId); // evict cached session
 
       // If this looks like an SDK crash (not a timeout), trigger factory restart
       const isTimeout = err instanceof StreamTimeoutError;
       if (!isTimeout && this.factory.resetForRestart) {
+        this.activeSessions.clear(); // All sessions stale when SDK crashes
         this.factory.resetForRestart();
-        console.log(`[relay] SDK error detected — factory marked for restart`);
+        console.log(`[relay] SDK error detected — factory marked for restart; cleared cached sessions`);
+      } else {
+        this.activeSessions.delete(topicId); // Only evict current topic for timeouts
       }
       
       await this.safeEdit(ctx, placeholder.chat.id, placeholder.message_id, `❌ Error: ${msg}`);

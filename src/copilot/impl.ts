@@ -153,7 +153,8 @@ export class CopilotClientImpl implements CopilotSessionFactory {
         // Backoff if restarting too quickly
         const now = Date.now();
         if (this.restartCount > 0 && now - this.lastRestartAt < 60_000) {
-          const delay = Math.min(1000 * Math.pow(2, this.restartCount), 30_000);
+          const retryIndex = this.restartCount - 1;
+          const delay = Math.min(1000 * Math.pow(2, retryIndex), 30_000);
           console.warn(`[copilot] SDK restart backoff: ${delay}ms (attempt ${this.restartCount + 1})`);
           await new Promise(r => setTimeout(r, delay));
         }
@@ -209,6 +210,7 @@ export class CopilotClientImpl implements CopilotSessionFactory {
     const oldPromise = this.startPromise;
     const oldSdk = this.sdk;
     this.startPromise = null;
+    clearTimeout(this.backoffResetTimer);
     if (oldPromise) {
       oldPromise.then(() => oldSdk?.stop?.()).catch(() => {});
     }

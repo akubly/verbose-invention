@@ -37,6 +37,8 @@ Create a `.env` file in the project root with the following variables:
 ```env
 # Required
 TELEGRAM_BOT_TOKEN=<your bot token from @BotFather>
+
+# Optional — provide chat ID here, or use /pair <code> at runtime
 TELEGRAM_CHAT_ID=<your supergroup chat ID>
 
 # Optional
@@ -44,10 +46,11 @@ REACH_MODEL=claude-sonnet-4
 IDLE_TIMEOUT_MS=300000
 ```
 
-**How to get your chat ID:**
-1. Forward any message from your supergroup to [@userinfobot](https://t.me/userinfobot)
-2. The bot will reply with the chat ID (a negative number like `-1001234567890`)
-3. Copy this value into `TELEGRAM_CHAT_ID` (no quotes)
+**How to set your chat ID (choose one):**
+
+- **Environment variable** — Set `TELEGRAM_CHAT_ID` in `.env`. To find the ID, forward any message from your supergroup to [@userinfobot](https://t.me/userinfobot); it replies with a negative number like `-1001234567890`.
+- **Config file** — Reach also reads the chat ID from its persistent `config.json` (written automatically after pairing).
+- **Pairing mode** — If neither env var nor config file contains a chat ID, Reach starts in pairing mode. Send `/pair <code>` from your supergroup to link it. The chat ID is saved to `config.json` for future runs.
 
 ### 4. Build
 
@@ -123,7 +126,7 @@ This unlinks the session from the topic. The Copilot session history persists (y
 | Variable | Required | Description | Default |
 |----------|----------|-------------|---------|
 | `TELEGRAM_BOT_TOKEN` | Yes | Bot token from @BotFather | — |
-| `TELEGRAM_CHAT_ID` | Yes | Supergroup chat ID (numeric, e.g. `-1001234567890`) | — |
+| `TELEGRAM_CHAT_ID` | No | Supergroup chat ID (numeric, e.g. `-1001234567890`). Resolved in order: env var → `config.json` → pairing mode (`/pair <code>`) | — |
 | `REACH_MODEL` | No | Default Copilot model for new sessions | `claude-sonnet-4` |
 | `IDLE_TIMEOUT_MS` | No | In-memory session eviction timeout (ms) | `300000` (5 min) |
 | `REACH_PERMISSION_POLICY` | No | Tool approval policy: `approveAll` (default) or `denyAll` | `approveAll` |

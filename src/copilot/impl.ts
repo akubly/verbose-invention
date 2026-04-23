@@ -18,12 +18,16 @@ const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
 
 export type PermissionPolicy = 'approveAll' | 'denyAll';
 
+export class StreamTimeoutError extends Error {
+  constructor() { super('Stream timeout: no response from SDK'); }
+}
+
 function makePermissionHandler(policy: PermissionPolicy) {
   if (policy === 'approveAll') return approveAll;
   if (policy === 'denyAll') {
     return async () => ({ kind: 'denied-by-rules' as const, rules: [] });
   }
-  return approveAll; // fallback
+  throw new Error(`Invalid permission policy: ${policy}`);
 }
 
 type QueueItem =
@@ -107,7 +111,7 @@ class CopilotSessionAdapter implements CopilotSession {
             }),
             new Promise<void>((_, reject) => {
               timeoutId = setTimeout(
-                () => reject(new Error('Stream timeout: no response from SDK')),
+                () => reject(new StreamTimeoutError()),
                 STREAM_TIMEOUT_MS,
               );
             }),
@@ -136,6 +140,7 @@ export class CopilotClientImpl implements CopilotSessionFactory {
   private startPromise: Promise<void> | null = null;
   private restartCount = 0;
   private lastRestartAt = 0;
+  private backoffResetTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private readonly model = 'claude-sonnet-4',
@@ -159,7 +164,8 @@ export class CopilotClientImpl implements CopilotSessionFactory {
         await this.sdk.start();
         
         // Reset backoff after 60s of successful uptime
-        setTimeout(() => { this.restartCount = 0; }, 60_000);
+        clearTimeout(this.backoffResetTimer);
+        this.backoffResetTimer = setTimeout(() => { this.restartCount = 0; }, 60_000);
       })().catch((err) => {
         this.startPromise = null;
         throw err;
@@ -200,12 +206,18 @@ export class CopilotClientImpl implements CopilotSessionFactory {
 
   /** Called by relay on SDK errors to force restart on next call. */
   resetForRestart(): void {
+    const oldPromise = this.startPromise;
+    const oldSdk = this.sdk;
     this.startPromise = null;
+    if (oldPromise) {
+      oldPromise.then(() => oldSdk?.stop?.()).catch(() => {});
+    }
     console.log('[copilot] SDK marked for restart on next call');
   }
 
   /** Gracefully stop the SDK client. Call on daemon shutdown. */
   async stop(): Promise<void> {
+    clearTimeout(this.backoffResetTimer);
     if (this.startPromise) {
       await this.startPromise;
       const errors = await this.sdk.stop();

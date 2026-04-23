@@ -27,8 +27,13 @@ export async function loadConfig(configPath: string): Promise<ReachConfig> {
   try {
     const raw = await fs.readFile(configPath, 'utf-8');
     return JSON.parse(raw) as ReachConfig;
-  } catch {
-    return {};
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    if (err instanceof SyntaxError) {
+      console.warn(`[config] Corrupt config at ${configPath}, ignoring`);
+      return {};
+    }
+    throw err;
   }
 }
 

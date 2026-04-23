@@ -2,6 +2,7 @@ import type { Context } from 'grammy';
 import type { CopilotSessionFactory, CopilotSession } from '../copilot/factory.js';
 import type { ISessionRegistry } from '../sessions/registry.js';
 import { IdleMonitor } from '../idleMonitor.js';
+import { StreamTimeoutError } from '../copilot/impl.js';
 
 /** Throttle Telegram message edits to stay within ~1/s rate limit. */
 const STREAM_EDIT_THROTTLE_MS = 800;
@@ -91,7 +92,7 @@ export class Relay {
       this.activeSessions.delete(topicId); // evict cached session
 
       // If this looks like an SDK crash (not a timeout), trigger factory restart
-      const isTimeout = msg.includes('Stream timeout');
+      const isTimeout = err instanceof StreamTimeoutError;
       if (!isTimeout && this.factory.resetForRestart) {
         this.factory.resetForRestart();
         console.log(`[relay] SDK error detected — factory marked for restart`);

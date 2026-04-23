@@ -47,7 +47,7 @@ export function registerHandlers({ bot, registry, factory, globalModel }: Handle
     let model: string | undefined;
     
     // Check for --model flag
-    if (input.includes('--model')) {
+    if (/\s--model(\s|$)/.test(input)) {
       const modelMatch = input.match(/^(.+?)\s+--model\s+(\S+)$/);
       if (modelMatch && modelMatch[1] && modelMatch[2]) {
         name = modelMatch[1].trim();
@@ -140,6 +140,15 @@ Commands:
 /pair <code> — Pair this chat with the Reach daemon
 /help — Show this message`;
     await ctx.reply(helpText, topicId ? { message_thread_id: topicId } : undefined);
+  });
+
+  // /pair — guide users to pair during daemon startup
+  bot.command('pair', async (ctx) => {
+    const topicId = ctx.message?.message_thread_id;
+    await ctx.reply(
+      '⚠️ Pairing is only available during daemon startup. To re-pair: stop the daemon, delete config.json, and restart.',
+      topicId ? { message_thread_id: topicId } : undefined,
+    );
   });
 
   // Relay all non-command text messages in forum topics to their linked session

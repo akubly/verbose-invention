@@ -8,6 +8,7 @@
 import 'dotenv/config';
 import * as os from 'os';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { createBot } from './bot/index.js';
 import { registerHandlers } from './bot/handlers.js';
 import { SessionRegistry } from './sessions/registry.js';
@@ -31,7 +32,16 @@ async function main(): Promise<void> {
   }
 
   const model = process.env.REACH_MODEL ?? 'claude-sonnet-4';
-  const permissionPolicy = (process.env.REACH_PERMISSION_POLICY ?? 'approveAll') as PermissionPolicy;
+  
+  // Validate permission policy
+  const validPolicies = ['approveAll', 'denyAll'] as const;
+  const rawPolicy = process.env.REACH_PERMISSION_POLICY ?? 'approveAll';
+  if (!validPolicies.includes(rawPolicy as any)) {
+    console.error(`[reach] Fatal: REACH_PERMISSION_POLICY must be one of: ${validPolicies.join(', ')}`);
+    process.exit(1);
+  }
+  const permissionPolicy = rawPolicy as PermissionPolicy;
+  
   const registryPath = getRegistryPath();
   const configPath = getConfigPath();
 
@@ -55,7 +65,7 @@ async function main(): Promise<void> {
 
   // If no chat ID, enter pairing mode
   if (!chatId) {
-    const pairingCode = String(Math.floor(100000 + Math.random() * 900000));
+    const pairingCode = String(crypto.randomInt(100000, 1000000));
     console.log(`[reach] No TELEGRAM_CHAT_ID set. Pairing mode active.`);
     console.log(`[reach] Pairing code: ${pairingCode} (expires in 5 minutes)`);
 

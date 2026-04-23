@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Relay } from '../../src/relay/relay.js';
 import type { SessionRegistry, SessionEntry } from '../../src/sessions/registry.js';
 import { makeMockFactory, makeMockSession, makeStream } from '../mocks/sdk.js';
+import { StreamTimeoutError } from '../../src/copilot/impl.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -360,7 +361,7 @@ describe('Relay', () => {
     it('relay does NOT call resetForRestart() on stream timeout error', async () => {
       const session = {
         send: vi.fn().mockReturnValue({
-          async *[Symbol.asyncIterator]() { throw new Error('Stream timeout: no response from SDK'); },
+          async *[Symbol.asyncIterator]() { throw new StreamTimeoutError(); },
         }),
       };
       const factory = makeMockFactory(session);

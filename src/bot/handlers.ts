@@ -86,9 +86,8 @@ export function registerHandlers({ bot, registry, factory, globalModel }: Handle
       }
       await registry.register(topicId, chatId, name, model);
       const modelNote = model ? ` (model: ${model})` : '';
-      await ctx.reply(`✅ Session \`${name}\` registered and linked to this topic${modelNote}.`, {
+      await ctx.reply(`✅ Session "${name}" registered and linked to this topic${modelNote}.`, {
         message_thread_id: topicId,
-        parse_mode: 'Markdown',
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

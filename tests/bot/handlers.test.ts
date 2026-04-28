@@ -105,7 +105,7 @@ describe('registerHandlers', () => {
       expect(registry.register).toHaveBeenCalledWith(42, -1001234567890, 'my-session', undefined);
       expect(ctx.reply).toHaveBeenCalledWith(
         expect.stringContaining('my-session'),
-        expect.objectContaining({ message_thread_id: 42, parse_mode: 'Markdown' }),
+        expect.objectContaining({ message_thread_id: 42 }),
       );
     });
 

@@ -4,6 +4,11 @@ import type { ISessionRegistry } from '../sessions/registry.js';
 import { IdleMonitor } from '../idleMonitor.js';
 import { StreamTimeoutError } from '../copilot/impl.js';
 
+/** Escape Markdown special characters for safe interpolation. */
+function escapeMarkdown(text: string): string {
+  return text.replace(/[_*`\[\]()~>#+\-=|{}.!\\]/g, '\\$&');
+}
+
 /** Throttle Telegram message edits to stay within ~1/s rate limit. */
 const STREAM_EDIT_THROTTLE_MS = 800;
 
@@ -78,7 +83,7 @@ export class Relay {
       }
 
       // Final edit: full response with Markdown, fallback to plain text
-      const footer = `\n\n📎 ${entry.sessionName} · ${entry.model ?? this.globalModel}`;
+      const footer = `\n\n📎 ${escapeMarkdown(entry.sessionName)} · ${escapeMarkdown(entry.model ?? this.globalModel)}`;
       await this.safeEdit(
         ctx,
         placeholder.chat.id,

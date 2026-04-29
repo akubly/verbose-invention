@@ -149,7 +149,8 @@ export class CopilotClientImpl implements CopilotSessionFactory {
 
   private ensureStarted(): Promise<void> {
     if (!this.startPromise) {
-      this.startPromise = (async () => {
+      let thisPromise!: Promise<void>;
+      thisPromise = (async () => {
         // Backoff if restarting too quickly
         const now = Date.now();
         if (this.restartCount > 0 && now - this.lastRestartAt < 60_000) {
@@ -157,7 +158,10 @@ export class CopilotClientImpl implements CopilotSessionFactory {
           const delay = Math.min(1000 * Math.pow(2, retryIndex), 30_000);
           console.warn(`[copilot] SDK restart backoff: ${delay}ms (attempt ${this.restartCount + 1})`);
           await new Promise(r => setTimeout(r, delay));
+          // Abort if resetForRestart() cancelled us during backoff
+          if (this.startPromise !== thisPromise) return;
         }
+
         this.lastRestartAt = Date.now();
         this.restartCount++;
         
@@ -168,9 +172,12 @@ export class CopilotClientImpl implements CopilotSessionFactory {
         clearTimeout(this.backoffResetTimer);
         this.backoffResetTimer = setTimeout(() => { this.restartCount = 0; }, 60_000);
       })().catch((err) => {
-        this.startPromise = null;
+        if (this.startPromise === thisPromise) {
+          this.startPromise = null;
+        }
         throw err;
       });
+      this.startPromise = thisPromise;
     }
     return this.startPromise;
   }

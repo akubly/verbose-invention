@@ -51,6 +51,11 @@ export class SessionRegistry implements ISessionRegistry {
           console.warn(`[registry] Skipping entry for key ${key}: key does not match topicId ${value.topicId}`);
           continue;
         }
+        // Strip invalid model field (must be string if present)
+        if (value.model !== undefined && typeof value.model !== 'string') {
+          console.warn(`[registry] Stripping invalid model for key ${key}`);
+          delete value.model;
+        }
         this.entries.set(Number(key), value);
       }
       console.log(`[registry] Loaded ${this.entries.size} session(s) from ${this.persistPath}`);

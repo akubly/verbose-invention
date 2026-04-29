@@ -90,7 +90,7 @@ describe('Relay', () => {
 
       const editCalls = (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
       const finalText = editCalls[editCalls.length - 1][2] as string;
-      expect(finalText).toBe('The answer is 42.\n\n📎 reach\\-myapp · test\\-model');
+      expect(finalText).toBe('The answer is 42.\n\n📎 reach-myapp · test-model');
     });
 
     it('resumes an existing session (not create) on the first relay', async () => {
@@ -140,7 +140,7 @@ describe('Relay', () => {
 
       const editCalls = (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
       const finalText = editCalls[editCalls.length - 1][2] as string;
-      expect(finalText).toBe('_(empty response)_\n\n📎 reach\\-myapp · test\\-model');
+      expect(finalText).toBe('_(empty response)_\n\n📎 reach-myapp · test-model');
     });
   });
 
@@ -320,7 +320,7 @@ describe('Relay', () => {
 
       const editCalls = (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
       const finalText = editCalls[editCalls.length - 1][2] as string;
-      expect(finalText).toContain('📎 reach\\-myapp · claude\\-opus\\-4\\.5');
+      expect(finalText).toContain('📎 reach-myapp · claude-opus-4.5');
     });
 
     it('final message includes HUD footer with global model when no per-session model', async () => {
@@ -333,7 +333,7 @@ describe('Relay', () => {
 
       const editCalls = (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
       const finalText = editCalls[editCalls.length - 1][2] as string;
-      expect(finalText).toContain('📎 reach\\-myapp · claude\\-sonnet\\-4');
+      expect(finalText).toContain('📎 reach-myapp · claude-sonnet-4');
     });
   });
 

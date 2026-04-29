@@ -6,7 +6,7 @@ import { StreamTimeoutError } from '../copilot/impl.js';
 
 /** Escape Markdown special characters for safe interpolation. */
 function escapeMarkdown(text: string): string {
-  return text.replace(/[_*`\[\]()~>#+\-=|{}.!\\]/g, '\\$&');
+  return text.replace(/[_*`\[\]]/g, '\\$&');
 }
 
 /** Throttle Telegram message edits to stay within ~1/s rate limit. */
@@ -83,7 +83,8 @@ export class Relay {
       }
 
       // Final edit: full response with Markdown, fallback to plain text
-      const footer = `\n\n📎 ${escapeMarkdown(entry.sessionName)} · ${escapeMarkdown(entry.model ?? this.globalModel)}`;
+      const modelStr = String(entry.model ?? this.globalModel);
+      const footer = `\n\n📎 ${escapeMarkdown(entry.sessionName)} · ${escapeMarkdown(modelStr)}`;
       await this.safeEdit(
         ctx,
         placeholder.chat.id,
@@ -98,7 +99,8 @@ export class Relay {
       // If this looks like an SDK crash (not a timeout), trigger factory restart
       const isTimeout = err instanceof StreamTimeoutError;
       if (!isTimeout && this.factory.resetForRestart) {
-        this.activeSessions.clear(); // All sessions stale when SDK crashes
+        this.idleMonitor.cancelAll();
+        this.activeSessions.clear();
         this.factory.resetForRestart();
         console.log(`[relay] SDK error detected — factory marked for restart; cleared cached sessions`);
       } else {

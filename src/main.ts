@@ -78,6 +78,11 @@ async function main(): Promise<void> {
     pairingBot.command('pair', async (ctx) => {
       const userCode = ctx.match?.trim();
       if (userCode === pairingCode) {
+        const chatType = ctx.chat?.type;
+        if (chatType !== 'supergroup') {
+          await ctx.reply('❌ Pairing must be done from a supergroup with forum topics enabled.');
+          return;
+        }
         const pairedChatId = ctx.chat?.id;
         if (!pairedChatId) {
           await ctx.reply('❌ Could not determine chat ID.');

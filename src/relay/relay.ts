@@ -4,11 +4,6 @@ import type { ISessionRegistry } from '../sessions/registry.js';
 import { IdleMonitor } from '../idleMonitor.js';
 import { StreamTimeoutError } from '../copilot/impl.js';
 
-/** Escape Markdown special characters for safe interpolation. */
-function escapeMarkdown(text: string): string {
-  return text.replace(/[_*`\[\]]/g, '\\$&');
-}
-
 /** Throttle Telegram message edits to stay within ~1/s rate limit. */
 const STREAM_EDIT_THROTTLE_MS = 800;
 
@@ -84,7 +79,9 @@ export class Relay {
 
       // Final edit: full response with Markdown, fallback to plain text
       const modelStr = String(entry.model ?? this.globalModel);
-      const footer = `\n\n📎 ${escapeMarkdown(entry.sessionName)} · ${escapeMarkdown(modelStr)}`;
+      // Session names are DNS-label constrained (a-z0-9-); model names are simple identifiers.
+      // No Markdown-special chars to escape (hyphens are safe in legacy Markdown).
+      const footer = `\n\n📎 ${entry.sessionName} · ${modelStr}`;
       await this.safeEdit(
         ctx,
         placeholder.chat.id,

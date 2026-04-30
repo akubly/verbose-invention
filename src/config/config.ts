@@ -1,7 +1,7 @@
 /**
  * Persistent configuration for Reach.
  *
- * Stores pairing codes (telegramChatId) after /pair completes.
+ * Stores paired Telegram chat ID after /pair completes.
  * Platform-aware storage:
  *   - Windows: %APPDATA%\reach\config.json
  *   - Unix:    ~/.config/reach/config.json

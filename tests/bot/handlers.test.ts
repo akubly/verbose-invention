@@ -445,7 +445,7 @@ describe('registerHandlers', () => {
       );
     });
 
-    it('/new name --model with spaces in model name', async () => {
+    it('/new name --model with hyphens in model name', async () => {
       const { bot, commandHandlers } = makeMockBot();
       const registry = makeStubRegistry();
       const factory = makeMockFactory();

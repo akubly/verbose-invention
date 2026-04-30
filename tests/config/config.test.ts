@@ -2,11 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { loadConfig, saveConfig, getConfigPath } from '../../src/config/config.js';
-
-interface ReachConfig {
-  telegramChatId?: number;
-}
+import { loadConfig, saveConfig, getConfigPath, type ReachConfig } from '../../src/config/config.js';
 
 describe('Config (Pairing Config)', () => {
   let testDir: string;

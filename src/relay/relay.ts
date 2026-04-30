@@ -79,8 +79,8 @@ export class Relay {
 
       // Final edit: full response with Markdown, fallback to plain text
       const modelStr = String(entry.model ?? this.globalModel);
-      // Session names are DNS-label constrained (a-z0-9-); model names are simple identifiers.
-      // No Markdown-special chars to escape (hyphens are safe in legacy Markdown).
+      // Session names are DNS-label constrained; model names are simple identifiers.
+      // safeEdit falls back to plain text if Markdown is rejected.
       const footer = `\n\n📎 ${entry.sessionName} · ${modelStr}`;
       await this.safeEdit(
         ctx,

@@ -11,4 +11,6 @@ export interface SessionEntry {
   chatId: number;
   /** ISO-8601 creation timestamp. */
   createdAt: string;
+  /** Per-session model override (falls back to global REACH_MODEL). */
+  model?: string;
 }

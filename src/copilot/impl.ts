@@ -16,6 +16,20 @@ import type { CopilotSession, CopilotSessionFactory } from './factory.js';
 
 const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
 
+export type PermissionPolicy = 'approveAll' | 'denyAll';
+
+export class StreamTimeoutError extends Error {
+  constructor() { super('Stream timeout: no response from SDK'); }
+}
+
+function makePermissionHandler(policy: PermissionPolicy) {
+  if (policy === 'approveAll') return approveAll;
+  if (policy === 'denyAll') {
+    return async () => ({ kind: 'denied-by-rules' as const, rules: [] });
+  }
+  throw new Error(`Invalid permission policy: ${policy}`);
+}
+
 type QueueItem =
   | { kind: 'chunk'; value: string }
   | { kind: 'done' }
@@ -97,7 +111,7 @@ class CopilotSessionAdapter implements CopilotSession {
             }),
             new Promise<void>((_, reject) => {
               timeoutId = setTimeout(
-                () => reject(new Error('Stream timeout: no response from SDK')),
+                () => reject(new StreamTimeoutError()),
                 STREAM_TIMEOUT_MS,
               );
             }),
@@ -124,31 +138,59 @@ class CopilotSessionAdapter implements CopilotSession {
 export class CopilotClientImpl implements CopilotSessionFactory {
   private sdk!: SdkClient;
   private startPromise: Promise<void> | null = null;
+  private restartCount = 0;
+  private lastRestartAt = 0;
+  private backoffResetTimer: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(private readonly model = 'claude-sonnet-4') {}
+  constructor(
+    private readonly model = 'claude-sonnet-4',
+    private readonly permissionPolicy: PermissionPolicy = 'approveAll',
+  ) {}
 
   private ensureStarted(): Promise<void> {
     if (!this.startPromise) {
-      this.startPromise = (async () => {
+      let thisPromise!: Promise<void>;
+      thisPromise = (async () => {
+        // Backoff if restarting too quickly
+        const now = Date.now();
+        if (this.restartCount > 0 && now - this.lastRestartAt < 60_000) {
+          const retryIndex = this.restartCount - 1;
+          const delay = Math.min(1000 * Math.pow(2, retryIndex), 30_000);
+          console.warn(`[copilot] SDK restart backoff: ${delay}ms (attempt ${this.restartCount + 1})`);
+          await new Promise(r => setTimeout(r, delay));
+          // Abort if resetForRestart() cancelled us during backoff
+          if (this.startPromise !== thisPromise) return;
+        }
+
+        this.lastRestartAt = Date.now();
+        this.restartCount++;
+        
         this.sdk = new SdkClient();
         await this.sdk.start();
+        
+        // Reset backoff after 60s of successful uptime
+        clearTimeout(this.backoffResetTimer);
+        this.backoffResetTimer = setTimeout(() => { this.restartCount = 0; }, 60_000);
       })().catch((err) => {
-        this.startPromise = null;
+        if (this.startPromise === thisPromise) {
+          this.startPromise = null;
+        }
         throw err;
       });
+      this.startPromise = thisPromise;
     }
     return this.startPromise;
   }
 
-  async resume(sessionName: string): Promise<CopilotSession | null> {
+  async resume(sessionName: string, model?: string): Promise<CopilotSession | null> {
     await this.ensureStarted();
     const metadata = await this.sdk.getSessionMetadata(sessionName);
     if (!metadata) return null;
     try {
       const sdkSession = await this.sdk.resumeSession(sessionName, {
-        model: this.model,
+        model: model ?? this.model,
         streaming: true,
-        onPermissionRequest: approveAll,
+        onPermissionRequest: makePermissionHandler(this.permissionPolicy),
       });
       return new CopilotSessionAdapter(sdkSession);
     } catch (err) {
@@ -159,19 +201,32 @@ export class CopilotClientImpl implements CopilotSessionFactory {
     }
   }
 
-  async create(sessionName: string): Promise<CopilotSession> {
+  async create(sessionName: string, model?: string): Promise<CopilotSession> {
     await this.ensureStarted();
     const sdkSession = await this.sdk.createSession({
       sessionId: sessionName,
-      model: this.model,
+      model: model ?? this.model,
       streaming: true,
-      onPermissionRequest: approveAll,
+      onPermissionRequest: makePermissionHandler(this.permissionPolicy),
     });
     return new CopilotSessionAdapter(sdkSession);
   }
 
+  /** Called by relay on SDK errors to force restart on next call. */
+  resetForRestart(): void {
+    const oldPromise = this.startPromise;
+    const oldSdk = this.sdk;
+    this.startPromise = null;
+    clearTimeout(this.backoffResetTimer);
+    if (oldPromise) {
+      oldPromise.then(() => oldSdk?.stop?.()).catch(() => {});
+    }
+    console.log('[copilot] SDK marked for restart on next call');
+  }
+
   /** Gracefully stop the SDK client. Call on daemon shutdown. */
   async stop(): Promise<void> {
+    clearTimeout(this.backoffResetTimer);
     if (this.startPromise) {
       await this.startPromise;
       const errors = await this.sdk.stop();

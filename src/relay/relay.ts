@@ -2,6 +2,7 @@ import type { Context } from 'grammy';
 import type { CopilotSessionFactory, CopilotSession } from '../copilot/factory.js';
 import type { ISessionRegistry } from '../sessions/registry.js';
 import { IdleMonitor } from '../idleMonitor.js';
+import { StreamTimeoutError } from '../copilot/impl.js';
 
 /** Throttle Telegram message edits to stay within ~1/s rate limit. */
 const STREAM_EDIT_THROTTLE_MS = 800;
@@ -14,6 +15,7 @@ export class Relay {
   constructor(
     private readonly registry: ISessionRegistry,
     private readonly factory: CopilotSessionFactory,
+    private readonly globalModel: string,
   ) {}
 
   async relay(ctx: Context): Promise<void> {
@@ -43,7 +45,7 @@ export class Relay {
 
     if (!session) {
       try {
-        session = await this.factory.resume(entry.sessionName) ?? await this.factory.create(entry.sessionName);
+        session = await this.factory.resume(entry.sessionName, entry.model) ?? await this.factory.create(entry.sessionName, entry.model);
         this.activeSessions.set(topicId, { sessionName: entry.sessionName, session });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -76,17 +78,32 @@ export class Relay {
       }
 
       // Final edit: full response with Markdown, fallback to plain text
+      const modelStr = String(entry.model ?? this.globalModel);
+      // Session names are DNS-label constrained; model names are simple identifiers.
+      // safeEdit falls back to plain text if Markdown is rejected.
+      const footer = `\n\n📎 ${entry.sessionName} · ${modelStr}`;
       await this.safeEdit(
         ctx,
         placeholder.chat.id,
         placeholder.message_id,
-        accumulated || '_(empty response)_',
+        (accumulated || '_(empty response)_') + footer,
         true,
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[relay] Stream error on topic ${topicId}:`, err);
-      this.activeSessions.delete(topicId); // evict — session may be stale
+
+      // If this looks like an SDK crash (not a timeout), trigger factory restart
+      const isTimeout = err instanceof StreamTimeoutError;
+      if (!isTimeout && this.factory.resetForRestart) {
+        this.idleMonitor.cancelAll();
+        this.activeSessions.clear();
+        this.factory.resetForRestart();
+        console.log(`[relay] SDK error detected — factory marked for restart; cleared cached sessions`);
+      } else {
+        this.activeSessions.delete(topicId); // Only evict current topic for timeouts
+      }
+      
       await this.safeEdit(ctx, placeholder.chat.id, placeholder.message_id, `❌ Error: ${msg}`);
     }
   }

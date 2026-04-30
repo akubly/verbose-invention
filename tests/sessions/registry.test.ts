@@ -151,6 +151,54 @@ describe('SessionRegistry', () => {
     });
   });
 
+  // ── model field persistence ──────────────────────────────────────────────
+
+  describe('model field persistence', () => {
+    it('register() with model persists model in entry', async () => {
+      await registry.register(99, -100, 'model-test', 'claude-opus-4.5');
+      const entry = registry.resolve(99);
+      expect(entry?.model).toBe('claude-opus-4.5');
+    });
+
+    it('register() without model does not include model field', async () => {
+      await registry.register(100, -100, 'no-model-test');
+      const entry = registry.resolve(100);
+      expect(entry?.model).toBeUndefined();
+    });
+
+    it('load() reads back model from persisted data', async () => {
+      await registry.register(101, -100, 'persist-model', 'claude-opus-4.6');
+      
+      const reloaded = new SessionRegistry(storePath);
+      await reloaded.load();
+      
+      const entry = reloaded.resolve(101);
+      expect(entry?.model).toBe('claude-opus-4.6');
+    });
+
+    it('load() handles legacy entries without model field (backward compat)', async () => {
+      const legacy = {
+        version: 1,
+        entries: {
+          '42': {
+            sessionName: 'legacy-session',
+            topicId: 42,
+            chatId: -100,
+            createdAt: '2024-01-01T00:00:00.000Z',
+            // no model field
+          },
+        },
+      };
+      await fs.mkdir(path.dirname(storePath), { recursive: true });
+      await fs.writeFile(storePath, JSON.stringify(legacy), 'utf-8');
+
+      await registry.load();
+      const entry = registry.resolve(42);
+      expect(entry?.sessionName).toBe('legacy-session');
+      expect(entry?.model).toBeUndefined();
+    });
+  });
+
   // ── hardening / recovery ──────────────────────────────────────────────────
 
   describe('hardening / recovery', () => {

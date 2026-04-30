@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Relay } from '../../src/relay/relay.js';
 import type { SessionRegistry, SessionEntry } from '../../src/sessions/registry.js';
 import { makeMockFactory, makeMockSession, makeStream } from '../mocks/sdk.js';
+import { StreamTimeoutError } from '../../src/copilot/impl.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -62,7 +63,7 @@ describe('Relay', () => {
     it('sends placeholder "…" reply then edits with final assembled response', async () => {
       const factory = makeMockFactory();
       const registry = makeStubRegistry([SESSION_ENTRY]);
-      const relay = new Relay(registry, factory);
+      const relay = new Relay(registry, factory, 'test-model');
       const ctx = makeMockCtx();
 
       await relay.relay(ctx as any);
@@ -82,43 +83,43 @@ describe('Relay', () => {
       const session = makeMockSession(chunks);
       const factory = makeMockFactory(session);
       const registry = makeStubRegistry([SESSION_ENTRY]);
-      const relay = new Relay(registry, factory);
+      const relay = new Relay(registry, factory, 'test-model');
       const ctx = makeMockCtx();
 
       await relay.relay(ctx as any);
 
       const editCalls = (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
       const finalText = editCalls[editCalls.length - 1][2] as string;
-      expect(finalText).toBe('The answer is 42.');
+      expect(finalText).toBe('The answer is 42.\n\n📎 reach-myapp · test-model');
     });
 
     it('resumes an existing session (not create) on the first relay', async () => {
       const factory = makeMockFactory();
       const registry = makeStubRegistry([SESSION_ENTRY]);
-      const relay = new Relay(registry, factory);
+      const relay = new Relay(registry, factory, 'test-model');
 
       await relay.relay(makeMockCtx() as any);
 
       // resume() is attempted before create()
-      expect(factory.resume).toHaveBeenCalledWith('reach-myapp');
+      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', undefined);
     });
 
     it('creates a new session when resume() returns null', async () => {
       const factory = makeMockFactory();
       (factory.resume as ReturnType<typeof vi.fn>).mockResolvedValue(null);
       const registry = makeStubRegistry([SESSION_ENTRY]);
-      const relay = new Relay(registry, factory);
+      const relay = new Relay(registry, factory, 'test-model');
 
       await relay.relay(makeMockCtx() as any);
 
-      expect(factory.resume).toHaveBeenCalledWith('reach-myapp');
-      expect(factory.create).toHaveBeenCalledWith('reach-myapp');
+      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', undefined);
+      expect(factory.create).toHaveBeenCalledWith('reach-myapp', undefined);
     });
 
     it('reuses the cached in-memory session on subsequent relay calls', async () => {
       const factory = makeMockFactory();
       const registry = makeStubRegistry([SESSION_ENTRY]);
-      const relay = new Relay(registry, factory);
+      const relay = new Relay(registry, factory, 'test-model');
       const ctx = makeMockCtx();
 
       await relay.relay(ctx as any);
@@ -132,14 +133,14 @@ describe('Relay', () => {
       const session = makeMockSession([]);
       const factory = makeMockFactory(session);
       const registry = makeStubRegistry([SESSION_ENTRY]);
-      const relay = new Relay(registry, factory);
+      const relay = new Relay(registry, factory, 'test-model');
       const ctx = makeMockCtx();
 
       await relay.relay(ctx as any);
 
       const editCalls = (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
       const finalText = editCalls[editCalls.length - 1][2] as string;
-      expect(finalText).toBe('_(empty response)_');
+      expect(finalText).toBe('_(empty response)_\n\n📎 reach-myapp · test-model');
     });
   });
 
@@ -149,7 +150,7 @@ describe('Relay', () => {
     it('replies with guidance and does not call the factory', async () => {
       const factory = makeMockFactory();
       const registry = makeStubRegistry([]); // no entries
-      const relay = new Relay(registry, factory);
+      const relay = new Relay(registry, factory, 'test-model');
       const ctx = makeMockCtx('hello', 42);
 
       await relay.relay(ctx as any);
@@ -163,7 +164,7 @@ describe('Relay', () => {
     it('returns immediately when message has no topic id (non-topic message)', async () => {
       const factory = makeMockFactory();
       const registry = makeStubRegistry();
-      const relay = new Relay(registry, factory);
+      const relay = new Relay(registry, factory, 'test-model');
       const ctx = makeMockCtx('hello', null); // no topicId
 
       await relay.relay(ctx as any);
@@ -175,7 +176,7 @@ describe('Relay', () => {
     it('returns immediately when message text is absent', async () => {
       const factory = makeMockFactory();
       const registry = makeStubRegistry([SESSION_ENTRY]);
-      const relay = new Relay(registry, factory);
+      const relay = new Relay(registry, factory, 'test-model');
       const ctx = {
         message: { message_thread_id: 42 }, // no text
         chat: { id: -100 },
@@ -197,7 +198,7 @@ describe('Relay', () => {
       (factory.resume as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('SDK down'));
       (factory.create as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('SDK down'));
       const registry = makeStubRegistry([SESSION_ENTRY]);
-      const relay = new Relay(registry, factory);
+      const relay = new Relay(registry, factory, 'test-model');
       const ctx = makeMockCtx();
 
       await expect(relay.relay(ctx as any)).resolves.not.toThrow();
@@ -213,7 +214,7 @@ describe('Relay', () => {
       const session = makeMockSession(['Partial', ' answer'], 1);
       const factory = makeMockFactory(session);
       const registry = makeStubRegistry([SESSION_ENTRY]);
-      const relay = new Relay(registry, factory);
+      const relay = new Relay(registry, factory, 'test-model');
       const ctx = makeMockCtx();
 
       await expect(relay.relay(ctx as any)).resolves.not.toThrow();
@@ -228,7 +229,7 @@ describe('Relay', () => {
       const goodSession = makeMockSession(['Good response']);
       const factory = makeMockFactory(session);
       const registry = makeStubRegistry([SESSION_ENTRY]);
-      const relay = new Relay(registry, factory);
+      const relay = new Relay(registry, factory, 'test-model');
 
       // First call — stream fails, session should be evicted
       await relay.relay(makeMockCtx() as any);
@@ -241,16 +242,137 @@ describe('Relay', () => {
     });
   });
 
+  // ── model parameter passing ───────────────────────────────────────────────
+
+  describe('model parameter passing', () => {
+    it('relay passes entry.model to factory.create()', async () => {
+      const entryWithModel: SessionEntry = {
+        ...SESSION_ENTRY,
+        model: 'claude-opus-4.5',
+      };
+      const factory = makeMockFactory();
+      (factory.resume as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+      const registry = makeStubRegistry([entryWithModel]);
+      const relay = new Relay(registry, factory, 'test-model');
+
+      await relay.relay(makeMockCtx() as any);
+
+      expect(factory.create).toHaveBeenCalledWith('reach-myapp', 'claude-opus-4.5');
+    });
+
+    it('relay passes entry.model to factory.resume()', async () => {
+      const entryWithModel: SessionEntry = {
+        ...SESSION_ENTRY,
+        model: 'claude-opus-4.6',
+      };
+      const factory = makeMockFactory();
+      const registry = makeStubRegistry([entryWithModel]);
+      const relay = new Relay(registry, factory, 'test-model');
+
+      await relay.relay(makeMockCtx() as any);
+
+      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', 'claude-opus-4.6');
+    });
+
+    it('relay passes undefined model when entry has no model', async () => {
+      const entryWithoutModel: SessionEntry = {
+        ...SESSION_ENTRY,
+        // no model field
+      };
+      const factory = makeMockFactory();
+      (factory.resume as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+      const registry = makeStubRegistry([entryWithoutModel]);
+      const relay = new Relay(registry, factory, 'test-model');
+
+      await relay.relay(makeMockCtx() as any);
+
+      expect(factory.create).toHaveBeenCalledWith('reach-myapp', undefined);
+    });
+  });
+
   // ── dispose ─────────────────────────────────────────────────────────────────
 
   describe('dispose', () => {
     it('can be called without throwing (graceful shutdown)', async () => {
       const factory = makeMockFactory();
       const registry = makeStubRegistry([SESSION_ENTRY]);
-      const relay = new Relay(registry, factory);
+      const relay = new Relay(registry, factory, 'test-model');
       await relay.relay(makeMockCtx() as any);
 
       expect(() => relay.dispose()).not.toThrow();
+    });
+  });
+
+  // ── HUD footer ──────────────────────────────────────────────────────────────
+
+  describe('HUD footer', () => {
+    it('final message includes HUD footer with session model', async () => {
+      const entryWithModel: SessionEntry = {
+        ...SESSION_ENTRY,
+        model: 'claude-opus-4.5',
+      };
+      const factory = makeMockFactory();
+      const registry = makeStubRegistry([entryWithModel]);
+      const relay = new Relay(registry, factory, 'claude-sonnet-4');
+      const ctx = makeMockCtx();
+
+      await relay.relay(ctx as any);
+
+      const editCalls = (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
+      const finalText = editCalls[editCalls.length - 1][2] as string;
+      expect(finalText).toContain('📎 reach-myapp · claude-opus-4.5');
+    });
+
+    it('final message includes HUD footer with global model when no per-session model', async () => {
+      const factory = makeMockFactory();
+      const registry = makeStubRegistry([SESSION_ENTRY]);
+      const relay = new Relay(registry, factory, 'claude-sonnet-4');
+      const ctx = makeMockCtx();
+
+      await relay.relay(ctx as any);
+
+      const editCalls = (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
+      const finalText = editCalls[editCalls.length - 1][2] as string;
+      expect(finalText).toContain('📎 reach-myapp · claude-sonnet-4');
+    });
+  });
+
+  // ── crash recovery ──────────────────────────────────────────────────────────
+
+  describe('SDK crash recovery', () => {
+    it('relay calls factory.resetForRestart() on non-timeout SDK error', async () => {
+      // send() must return an AsyncIterable that throws — not a rejected Promise
+      const session = {
+        send: vi.fn().mockReturnValue({
+          async *[Symbol.asyncIterator]() { throw new Error('SDK connection lost'); },
+        }),
+      };
+      const factory = makeMockFactory(session);
+      factory.resetForRestart = vi.fn();
+      const registry = makeStubRegistry([SESSION_ENTRY]);
+      const relay = new Relay(registry, factory, 'test-model');
+      const ctx = makeMockCtx();
+
+      await relay.relay(ctx as any);
+
+      expect(factory.resetForRestart).toHaveBeenCalledOnce();
+    });
+
+    it('relay does NOT call resetForRestart() on stream timeout error', async () => {
+      const session = {
+        send: vi.fn().mockReturnValue({
+          async *[Symbol.asyncIterator]() { throw new StreamTimeoutError(); },
+        }),
+      };
+      const factory = makeMockFactory(session);
+      factory.resetForRestart = vi.fn();
+      const registry = makeStubRegistry([SESSION_ENTRY]);
+      const relay = new Relay(registry, factory, 'test-model');
+      const ctx = makeMockCtx();
+
+      await relay.relay(ctx as any);
+
+      expect(factory.resetForRestart).not.toHaveBeenCalled();
     });
   });
 });

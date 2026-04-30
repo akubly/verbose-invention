@@ -52,6 +52,7 @@ function parseEnvFile(filePath: string): Map<string, string> {
 
 /** Minimal type for the object returned by node-windows Service constructor. */
 export interface ServiceInstance {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: string, handler: (...args: any[]) => void): void;
   install(): void;
   uninstall(): void;

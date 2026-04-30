@@ -15,12 +15,21 @@ export interface ReachConfig {
   telegramChatId?: number;
 }
 
-export function getConfigPath(): string {
+/**
+ * Returns the platform-aware base directory for Reach data.
+ *   - Windows: %APPDATA%\reach
+ *   - Unix:    ~/.config/reach
+ */
+export function getReachDataDir(): string {
   if (os.platform() === 'win32') {
     const appData = process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming');
-    return path.join(appData, 'reach', 'config.json');
+    return path.join(appData, 'reach');
   }
-  return path.join(os.homedir(), '.config', 'reach', 'config.json');
+  return path.join(os.homedir(), '.config', 'reach');
+}
+
+export function getConfigPath(): string {
+  return path.join(getReachDataDir(), 'config.json');
 }
 
 export async function loadConfig(configPath: string): Promise<ReachConfig> {

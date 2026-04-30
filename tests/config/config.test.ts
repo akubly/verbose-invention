@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { loadConfig, saveConfig, getConfigPath, type ReachConfig } from '../../src/config/config.js';
+import { loadConfig, saveConfig, getConfigPath, getReachDataDir, type ReachConfig } from '../../src/config/config.js';
 
 describe('Config (Pairing Config)', () => {
   let testDir: string;
@@ -21,6 +21,28 @@ describe('Config (Pairing Config)', () => {
     } catch {
       // Ignore cleanup errors
     }
+  });
+
+  describe('getReachDataDir()', () => {
+    it('returns a platform-aware directory path', () => {
+      const dataDir = getReachDataDir();
+
+      // Should return a non-empty string
+      expect(dataDir).toBeTruthy();
+      expect(typeof dataDir).toBe('string');
+
+      // Should end with 'reach' directory
+      expect(dataDir).toContain('reach');
+      expect(path.basename(dataDir)).toBe('reach');
+
+      // On Windows, should include AppData or Roaming
+      // On Unix, should include .config
+      if (process.platform === 'win32') {
+        expect(dataDir.toLowerCase()).toMatch(/appdata|roaming/);
+      } else {
+        expect(dataDir).toContain('.config');
+      }
+    });
   });
 
   describe('loadConfig()', () => {

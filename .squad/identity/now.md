@@ -1,26 +1,21 @@
 ---
-updated_at: 2026-04-20T09:40:00Z
-focus_area: Phase 3 — Complete Feature Set
+updated_at: 2026-04-30T06:04:00Z
+focus_area: Phase 4 — Hardening and Polish
 active_issues: []
 ---
 
 # What We're Focused On
 
-**Phase 3: Complete Feature Set**
+**Phase 4: Hardening and Polish**
 
-PR #2 (Phase 2 Go Live) merged. Phase 3 combines all remaining work.
+Phase 3 PR merged. Reach is feature-complete for personal use. Phase 4 focuses on reliability, code quality, and maintainability.
 
-**Completed (Wave 1):**
-- README.md & setup guide — Kat ✅
-- Per-session model override (`/new <name> --model <model>`) — Noble Six + Carter + Kat ✅
-- Per-session model tests (13 new, 107 total) — Jun ✅
-- Architecture designs for P1/P2 features — Noble Six ✅
+**Wave 1 (in progress):**
+- ESLint setup (P0) — Carter 🔄
+- Extract shared `getReachDataDir()` (P1) — Carter 🔄
+- Integration tests (P1) — Jun 🔄
 
-**Completed (Wave 2):**
-- SDK crash auto-recovery — Noble Six (impl.ts backoff) + Carter (relay eviction) ✅
-- HUD footer (`📎 session · model`) — Carter (relay.ts) ✅
-- Two-tier permissions (`REACH_PERMISSION_POLICY`) — Noble Six (impl.ts) ✅
-- Pairing codes (6-digit `/pair` flow) — Noble Six (config.ts, main.ts) + Kat (handlers.ts) ✅
-- Wave 2 tests (119 passing, 4 skipped) — Jun ✅
+**Wave 2 (pending):**
+- `interactiveDestructive` permission mode (P2) — Noble Six + Kat ⏳
 
-**Phase 3 complete.** All P0/P1/P2 features implemented.
+**Scoping:** `.squad/decisions/inbox/noble six-phase4-scope.md`

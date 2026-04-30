@@ -165,3 +165,37 @@ Phase 3 Wave 2 changes to `relay.ts`:
 - Kat: updating `HandlerOptions` and `registerHandlers()` to pass `globalModel` from main
 
 **Verification:** All 16 relay tests pass. TypeScript compilation blocked by expected missing `globalModel` parameter in `main.ts` (Noble Six's file) — this is expected until the full wave integrates.
+
+### 2026-04-25 — Phase 4 Wave 1: ESLint Setup + getReachDataDir() Extraction
+
+Completed two P0/P1 tasks for code quality and DRY:
+
+**1. ESLint Configuration (P0)**
+
+Created `.eslintrc.json` for TypeScript linting:
+- Parser: `@typescript-eslint/parser` with `tsconfig.json` project reference
+- Extends: `eslint:recommended` + `@typescript-eslint/recommended`
+- Ignores: `dist/`, `node_modules/`
+- Fixed 8 violations across codebase:
+  - `src/bot/handlers.ts`: Removed unnecessary escape in regex (`\-` → `-`)
+  - `src/copilot/factory.ts`: Added `@typescript-eslint/no-unused-vars` suppressions for stub method params
+  - `src/copilot/impl.ts`: Fixed `prefer-const` false positive with eslint-disable for `thisPromise` pattern
+  - `src/main.ts`: Changed `as any` to `as PermissionPolicy` for type-safe validation
+  - `src/service/install.ts`: Added `@typescript-eslint/no-explicit-any` suppression for event handler signature
+
+**2. DRY Refactor: getReachDataDir() (P1)**
+
+Extracted duplicated platform path logic from `config.ts` and `main.ts`:
+- Added `getReachDataDir()` to `src/config/config.ts` — returns `%APPDATA%\reach` (Windows) or `~/.config/reach` (Unix)
+- Refactored `getConfigPath()` to call `getReachDataDir()` + `config.json`
+- Refactored `getRegistryPath()` in `main.ts` to import and use `getReachDataDir()` + `registry.json`
+- Removed unused `os` import from `main.ts`
+- Added unit test in `tests/config/config.test.ts` verifying platform-aware path resolution
+
+**Verification:**
+- ESLint: Zero violations (`npm run lint` passes)
+- Tests: 138/144 pass (new test included; 6 pre-existing integration test failures unrelated to this work)
+- TypeScript: Compiles clean (`npx tsc --noEmit`)
+
+**Pattern:** Centralized platform-aware path resolution reduces duplication and simplifies future changes (e.g., adding a third file would use the same base dir).
+

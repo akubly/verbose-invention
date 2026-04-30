@@ -4,7 +4,7 @@ import type { ISessionRegistry } from '../sessions/registry.js';
 import { Relay } from '../relay/relay.js';
 
 /** DNS-label style: lowercase alphanumeric + hyphens, 1–63 chars, no leading hyphen. */
-export const SESSION_NAME_RE = /^[a-z0-9][a-z0-9\-]{0,62}$/;
+export const SESSION_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 export interface HandlerOptions {
   bot: Bot<Context>;

@@ -25,10 +25,12 @@ export interface CopilotSessionFactory {
  * Stub that throws — replace with real binding from @github/copilot-sdk.
  */
 export class StubCopilotSessionFactory implements CopilotSessionFactory {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async resume(_sessionName: string, _model?: string): Promise<CopilotSession | null> {
     return null; // Stub: no sessions exist, always falls through to create()
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async create(_sessionName: string, _model?: string): Promise<CopilotSession> {
     throw new Error('StubCopilotSessionFactory: wire in @github/copilot-sdk');
   }

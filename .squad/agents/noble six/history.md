@@ -237,3 +237,43 @@ Implemented three architectural enhancements to improve reliability, security, a
 - `src/main.ts` — pairing mode flow, config loading, `REACH_PERMISSION_POLICY` wiring
 - `src/config/config.ts` — NEW, persistent config management
 
+### 2026-04-23 — Phase 4 Scoping: Hardening and Polish
+
+Aaron declared Reach feature-complete for personal use — Phase 4 focuses on reliability, code quality, and maintainability. Scoped 4 items from the roadmap:
+
+**Prioritization outcomes:**
+1. **ESLint setup (P0)** — Foundation quality gate. .eslintrc.json doesn't exist; package.json lint script will fail. Blocks all other work (no new code without linting). Assigned to Carter (tooling/infra owner). 30 min effort.
+
+2. **Extract getReachDataDir() (P1)** — DRY refactor. `main.ts::getRegistryPath()` and `config.ts::getConfigPath()` duplicate platform-aware path logic (`%APPDATA%\reach` on Windows, `~/.config/reach` on Unix). Not urgent but tech debt compounds if we add more data files. Assigned to Carter. 45 min effort. Blocked by ESLint (should pass clean linting after refactor).
+
+3. **Integration tests (P1)** — Missing end-to-end test coverage for 3 critical flows: TELEGRAM_CHAT_ID enforcement (main.ts + middleware), pairing flow (6-digit code → config persistence → exit), SDK crash recovery (relay → factory restart → backoff). 119 unit tests exist; need component integration tests (mocked I/O, not real Telegram API or SDK). Assigned to Jun (test strategy owner). 3-4 hours effort. Blocked by ESLint.
+
+4. **interactiveDestructive permission mode (P2)** — UX enhancement. Phase 3 delivered `approveAll` and `denyAll` policies. Missing: auto-approve read-only tools, prompt Telegram for destructive tools (file writes, shell commands). Requires tool classification logic + async Telegram inline keyboard prompt + timeout handling. High complexity (cross-cutting change: factory, relay, bot, types). Assigned to Noble Six (architecture) + Kat (Telegram UX). 6-8 hours effort. Blocked by ESLint.
+
+**Trade-off: P2 demotion of interactiveDestructive.** `approveAll` (current mode) works for Aaron today; `denyAll` provides read-only option for security-conscious users. `interactiveDestructive` is the "Goldilocks zone" — useful but not critical. High complexity (tool classification, async Telegram prompt, race conditions) justifies deferral.
+
+**Parallelization strategy:**
+- **Wave 1:** ESLint setup (Carter) → getReachDataDir() refactor (Carter) — 45 min total, sequential
+- **Wave 2:** Integration tests (Jun) **||** interactiveDestructive mode (Noble Six + Kat) — 6-8 hours, parallel (zero file conflicts)
+
+**Open questions for Aaron:**
+1. Confirm P2 for interactiveDestructive is acceptable (promote to P1 if needed before broader rollout)
+2. Tool classification granularity: coarse-grained (`powershell` always destructive) or command-string parsing (`Get-Process` safe, `Remove-Item` destructive)? Recommend coarse-grained for Phase 4, refine later.
+3. Permission prompt location: same topic as active session (recommended) or dedicated "admin" topic?
+
+**Architecture decision pending:** interactiveDestructive requires threading topic context from relay into permission handler. Three options:
+- **A:** Pass `(bot, chatId, topicId)` into every `session.send()` call (breaks current interface)
+- **B:** Factory holds `Map<sessionName, topicId>` to resolve topic for prompts
+- **C:** Relay injects topic-aware callback when creating sessions (cleanest separation)
+
+**Recommendation: Option C** — relay knows topic context, factory doesn't. Permission callback is injected per-session at `factory.resume()`/`factory.create()` time.
+
+**File paths:**
+- Scoping doc: `.squad/decisions/inbox/noble six-phase4-scope.md` (detailed 17KB analysis)
+- New files in Phase 4: `.eslintrc.json`, `tests/integration/*.test.ts`, `src/copilot/permissions.ts`, `src/bot/prompt.ts`, `tests/copilot/permissions.test.ts`, `tests/bot/prompt.test.ts`
+- Modified files: `src/config/config.ts` (add getReachDataDir), `src/main.ts` (refactor + wire permission callback), `src/copilot/impl.ts` (add interactiveDestructive handler), `src/types.ts` (add PermissionPromptCallback type)
+
+**Verification criteria:**
+- Wave 1 complete: `npm run lint` passes, `getReachDataDir()` exported, zero duplication
+- Wave 2 complete: 130+ tests passing (119 + 11 new), manual smoke test of interactiveDestructive mode with real tool approval/denial
+

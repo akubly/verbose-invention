@@ -149,7 +149,9 @@ export class CopilotClientImpl implements CopilotSessionFactory {
 
   private ensureStarted(): Promise<void> {
     if (!this.startPromise) {
+      // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
       let thisPromise!: Promise<void>;
+      // eslint-disable-next-line prefer-const
       thisPromise = (async () => {
         // Backoff if restarting too quickly
         const now = Date.now();

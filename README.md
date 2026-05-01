@@ -129,7 +129,7 @@ This unlinks the session from the topic. The Copilot session history persists (y
 | `TELEGRAM_CHAT_ID` | No | Supergroup chat ID (numeric, e.g. `-1001234567890`). Resolved in order: env var → `config.json` → pairing mode (`/pair <code>`) | — |
 | `REACH_MODEL` | No | Default Copilot model for new sessions | `claude-sonnet-4` |
 | `IDLE_TIMEOUT_MS` | No | In-memory session eviction timeout (ms) | `300000` (5 min) |
-| `REACH_PERMISSION_POLICY` | No | Tool approval policy: `approveAll` (default) or `denyAll` | `approveAll` |
+| `REACH_PERMISSION_POLICY` | No | Tool approval policy: `approveAll` (default), `denyAll`, or `interactiveDestructive` (prompt for coarse-grained destructive tools) | `approveAll` |
 
 ## Windows Service
 

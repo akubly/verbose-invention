@@ -499,6 +499,89 @@ These decisions affect how future integration tests should be written:
 
 ---
 
+### 2026-04-30 — User decisions — interactiveDestructive design choices
+
+**By:** Aaron (via Copilot)
+
+**What:**
+1. `interactiveDestructive` stays P2 — not a launch blocker for personal use
+2. Tool classification: coarse-grained — all `powershell`, `bash`, `edit`, `create`, `git_commit` etc. are destructive. No command-string parsing.
+3. Permission prompts go to the same Telegram topic as the active session (inline with conversation context)
+
+**Why:** Aaron's decision after reviewing Noble Six's trade-off analysis. Coarse-grained is safer; same-topic provides context for approval decisions.
+
+---
+
+### 2026-05-01 — Phase 4 Wave 2: interactiveDestructive Implementation
+
+**Author:** Noble Six, Kat, Carter, Jun  
+**Date:** 2026-05-01  
+**Status:** Implemented
+
+Phase 4 Wave 2 delivers the `interactiveDestructive` permission mode — a complete system for prompting users via Telegram before executing destructive tools.
+
+#### Decisions
+
+1. **Destructive Tool Classifier (Noble Six)**
+   - Coarse-grained classification: `edit`, `create`, `powershell`, `bash`, `git_commit`, `gh_pr_create`, `gh_issue_create` are destructive
+   - Exported from `src/copilot/permissions.ts` as authoritative list
+   - No command-string parsing; simpler and safer for permission policy
+
+2. **Permission Handler Threading (Carter)**
+   - Relay accepts optional `bot` and `permissionPolicy` constructor parameters
+   - When `permissionPolicy === 'interactiveDestructive'`, relay creates per-topic permission callback
+   - Callback signature: `(toolName: string, args?: string) => Promise<boolean>`
+   - Passed to `CopilotSessionFactory.create()` and `.resume()`
+
+3. **Permission Prompt UX (Kat)**
+   - Inline keyboard prompt: `[Approve] [Deny]` buttons in Telegram
+   - UUID-based routing for concurrent requests (multiple users can prompt simultaneously)
+   - 60-second timeout with auto-cleanup
+   - Approval/denial routed back via callback promise resolution
+
+4. **SDK Permission Normalization (Noble Six)**
+   - `getPermissionToolName()` maps generic SDK permission kinds to coarse tools:
+     - `'shell'` → `'powershell'`
+     - `'write'` → `'edit'`
+   - Unknown kinds flow through unchanged (best-effort mapping for currently known SDK categories)
+
+#### Architecture
+
+```
+Session Creation
+  → CopilotClientImpl checks permissionPolicy
+  → If 'interactiveDestructive', injects permission callback from relay
+  → On destructive tool request, SDK emits permission event
+  → impl.ts calls injected callback with tool name + args
+  → Callback waits for user response via Telegram inline keyboard
+  → Response resolves callback promise (true = approve, false = deny)
+  → SDK continues or fails based on callback result
+```
+
+#### Test Coverage
+
+- `tests/copilot/permissions.test.ts` — Destructive tool classifier tests
+- `tests/bot/prompt.test.ts` — Permission prompt UX and timeout tests
+- **Total:** 162 passed, 4 skipped (166 total across 12 files)
+
+#### Artifacts
+
+- `src/copilot/permissions.ts` — Destructive tool classifier
+- Updated `src/copilot/factory.ts` — Optional permission callback parameter
+- Updated `src/copilot/impl.ts` — Permission handler integration
+- `src/bot/prompt.ts` — Inline keyboard permission prompt handler
+- Updated `src/relay/relay.ts` — Per-topic callback creation
+- Updated `main.ts` — Accept `REACH_PERMISSION_POLICY` env var
+- Updated `README.md` and `.env.example` — Documentation
+
+#### Verification
+
+- `npm run lint` ✅
+- `npx tsc --noEmit` ✅
+- `npx vitest run` ✅ (162 passed, 4 skipped)
+
+---
+
 ## Governance
 
 - All meaningful changes require team consensus

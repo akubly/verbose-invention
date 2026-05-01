@@ -1,8 +1,25 @@
-import type { Context } from 'grammy';
+import type { Bot, Context } from 'grammy';
 import type { CopilotSessionFactory, CopilotSession } from '../copilot/factory.js';
 import type { ISessionRegistry } from '../sessions/registry.js';
 import { IdleMonitor } from '../idleMonitor.js';
 import { StreamTimeoutError } from '../copilot/impl.js';
+
+const PERMISSION_PROMPT_MODULE = '../bot/prompt.js';
+
+type PermissionPolicy = 'approveAll' | 'denyAll' | 'interactiveDestructive';
+type PermissionPromptCallback = (toolName: string, args: string) => Promise<boolean>;
+type PermissionAwareFactory = CopilotSessionFactory & {
+  resume(
+    sessionName: string,
+    model?: string,
+    permissionCallback?: PermissionPromptCallback,
+  ): Promise<CopilotSession | null>;
+  create(
+    sessionName: string,
+    model?: string,
+    permissionCallback?: PermissionPromptCallback,
+  ): Promise<CopilotSession>;
+};
 
 /** Throttle Telegram message edits to stay within ~1/s rate limit. */
 const STREAM_EDIT_THROTTLE_MS = 800;
@@ -16,6 +33,8 @@ export class Relay {
     private readonly registry: ISessionRegistry,
     private readonly factory: CopilotSessionFactory,
     private readonly globalModel: string,
+    private readonly bot?: Bot,
+    private readonly permissionPolicy?: PermissionPolicy,
   ) {}
 
   async relay(ctx: Context): Promise<void> {
@@ -45,7 +64,23 @@ export class Relay {
 
     if (!session) {
       try {
-        session = await this.factory.resume(entry.sessionName, entry.model) ?? await this.factory.create(entry.sessionName, entry.model);
+        let permissionCallback: PermissionPromptCallback | undefined;
+        if (this.permissionPolicy === 'interactiveDestructive' && this.bot) {
+          const chatId = ctx.chat!.id;
+          const { promptUserForPermission } = await import(PERMISSION_PROMPT_MODULE);
+          permissionCallback = (toolName: string, args: string) =>
+            promptUserForPermission(this.bot!, chatId, topicId, toolName, args);
+        }
+
+        if (permissionCallback) {
+          const permissionAwareFactory = this.factory as PermissionAwareFactory;
+          session = await permissionAwareFactory.resume(entry.sessionName, entry.model, permissionCallback)
+            ?? await permissionAwareFactory.create(entry.sessionName, entry.model, permissionCallback);
+        } else {
+          session = await this.factory.resume(entry.sessionName, entry.model)
+            ?? await this.factory.create(entry.sessionName, entry.model);
+        }
+
         this.activeSessions.set(topicId, { sessionName: entry.sessionName, session });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

@@ -11,19 +11,66 @@ import {
   CopilotClient as SdkClient,
   type CopilotSession as SdkSession,
   approveAll,
+  type PermissionHandler,
+  type PermissionRequest,
 } from '@github/copilot-sdk';
-import type { CopilotSession, CopilotSessionFactory } from './factory.js';
+import type {
+  CopilotSession,
+  CopilotSessionFactory,
+  PermissionPromptCallback,
+} from './factory.js';
+import { isDestructive } from './permissions.js';
 
 const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
 
-export type PermissionPolicy = 'approveAll' | 'denyAll';
+export type PermissionPolicy = 'approveAll' | 'denyAll' | 'interactiveDestructive';
 
 export class StreamTimeoutError extends Error {
   constructor() { super('Stream timeout: no response from SDK'); }
 }
 
-function makePermissionHandler(policy: PermissionPolicy) {
+type ToolPermissionRequest = PermissionRequest & {
+  toolName?: string;
+  args?: unknown;
+};
+
+function getPermissionToolName(req: ToolPermissionRequest): string {
+  if (typeof req.toolName === 'string' && req.toolName.length > 0) return req.toolName;
+  if (req.kind === 'shell') return 'powershell';
+  if (req.kind === 'write') return 'edit';
+  return String(req.kind);
+}
+
+function serializePermissionArgs(args: unknown): string {
+  try {
+    return JSON.stringify(args ?? {});
+  } catch {
+    return '"[unserializable args]"';
+  }
+}
+
+function makePermissionHandler(
+  policy: PermissionPolicy,
+  promptCallback?: PermissionPromptCallback,
+): PermissionHandler {
   if (policy === 'approveAll') return approveAll;
+  if (policy === 'interactiveDestructive') {
+    if (!promptCallback) throw new Error('interactiveDestructive requires promptCallback');
+    return async (req: PermissionRequest, invocation) => {
+      const toolRequest = req as ToolPermissionRequest;
+      const toolName = getPermissionToolName(toolRequest);
+      if (!isDestructive(toolName)) return approveAll(req, invocation);
+      try {
+        const approved = await promptCallback(toolName, serializePermissionArgs(toolRequest.args));
+        return approved
+          ? { kind: 'approved' as const }
+          : { kind: 'denied-by-rules' as const, rules: [] };
+      } catch (error) {
+        console.warn('[copilot] Permission prompt failed, denying request:', error);
+        return { kind: 'denied-by-rules' as const, rules: [] };
+      }
+    };
+  }
   if (policy === 'denyAll') {
     return async () => ({ kind: 'denied-by-rules' as const, rules: [] });
   }
@@ -184,7 +231,11 @@ export class CopilotClientImpl implements CopilotSessionFactory {
     return this.startPromise;
   }
 
-  async resume(sessionName: string, model?: string): Promise<CopilotSession | null> {
+  async resume(
+    sessionName: string,
+    model?: string,
+    permissionCallback?: PermissionPromptCallback,
+  ): Promise<CopilotSession | null> {
     await this.ensureStarted();
     const metadata = await this.sdk.getSessionMetadata(sessionName);
     if (!metadata) return null;
@@ -192,7 +243,7 @@ export class CopilotClientImpl implements CopilotSessionFactory {
       const sdkSession = await this.sdk.resumeSession(sessionName, {
         model: model ?? this.model,
         streaming: true,
-        onPermissionRequest: makePermissionHandler(this.permissionPolicy),
+        onPermissionRequest: makePermissionHandler(this.permissionPolicy, permissionCallback),
       });
       return new CopilotSessionAdapter(sdkSession);
     } catch (err) {
@@ -203,13 +254,17 @@ export class CopilotClientImpl implements CopilotSessionFactory {
     }
   }
 
-  async create(sessionName: string, model?: string): Promise<CopilotSession> {
+  async create(
+    sessionName: string,
+    model?: string,
+    permissionCallback?: PermissionPromptCallback,
+  ): Promise<CopilotSession> {
     await this.ensureStarted();
     const sdkSession = await this.sdk.createSession({
       sessionId: sessionName,
       model: model ?? this.model,
       streaming: true,
-      onPermissionRequest: makePermissionHandler(this.permissionPolicy),
+      onPermissionRequest: makePermissionHandler(this.permissionPolicy, permissionCallback),
     });
     return new CopilotSessionAdapter(sdkSession);
   }

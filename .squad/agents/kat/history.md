@@ -122,3 +122,30 @@ Coordinated parallel changes with Noble Six (main.ts, impl.ts, config.ts) and Ca
 
 **Coordination pattern learned:** When three agents modify interdependent files simultaneously, each owns their file scope completely and makes assumptions about the others' work based on the task spec. Integration happens at compile/test time, not during individual edits.
 
+### 2026-05-01 — Telegram Permission Prompt
+
+Built `src/bot/prompt.ts` as a standalone permission prompt helper for grammY:
+
+1. **Per-bot pending prompt registry** — Uses a `WeakMap<Bot, PromptRegistry>` so one callback middleware can service many prompts without leaking state across bot instances.
+2. **Inline approval UX** — Sends the prompt into the active forum topic with `✅ Approve` / `❌ Deny` buttons, UUID-backed `callback_data`, 200-char arg truncation, and message edits for approve/deny/timeout outcomes.
+3. **Cleanup pattern** — Each request deletes itself from the pending map on resolve or timeout, which is the effective listener cleanup grammY needs when there is no one-shot callback handler primitive.
+
+**Verification:** `src/bot/prompt.ts` typechecks standalone, lints cleanly, and the current Vitest suite passes. Repo-wide `npx tsc --noEmit` is presently blocked by a parallel `src/copilot/impl.ts` permission-handler signature mismatch outside my file scope.
+
+### 2026-05-01 — Phase 4 Wave 2: Telegram Permission Prompt Integration
+
+Completed `src/bot/prompt.ts` integration with the interactiveDestructive permission flow. Factory and relay injectthe callback; bot prompts appear in the active forum topic as inline keyboard messages.
+
+**Key implementation decisions:**
+1. **UUID routing** — Each permission request has a UUID; callback_data contains the UUID so button presses route back to the correct prompt handler. Scales to concurrent users without state coupling.
+2. **60-second timeout** — Requests expire after 60s if no user response. Cleanup fires on next inbound message or spontaneously via async timeout.
+3. **Arg truncation** — Tool invocation args (e.g., `git commit -m "very long message"`) are truncated to 200 chars in the prompt to avoid Telegram message bloat.
+4. **Per-bot registry** — WeakMap ensures prompts don't leak across bot instances (useful if we ever run multiple bots in tests).
+
+**Files landed:**
+- `src/bot/prompt.ts` — Permission prompt handler
+- `tests/bot/prompt.test.ts` — UUID routing, timeout, concurrent request tests
+- Updated inline keyboard UX integrated with relay callbacks
+
+**Verification:** 162 tests pass total, including 4 new prompt tests. `npm run lint` clean.
+

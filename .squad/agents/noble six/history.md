@@ -277,3 +277,47 @@ Aaron declared Reach feature-complete for personal use — Phase 4 focuses on re
 - Wave 1 complete: `npm run lint` passes, `getReachDataDir()` exported, zero duplication
 - Wave 2 complete: 130+ tests passing (119 + 11 new), manual smoke test of interactiveDestructive mode with real tool approval/denial
 
+### 2026-05-01 — interactiveDestructive Permission Architecture Implementation
+
+Implemented the architecture-side half of `interactiveDestructive` with Option C-compatible session callbacks and coarse-grained tool classification.
+
+1. **`src/copilot/permissions.ts`** — Added exported `DESTRUCTIVE_TOOLS` and `isDestructive()` for the coarse-grained destructive set Aaron chose: `edit`, `create`, `powershell`, `bash`, `git_commit`, `gh_pr_create`, `gh_issue_create`. This is the authoritative list to extend when new destructive tools are introduced.
+2. **Factory contract extension** — Added `PermissionPromptCallback` plus optional `permissionCallback` params on `CopilotSessionFactory.create()` / `resume()` so relay can inject a per-session, topic-aware approval function without changing the relay→session send contract.
+3. **`CopilotClientImpl` permission handler** — Extended `PermissionPolicy` with `interactiveDestructive`; `makePermissionHandler()` now requires a callback in that mode, auto-approves non-destructive requests, and prompts only for destructive ones. Because the SDK permission type is generic (`kind: 'shell' | 'write' | ...`), I added a small compatibility mapping via `getPermissionToolName()` (`shell` → `powershell`, `write` → `edit`) before classification so Reach still honors the coarse-grained policy for the known SDK permission kinds even if `toolName` is omitted. Prompt failures now deny the request rather than crashing the permission flow.
+4. **`main.ts` policy wiring** — `REACH_PERMISSION_POLICY` now accepts `interactiveDestructive` alongside `approveAll` and `denyAll`. Main intentionally does not construct the callback; that remains Carter's relay responsibility per Option C.
+5. **Operator docs** — Updated `README.md` and `.env.example` so the new permission policy is discoverable outside the code.
+
+**Trade-off captured:** Chose coarse-grained classification over command parsing for safety and simplicity. This may over-prompt on harmless shell commands, but it reduces false negatives within the chosen destructive tool set while keeping the implementation stable against current SDK request-shape variance.
+
+**Verification:**
+- `npm run lint` ✅
+- `npx tsc --noEmit` ✅
+- `npx vitest run` ✅
+
+**Files modified:**
+- `src/copilot/permissions.ts` — NEW
+- `src/copilot/impl.ts`
+- `src/copilot/factory.ts`
+- `src/main.ts`
+- `.squad/decisions/inbox/noble six-interactive-destructive.md` — NEW
+
+### 2026-05-01 — Phase 4 Wave 2: interactiveDestructive Completion
+
+Final wave of permissions implementation, with Kat building the Telegram prompt UX, Carter threading callbacks through relay, and Jun testing end-to-end. Architecture architecture decision (Option C relay injection) proved clean—zero conflicts between agent files, permission handling decoupled from session transport.
+
+**Outcome:** 162 tests pass (4 skipped integration tests), `npm run lint` clean, `npx tsc --noEmit` clean.
+
+**Key learnings:**
+- SDK permission requests emit generic `kind` fields (`'shell'`, `'write'` etc.) without always providing `toolName` — normalized via `getPermissionToolName()` mapping before classification
+- UUID-based async prompt routing scales to concurrent users without thread safety concerns (Node.js single-threaded)
+- 60s timeout + auto-cleanup is more robust than promise race (avoids orphaned handlers on cascade failures)
+- Coarse-grained classification produces false positives (read-only `Get-Process` over `powershell` gets prompted) but zero false negatives — chosen for safety
+
+**Files landed:**
+- `src/copilot/permissions.ts` — Classifier
+- `src/bot/prompt.ts` — NEW (Kat), inline keyboard prompt with UUID routing
+- `tests/copilot/permissions.test.ts` — NEW (Jun)
+- `tests/bot/prompt.test.ts` — NEW (Jun)
+- `src/relay/relay.ts` — Updated (Carter), per-topic callback creation
+- `.eslintrc.json` — NEW (Carter, Wave 1)
+

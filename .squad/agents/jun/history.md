@@ -324,3 +324,65 @@ Wrote 3 integration test files covering critical cross-boundary flows that span 
 
 **Test count:** 130 → 148 tests across 10 files (7 unit test files + 3 integration test files).
 
+### 2026-04-30 — interactiveDestructive Permission Tests
+
+Added two new test files for the interactiveDestructive permission system: `tests/copilot/permissions.test.ts` and `tests/bot/prompt.test.ts`.
+
+**What the tests lock down:**
+1. **Tool classification** (`tests/copilot/permissions.test.ts` — 12 checks):
+   - Confirms `isDestructive()` returns `true` for coarse-grained write/exec tools (`edit`, `create`, `powershell`, `bash`, `git_commit`, `gh_pr_create`, `gh_issue_create`)
+   - Confirms read-only tools (`view`, `grep`, `glob`) and unknown tools default to non-destructive
+   - Verifies `DESTRUCTIVE_TOOLS` is a `Set` and contains the baseline destructive tool names
+
+2. **Telegram permission prompt** (`tests/bot/prompt.test.ts` — 6 tests):
+   - User approval resolves `true`; denial resolves `false`
+   - Timeout resolves `false` and edits the prompt message to show timeout/denial
+   - Long args are truncated in the outbound Telegram prompt text
+   - Prompt is posted to the requested `message_thread_id`
+   - Inline keyboard callback payloads use `perm:approve:{id}` / `perm:deny:{id}` and share the same request id
+
+**Mock pattern:**
+- Minimal fake bot with `bot.api.sendMessage`, `bot.api.editMessageText`, and `bot.on('callback_query:data', ...)`
+- Callback simulation by invoking the captured handler with a fake `callbackQuery` context
+- `vi.useFakeTimers()` for deterministic timeout coverage
+
+**Implementation detail discovered:**
+- `promptUserForPermission()` signature is positional: `(bot, chatId, topicId, toolName, args, timeoutMs?)`
+- The prompt module registers one callback-query middleware per bot using a `WeakMap` registry keyed by request ID
+- Args truncation currently uses `maxLength = 200` with `...` suffix (`slice(0, 197) + '...'`)
+
+**Verification:**
+- `npx vitest run tests/copilot/permissions.test.ts` ✓
+- `npx vitest run tests/bot/prompt.test.ts` ✓
+- `npm test` ✓ (`162 passed | 4 skipped`)
+
+### 2026-05-01 — Phase 4 Wave 2: interactiveDestructive Permission Tests Complete
+
+Completed test implementation for interactiveDestructive permission system across both classification and prompt UX layers.
+
+**Coverage delivered:**
+
+1. **Destructive tool classifier** (`tests/copilot/permissions.test.ts`):
+   - Tests `isDestructive()` correctly identifies coarse-grained set: `edit`, `create`, `powershell`, `bash`, `git_commit`, `gh_pr_create`, `gh_issue_create`
+   - Confirms read-only tools and unknown tools default to safe
+   - Verifies classifier is stable and deterministic
+
+2. **Permission prompt UX** (`tests/bot/prompt.test.ts`):
+   - UUID-based routing: correct approval/denial routing to right prompt
+   - 60-second timeout with state cleanup
+   - Argument truncation (200 char max)
+   - Message edits for approve/deny/timeout outcomes
+   - Concurrent request isolation
+
+3. **Integration test patterns:**
+   - Component-part testing for config, code validation, handler logic
+   - Factory interface testing (not getter-only private properties)
+   - Proper grammY Bot initialization with botInfo
+
+**Test metrics:**
+- Total: 162 passed, 4 skipped (166 total across 12 files)
+- New: 18 tests (permissions.test.ts + prompt.test.ts)
+- Baseline: 144 passed + 4 skipped maintained
+
+**Key discovery:** SDK permission requests often omit `toolName`, providing only generic `kind` field (`'shell'`, `'write'`). Added compatibility mapping in impl.ts to normalize these before classification, so coarse-grained policy works across known SDK permission kinds even when toolName is missing.
+

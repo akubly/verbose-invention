@@ -29,7 +29,7 @@ async function main(): Promise<void> {
   const model = process.env.REACH_MODEL ?? 'claude-sonnet-4';
   
   // Validate permission policy
-  const validPolicies = ['approveAll', 'denyAll'] as const;
+  const validPolicies = ['approveAll', 'denyAll', 'interactiveDestructive'] as const;
   const rawPolicy = process.env.REACH_PERMISSION_POLICY ?? 'approveAll';
   if (!validPolicies.includes(rawPolicy as PermissionPolicy)) {
     console.error(`[reach] Fatal: REACH_PERMISSION_POLICY must be one of: ${validPolicies.join(', ')}`);

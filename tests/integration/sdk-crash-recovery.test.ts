@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Relay } from '../../src/relay/relay.js';
-import { CopilotClientImpl, StreamTimeoutError } from '../../src/copilot/impl.js';
+import { StreamTimeoutError } from '../../src/copilot/impl.js';
 import type { SessionEntry } from '../../src/types.js';
 import type { ISessionRegistry } from '../../src/sessions/registry.js';
 import type { CopilotSession } from '../../src/copilot/factory.js';
@@ -202,7 +202,7 @@ describe('Integration: SDK crash recovery', () => {
     await relay.relay(ctx2 as any);
 
     // Verify the working session was used
-    expect(factory.create).toHaveBeenCalledWith('reach-crash-test', undefined);
+    expect(factory.create).toHaveBeenCalledWith('reach-crash-test', undefined, undefined);
     expect(workingSession.send).toHaveBeenCalled();
   });
 

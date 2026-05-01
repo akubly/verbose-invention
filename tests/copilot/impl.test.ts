@@ -276,15 +276,26 @@ describe('CopilotClientImpl', () => {
   });
 
   describe('Permission policy (integration-level behavior)', () => {
-    // makePermissionHandler() is not exported, and testing it would require
-    // starting the real SDK to verify the permission handlers work as expected.
-    //
-    // The PermissionPolicy type is exported from impl.ts and used in the
-    // CopilotClientImpl constructor, but the handler selection logic is internal.
-    //
-    // These features would be verified by:
-    // - Integration tests that trigger tool permission requests and verify behavior
-    // - Type safety at compile time (PermissionPolicy = 'approveAll' | 'denyAll')
+    it('maps shell requests to the platform shell tool name', async () => {
+      const promptCallback = vi.fn().mockResolvedValue(true);
+      const interactiveImpl = new CopilotClientImpl('claude-sonnet-4', 'interactiveDestructive');
+
+      await interactiveImpl.create('test', undefined, promptCallback);
+
+      const createOptions = mockSdkClient.createSession.mock.calls[0]?.[0];
+      expect(createOptions?.onPermissionRequest).toBeTypeOf('function');
+
+      const result = await createOptions.onPermissionRequest(
+        { kind: 'shell', args: { command: 'echo test' } },
+        {},
+      );
+
+      expect(promptCallback).toHaveBeenCalledWith(
+        process.platform === 'win32' ? 'powershell' : 'bash',
+        JSON.stringify({ command: 'echo test' }),
+      );
+      expect(result).toEqual({ kind: 'approved' });
+    });
 
     it.skip('would test makePermissionHandler returns approveAll for approveAll policy', () => {
       // Cannot test: makePermissionHandler is not exported

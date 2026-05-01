@@ -36,7 +36,7 @@ type ToolPermissionRequest = PermissionRequest & {
 
 function getPermissionToolName(req: ToolPermissionRequest): string {
   if (typeof req.toolName === 'string' && req.toolName.length > 0) return req.toolName;
-  if (req.kind === 'shell') return 'powershell';
+  if (req.kind === 'shell') return process.platform === 'win32' ? 'powershell' : 'bash';
   if (req.kind === 'write') return 'edit';
   return String(req.kind);
 }

@@ -7,7 +7,7 @@
  * - /pair command handler behavior
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { randomUUID } from 'crypto';
 import { loadConfig, saveConfig } from '../../src/config/config.js';
 import * as fs from 'fs/promises';
@@ -130,22 +130,13 @@ describe('Integration: Pairing flow', () => {
   // ── Pairing code validation ───────────────────────────────────────────────────
 
   describe('pairing code validation', () => {
-    it('generates 6-digit pairing codes in valid range', () => {
-      const codes = new Set<number>();
-      for (let i = 0; i < 100; i++) {
-        const code = Math.floor(Math.random() * 900000) + 100000;
-        codes.add(code);
-        expect(code).toBeGreaterThanOrEqual(100000);
-        expect(code).toBeLessThan(1000000);
-        expect(String(code).length).toBe(6);
-      }
-      // Ensure randomness (at least 90% unique in 100 attempts)
-      expect(codes.size).toBeGreaterThan(90);
-    });
+    it('uses 6-digit integer pairing codes in the valid range', () => {
+      const validCodes = [100000, 123456, 999999];
 
-    it('6-digit codes are always integers', () => {
-      for (let i = 0; i < 100; i++) {
-        const code = Math.floor(Math.random() * 900000) + 100000;
+      for (const code of validCodes) {
+        expect(code).toBeGreaterThanOrEqual(100000);
+        expect(code).toBeLessThanOrEqual(999999);
+        expect(String(code)).toHaveLength(6);
         expect(Number.isInteger(code)).toBe(true);
       }
     });

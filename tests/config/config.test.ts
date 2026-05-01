@@ -35,10 +35,10 @@ describe('Config (Pairing Config)', () => {
       expect(dataDir).toContain('reach');
       expect(path.basename(dataDir)).toBe('reach');
 
-      // On Windows, should include AppData or Roaming
+      // On Windows, allow APPDATA overrides but keep structural guarantees.
       // On Unix, should include .config
       if (process.platform === 'win32') {
-        expect(dataDir.toLowerCase()).toMatch(/appdata|roaming/);
+        expect(path.isAbsolute(dataDir)).toBe(true);
       } else {
         expect(dataDir).toContain('.config');
       }

@@ -6,7 +6,6 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { Bot } from 'grammy';
 import { createBot } from '../../src/bot/index.js';
 import { registerHandlers } from '../../src/bot/handlers.js';
 import type { ISessionRegistry } from '../../src/sessions/registry.js';
@@ -35,6 +34,42 @@ const SESSION_ENTRY: SessionEntry = {
   createdAt: '2024-01-01T00:00:00.000Z',
 };
 
+const TEST_BOT_INFO = {
+  id: 123,
+  is_bot: true,
+  first_name: 'TestBot',
+  username: 'testbot',
+  can_join_groups: true,
+  can_read_all_group_messages: true,
+  supports_inline_queries: false,
+  can_connect_to_business: false,
+  has_main_web_app: false,
+};
+
+function makeTestBot(allowedChatId: number) {
+  const bot = createBot('fake-token', allowedChatId);
+  bot.botInfo = TEST_BOT_INFO as any;
+
+  const sendMessage = vi.fn(async (_chatId: number | string, text: string) => ({
+    message_id: 1,
+    date: Math.floor(Date.now() / 1000),
+    chat: { id: allowedChatId, type: 'supergroup' },
+    text,
+  } as any));
+
+  bot.api.config.use(async (prev, method, payload, signal) => {
+    if (method === 'sendMessage') {
+      return {
+        ok: true,
+        result: await sendMessage(payload.chat_id, payload.text),
+      };
+    }
+    return prev(method, payload, signal);
+  });
+
+  return { bot, sendMessage };
+}
+
 /**
  * Creates a realistic Telegram Update object for testing.
  * grammY's bot.handleUpdate() processes these to trigger handlers.
@@ -48,6 +83,17 @@ function makeUpdate(chatId: number, text: string, topicId?: number): Update {
       type: 'supergroup',
     },
     text,
+    ...(text.startsWith('/')
+      ? {
+          entities: [
+            {
+              type: 'bot_command',
+              offset: 0,
+              length: text.split(' ')[0].length,
+            },
+          ],
+        }
+      : {}),
   };
 
   if (topicId !== undefined) {
@@ -74,51 +120,26 @@ describe('Integration: Chat ID enforcement', () => {
 
   it('allows messages from the allowed chat ID', async () => {
     const ALLOWED_CHAT = -1001234567890;
-    
-    // Test the middleware logic directly without full bot processing
+    const { bot } = makeTestBot(ALLOWED_CHAT);
+
     let middlewarePassed = false;
-    const mockBot = {
-      use: vi.fn((middleware: any) => {
-        // Simulate middleware execution
-        const mockCtx = { chat: { id: ALLOWED_CHAT } };
-        const mockNext = () => { middlewarePassed = true; };
-        middleware(mockCtx, mockNext);
-      }),
-    };
-    
-    // This is the middleware from createBot
-    const chatIdGuard = async (ctx: any, next: any) => {
-      if (ctx.chat?.id !== ALLOWED_CHAT) return;
-      await next();
-    };
-    
-    // Apply middleware
-    mockBot.use(chatIdGuard);
-    
-    // Verify middleware passed for allowed chat
+    bot.on('message:text', async () => {
+      middlewarePassed = true;
+    });
+
+    await bot.handleUpdate(makeUpdate(ALLOWED_CHAT, 'Hello from allowed chat', 42));
     expect(middlewarePassed).toBe(true);
-    
-    // Test with disallowed chat
+
     middlewarePassed = false;
-    const mockCtxDisallowed = { chat: { id: -9999999 } };
-    const mockNext = vi.fn();
-    await chatIdGuard(mockCtxDisallowed, mockNext);
-    
-    // Verify middleware blocked disallowed chat
-    expect(mockNext).not.toHaveBeenCalled();
+    await bot.handleUpdate(makeUpdate(-9999999, 'Hello from wrong chat', 42));
+    expect(middlewarePassed).toBe(false);
   });
 
   it('silently drops messages from disallowed chat IDs', async () => {
     const ALLOWED_CHAT = -1001234567890;
     const DISALLOWED_CHAT = -9876543210;
-    const bot = new Bot('fake-token', { botInfo: { id: 123, is_bot: true, first_name: 'TestBot', username: 'testbot', can_join_groups: true, can_read_all_group_messages: true, supports_inline_queries: false, can_connect_to_business: false, has_main_web_app: false } });
-    
-    // Apply middleware manually to match createBot behavior
-    bot.use(async (ctx, next) => {
-      if (ctx.chat?.id !== ALLOWED_CHAT) return;
-      await next();
-    });
-    
+    const { bot } = makeTestBot(ALLOWED_CHAT);
+
     const registry = makeStubRegistry([SESSION_ENTRY]);
     const factory = makeMockFactory();
 
@@ -136,14 +157,8 @@ describe('Integration: Chat ID enforcement', () => {
 
   it('allows /help command from allowed chat ID', async () => {
     const ALLOWED_CHAT = -1001234567890;
-    const bot = new Bot('fake-token', { botInfo: { id: 123, is_bot: true, first_name: 'TestBot', username: 'testbot', can_join_groups: true, can_read_all_group_messages: true, supports_inline_queries: false, can_connect_to_business: false, has_main_web_app: false } });
-    
-    // Apply middleware manually to match createBot behavior
-    bot.use(async (ctx, next) => {
-      if (ctx.chat?.id !== ALLOWED_CHAT) return;
-      await next();
-    });
-    
+    const { bot, sendMessage } = makeTestBot(ALLOWED_CHAT);
+
     const registry = makeStubRegistry();
     const factory = makeMockFactory();
 
@@ -153,23 +168,15 @@ describe('Integration: Chat ID enforcement', () => {
     const update = makeUpdate(ALLOWED_CHAT, '/help');
     await bot.handleUpdate(update);
 
-    // /help command was processed (no error thrown)
-    // We can't easily assert the reply without more complex mocking,
-    // but the fact that handleUpdate completes means the middleware passed
+    expect(sendMessage).toHaveBeenCalledOnce();
     expect(factory.resume).not.toHaveBeenCalled(); // /help doesn't trigger relay
   });
 
   it('drops /help command from disallowed chat ID', async () => {
     const ALLOWED_CHAT = -1001234567890;
     const DISALLOWED_CHAT = -9876543210;
-    const bot = new Bot('fake-token', { botInfo: { id: 123, is_bot: true, first_name: 'TestBot', username: 'testbot', can_join_groups: true, can_read_all_group_messages: true, supports_inline_queries: false, can_connect_to_business: false, has_main_web_app: false } });
-    
-    // Apply middleware manually to match createBot behavior
-    bot.use(async (ctx, next) => {
-      if (ctx.chat?.id !== ALLOWED_CHAT) return;
-      await next();
-    });
-    
+    const { bot, sendMessage } = makeTestBot(ALLOWED_CHAT);
+
     const registry = makeStubRegistry();
     const factory = makeMockFactory();
 
@@ -178,20 +185,14 @@ describe('Integration: Chat ID enforcement', () => {
     const update = makeUpdate(DISALLOWED_CHAT, '/help');
     await bot.handleUpdate(update);
 
-    // Command was dropped — factory should never be called
+    expect(sendMessage).not.toHaveBeenCalled();
     expect(factory.resume).not.toHaveBeenCalled();
   });
 
   it('middleware is applied unconditionally when allowedChatId is provided', async () => {
     const ALLOWED_CHAT = -1001234567890;
-    const bot = new Bot('fake-token', { botInfo: { id: 123, is_bot: true, first_name: 'TestBot', username: 'testbot', can_join_groups: true, can_read_all_group_messages: true, supports_inline_queries: false, can_connect_to_business: false, has_main_web_app: false } });
-    
-    // Apply middleware manually to match createBot behavior
-    bot.use(async (ctx, next) => {
-      if (ctx.chat?.id !== ALLOWED_CHAT) return;
-      await next();
-    });
-    
+    const { bot } = makeTestBot(ALLOWED_CHAT);
+
     const registry = makeStubRegistry();
     const factory = makeMockFactory();
 

@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { randomUUID } from 'crypto';
 import { loadConfig, saveConfig } from '../../src/config/config.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -19,7 +20,7 @@ import type { Update, Message } from 'grammy/types';
 
 /** Temporary config path for test isolation. */
 function getTempConfigPath(): string {
-  return path.join(os.tmpdir(), `reach-test-config-${Date.now()}.json`);
+  return path.join(os.tmpdir(), `reach-test-config-${randomUUID()}.json`);
 }
 
 /**
@@ -94,7 +95,7 @@ describe('Integration: Pairing flow', () => {
     });
 
     it('creates parent directory if it does not exist', async () => {
-      const tempDir = path.join(os.tmpdir(), `reach-test-dir-${Date.now()}`);
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'reach-test-dir-'));
       const configPath = path.join(tempDir, 'config.json');
 
       await saveConfig(configPath, { telegramChatId: 12345 });
@@ -108,7 +109,7 @@ describe('Integration: Pairing flow', () => {
     });
 
     it('returns empty object when config file does not exist', async () => {
-      const nonExistentPath = path.join(os.tmpdir(), 'reach-nonexistent-123456.json');
+      const nonExistentPath = path.join(os.tmpdir(), `reach-nonexistent-${randomUUID()}.json`);
       const loaded = await loadConfig(nonExistentPath);
 
       expect(loaded).toEqual({});

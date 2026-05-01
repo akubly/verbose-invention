@@ -102,7 +102,13 @@ async function main(): Promise<void> {
   const factory = new CopilotClientImpl(model, permissionPolicy);
   const bot = createBot(token, chatId);
 
-  const relay = registerHandlers({ bot, registry, factory, globalModel: model });
+  const relay = registerHandlers({
+    bot,
+    registry,
+    factory,
+    globalModel: model,
+    permissionPolicy,
+  });
 
   await registry.load();
   console.log(`[reach] Model: ${model}`);

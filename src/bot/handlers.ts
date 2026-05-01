@@ -1,4 +1,5 @@
 import type { Bot, Context } from 'grammy';
+import type { PermissionPolicy } from '../copilot/impl.js';
 import type { CopilotSessionFactory } from '../copilot/factory.js';
 import type { ISessionRegistry } from '../sessions/registry.js';
 import { Relay } from '../relay/relay.js';
@@ -11,6 +12,7 @@ export interface HandlerOptions {
   registry: ISessionRegistry;
   factory: CopilotSessionFactory;
   globalModel: string;
+  permissionPolicy?: PermissionPolicy;
 }
 
 /**
@@ -25,8 +27,8 @@ export interface HandlerOptions {
  *
  * All other text messages in forum topics are relayed to the linked session.
  */
-export function registerHandlers({ bot, registry, factory, globalModel }: HandlerOptions): Relay {
-  const relay = new Relay(registry, factory, globalModel);
+export function registerHandlers({ bot, registry, factory, globalModel, permissionPolicy }: HandlerOptions): Relay {
+  const relay = new Relay(registry, factory, globalModel, bot, permissionPolicy);
 
   // /new <name> [--model <model>] — register a topic→name mapping; SDK session is created lazily on first relay
   bot.command('new', async (ctx) => {

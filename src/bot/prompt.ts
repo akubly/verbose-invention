@@ -129,17 +129,23 @@ export async function promptUserForPermission(
       clearTimeout(timeoutHandle);
     }
 
-    try {
-      if (ctx) {
-        await ctx.answerCallbackQuery();
-      }
+    const approved = outcome === 'approve';
+    const statusText = formatOutcomeText(outcome, toolName);
 
-      await bot.api.editMessageText(chatId, promptMessage.message_id, formatOutcomeText(outcome, toolName), {
+    resolveResult?.(approved);
+
+    const uiUpdates = [
+      bot.api.editMessageText(chatId, promptMessage.message_id, statusText, {
         reply_markup: { inline_keyboard: [] },
-      });
-    } finally {
-      resolveResult?.(outcome === 'approve');
+      }).catch(() => {}),
+    ];
+
+    const callbackQueryId = ctx?.callbackQuery?.id;
+    if (callbackQueryId) {
+      uiUpdates.unshift(bot.api.answerCallbackQuery(callbackQueryId).catch(() => {}));
     }
+
+    void Promise.all(uiUpdates).catch(() => {});
   };
 
   registry.pendingByRequestId.set(requestId, {

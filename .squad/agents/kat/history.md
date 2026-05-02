@@ -132,6 +132,31 @@ Built `src/bot/prompt.ts` as a standalone permission prompt helper for grammY:
 
 **Verification:** `src/bot/prompt.ts` typechecks standalone, lints cleanly, and the current Vitest suite passes. Repo-wide `npx tsc --noEmit` is presently blocked by a parallel `src/copilot/impl.ts` permission-handler signature mismatch outside my file scope.
 
+### 2026-05-01 — Phase 5 Wave 1: /resume Command
+
+Implemented `/resume <name>` command for re-linking a named session to a new forum topic.
+
+**Registry change:**
+- Added `findByName(sessionName: string): SessionEntry | undefined` to `ISessionRegistry` interface and `SessionRegistry` class.
+- Linear scan over `entries` map values — fine at single-user scale (~10s of sessions).
+
+**Handler logic (handlers.ts):**
+1. Must be invoked inside a forum topic (`message_thread_id` required).
+2. Name validated against `SESSION_NAME_RE` (same constraint as `/new`).
+3. `findByName()` lookup — if not found, error with up to 3 close matches via substring includes; fallback "Use /list to see available sessions."
+4. If found and same topic → no-op "already bound here."
+5. If found and different topic but current topic already has a binding → reject "Use /remove first" (consistent with `/new`).
+6. Move: `registry.remove(oldTopicId)` then `registry.register(topicId, chatId, name, found.model)` — carries forward existing model. Console logs the move.
+7. Confirm reply includes old topic ID so Aaron knows where the session was.
+
+**Persistence:** move calls `remove()` + `register()`, each of which calls `persist()` through the existing `writeQueue`. Two sequential persists — fine for single-user.
+
+**Test alignment:** Updated `makeStubRegistry` in handlers.test.ts to include `findByName` vi.fn(). Updated command registration test to assert `resume` is registered.
+
+**Verification:** `npx tsc --noEmit` clean, `npm run lint` clean, `npx vitest run` — 176 passed, 4 skipped.
+
+**Coordination:** Wrote decision to .squad/decisions/inbox/kat-resume-command.md for Jun (tests) and the team.
+
 ### 2026-05-01 — Phase 4 Wave 2: Telegram Permission Prompt Integration
 
 Completed `src/bot/prompt.ts` integration with the interactiveDestructive permission flow. Factory and relay inject the callback; bot prompts appear in the active forum topic as inline keyboard messages.
@@ -148,4 +173,15 @@ Completed `src/bot/prompt.ts` integration with the interactiveDestructive permis
 - Updated inline keyboard UX integrated with relay callbacks
 
 **Verification:** 162 tests pass total, including 4 new prompt tests. `npm run lint` clean.
+
+### 2026-05-02 — Phase 5 Complete (Team Update by Scribe)
+
+Phase 5 — Telegram UX QoL is now complete. All decisions merged to `decisions.md`; all inbox files cleared. Final status: 235 tests pass, tsc clean, lint clean.
+
+**Kat's contribution:**
+- Wave 1: `/resume <name>` command with move semantics. Registry enhanced with `findByName()`. All 7 edge cases handled (not in topic, no-arg, invalid format, not found, already bound, move, current topic conflict).
+
+**Team coordination:** `/resume` runs independent (no relay changes). Carter's MarkdownV2 and message splitting (Wave 1 & 2) are live. All three features complete.
+
+**Next phase:** Ready for production. Monitor user adoption of `/resume` for session mobility. Future: `/model` command for model override.
 

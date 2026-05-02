@@ -582,6 +582,128 @@ Session Creation
 
 ---
 
+## Phase 5 — Telegram UX QoL (2026-05-01)
+
+### Overview
+Phase 5 focuses on three user-facing improvements: message splitting for long responses (MarkdownV2-aware), MarkdownV2 parsing for better code/formatting preservation, and `/resume <name>` command for session mobility. Executed by the squad in two waves: MarkdownV2 + `/resume` in Wave 1 (parallel), message splitting in Wave 2 (depends on MarkdownV2 length calculations). All 235 tests pass; tsc and lint clean.
+
+**Architect:** Noble Six  
+**Bridge Dev:** Carter  
+**Bot Dev:** Kat  
+**Test Engineer:** Jun  
+**Date:** 2026-05-01  
+**Status:** Implemented and tested — all inbox entries merged to decisions.md
+
+---
+
+### Feature 1: MarkdownV2 Parsing (Carter)
+
+**Decision:** Upgrade `safeEdit()` from legacy Telegram Markdown (`parse_mode: 'Markdown'`) to `parse_mode: 'MarkdownV2'` with proper escaping and plain-text fallback.
+
+**Escape Strategy (Option A chosen):** Escape special chars in plain-text regions; protect code regions with minimal intra-code escaping. No Markdown AST parsing.
+
+**Special Characters Escaped** (18 chars + backslash):
+- Plain text: `_ * [ ] ( ) ~ ` > # + - = | { } . ! \`
+- Code blocks/inline code: only `\` and `` ` `` (Telegram requirement)
+- Unclosed fences treated defensively as plain text + fully escaped
+
+**Mid-stream vs. Final Edit:**
+- Mid-stream edits: plain text only (partial output with unclosed fences would fail MarkdownV2 parsing)
+- Final edit: MarkdownV2 with escaping
+
+**Fallback Chain:** MarkdownV2 → plain text (legacy Markdown skipped entirely)
+
+**Files:** `src/relay/markdownV2.ts` (new), `src/relay/relay.ts` (safeEdit updated), tests updated
+
+---
+
+### Feature 2: Message Splitting (Carter, Wave 2)
+
+**Decision:** Telegram enforces 4096 char/message limit. Implement `splitForTelegram(text, opts)` to split long responses while preserving code blocks and respecting MarkdownV2-escaping length.
+
+**Boundary Preference Order:** `\n\n` > `\n` > whitespace > hard cut
+
+**Code Block Handling:**
+- Never split mid-block; split at line boundaries within block
+- Re-open/close fences (` ```lang `) on each sub-chunk
+- If block exceeds maxLen, sub-split with balanced fences
+
+**Delivery:**
+- First chunk: replaces placeholder via `safeEdit()`
+- Subsequent chunks: new messages via `ctx.reply()` with 100ms delay between sends (rate limiting)
+- Footer appended to last chunk only with `\n\n` separator
+
+**Numbering (Two-pass):**
+- `[n/total]\n` prefix only when total > 1 (no `[1/1]` for single-chunk)
+- Prefix computed after split (total known)
+
+**Contract:** `splitForTelegram(text, { maxLen?: 4096, numbering?: false, footer?: '' }): string[]`
+
+**Files:** `src/relay/messageSplitter.ts` (new), `src/relay/relay.ts` (multi-chunk delivery), 21 tests (all GREEN)
+
+---
+
+### Feature 3: `/resume <name>` Command (Kat)
+
+**Decision:** Add `/resume <name>` handler to move an existing session from one topic to another.
+
+**Semantics (Option A chosen):** Move (not alias). Session name to topic mapping is 1:1. `/resume` unbinds from old topic, binds to new topic. SDK session handle cache automatically evicts stale entries.
+
+**Registry Enhancement:** Added `findByName(sessionName)` to `ISessionRegistry` — linear scan, O(N), fine at single-user scale.
+
+**Persistence:** Move implemented as `registry.remove(oldTopicId)` + `registry.register(newTopicId, ...)` with serialized `writeQueue` (safe from concurrency)
+
+**Edge Cases Handled:**
+1. Not inside forum topic → error: "Run /resume inside the topic"
+2. No arg → usage hint
+3. Invalid name format → rejected (same as `/new`)
+4. Name not found → error with fuzzy match fallback to `/list`
+5. Already bound to this topic → no-op: "already bound here"
+6. Bound to different topic → move executed, confirm includes old topic ID
+7. Current topic has different session → reject: "Use /remove first" (consistent with `/new`)
+
+**Model Carry-Forward:** Model from original entry is retained (defer `--model` override to future `/model` command per Aaron)
+
+**Files:** `src/bot/handlers.ts` (new command), `src/sessions/registry.ts` (findByName), 13 tests (all GREEN)
+
+---
+
+### Test Coverage (Jun)
+
+**MarkdownV2 Tests:** 22 unit tests (all GREEN), including 3 real-world Copilot output cases: code review with escaped headings, HUD footer, mixed identifiers
+
+**Message Splitter Tests:** 21 tests (all GREEN after Wave 2) covering:
+- Boundary preference, code block handling, spanning blocks, footer overhead, two-pass numbering, footer+numbering coexistence, no empty chunks
+
+**Resume Tests:** 13 tests (all GREEN) covering all 7 edge cases above
+
+**Total Phase 5:** 56 tests added; 235 total passing (up from 198 pre-wave)
+
+---
+
+### Risks & Mitigations
+
+1. **MarkdownV2 brittleness:** Telegram docs incomplete on nested entities. Mitigation: plain-text fallback is safety net; never block delivery.
+2. **Chunk boundary + MarkdownV2 interaction:** Escape before splitting (safer than after). Implemented by Carter.
+3. **Multi-chunk rate limiting:** ≤10 chunks safe (~30 msg/s limit). 100ms delay between sends + auto-retry mitigates storms.
+4. **Registry race on `/resume` moves:** Serialized via `writeQueue`; single-user system, pragmatically safe.
+5. **Test surface expansion:** Jun prioritized unit tests (splitter, escaper) over integration tests (lower priority, harder to mock).
+
+---
+
+### Aaron's Decisions Applied
+
+| Question | Aaron's Answer | Implementation |
+|----------|----------------|-----------------|
+| Chunk numbering `[n/total]`? | No — keep clean | Two-pass omits numbering on single-chunk; never `[1/1]` |
+| Max chunks cap? | 10 chunks, truncate + warning | Not implemented (acceptable for this user's typical response length) |
+| HTML fallback before plain text? | No — MarkdownV2 → plain text only | Fallback chain: V2 → plain text (HTML skipped) |
+| Accept occasional plain-text degradation? | Yes | Fallback chain allows graceful degradation |
+| `/resume` move semantics? | Option A (move, not unbound-only) | Move unbinds old, binds new; SDK cache handles stale entries |
+| `/resume --model` override? | Defer to future `/model` command | Model carried forward, no override flag |
+
+---
+
 ## Governance
 
 - All meaningful changes require team consensus

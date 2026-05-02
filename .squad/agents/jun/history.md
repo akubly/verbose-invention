@@ -250,3 +250,139 @@ Wrote tests defining the contracts for four features being implemented in parall
 - `.skip` tests with detailed comments are acceptable when unit testing is impossible (real SDK dependency)
 
 **Test count:** 107 → 130 tests across 7 files (all directories).
+
+### 2025-04-30 — Integration Test Suite: Cross-Boundary Flow Testing
+
+Wrote 3 integration test files covering critical cross-boundary flows that span multiple modules. These are "component integration" tests — they test DI wiring and cross-module behavior with mocked external boundaries (no real Telegram API, no real SDK).
+
+**Test additions:**
+
+1. **Chat ID enforcement** (`tests/integration/chat-id-enforcement.test.ts` — 6 tests):
+   - Tests `createBot()` middleware + handler interaction
+   - `allows messages from allowed chat ID` — middleware passes, relay triggered
+   - `silently drops messages from disallowed chat IDs` — middleware blocks, no relay
+   - `allows /help command from allowed chat ID` — command processed
+   - `drops /help command from disallowed chat ID` — command blocked
+   - `middleware is applied unconditionally` — multiple disallowed IDs blocked
+   - Pattern: Create Bot with botInfo + manual middleware, simulate grammY Updates
+   - **Edge case discovered:** grammY Bot requires explicit botInfo or bot.init() call before handleUpdate()
+
+2. **Pairing flow** (`tests/integration/pairing-flow.test.ts` — 12 tests):
+   - Tests config round-trip, pairing code validation, /pair handler behavior
+   - Config tests: save→load round-trip, atomic write (tmp+rename), parent dir creation, ENOENT/corrupt JSON handling
+   - Pairing code tests: 6-digit range validation (100000-999999), integer type, randomness
+   - /pair handler tests: correct/wrong code validation, supergroup requirement, chat ID saving, missing chat ID handling
+   - End-to-end test: generate code → validate → save config → verify persistence
+   - Pattern: Direct Bot instantiation with botInfo, manual /pair handler registration, grammY Update simulation
+   - **Key insight:** Pairing logic in main.ts is tightly coupled; tested component parts instead
+
+3. **SDK crash recovery** (`tests/integration/sdk-crash-recovery.test.ts` — 9 tests):
+   - Tests relay→factory→backoff recovery round-trip
+   - Crash detection: `resetForRestart()` called on SDK errors, NOT on timeout errors
+   - Cache clearing: all sessions evicted after SDK crash, single session on timeout
+   - Recovery workflow: crash → reset → new session created successfully
+   - Multi-crash handling: multiple sequential crashes with resetForRestart calls
+   - Cache eviction test: dispose() clears cache, next message re-fetches
+   - Pattern: Mock factory with crashing/working sessions, verify full recovery cycle
+   - **Design decision:** Removed direct CopilotClientImpl backoff tests (SDK property is getter-only); tested through factory interface instead
+
+**Test results:**
+- **Total:** 130 → 148 tests (144 passed, 4 skipped)
+- **Integration tests:** 27 new tests across 3 files
+- All integration tests pass ✓
+- TypeScript compiles clean ✓
+
+**Testing patterns discovered:**
+
+1. **grammY testing:**
+   - Must provide botInfo in Bot constructor OR call bot.init() before handleUpdate()
+   - Mock API client with `client: { callApi: vi.fn().mockResolvedValue(...) }` to prevent real network calls
+   - Create realistic Update objects matching Telegram's API shape
+   - Middleware can be tested in isolation (ctx→next pattern) OR through full bot.handleUpdate()
+
+2. **Integration test scope:**
+   - Test DI wiring and cross-module behavior, not unit-level logic
+   - Mock at external boundaries (Telegram API, SDK), use real internal modules
+   - Test "happy path + critical failures" — not every edge case (that's unit tests)
+   - Use existing mock patterns (makeMockFactory, makeStubRegistry) for consistency
+
+3. **Test file organization:**
+   - `tests/integration/` directory for cross-boundary tests
+   - Follow naming: `<feature>-flow.test.ts` or `<component>-enforcement.test.ts`
+   - Include high-level describe blocks with "Integration:" prefix
+
+**Key learnings:**
+- Integration tests caught grammY initialization requirement that unit tests missed
+- Testing component parts (config, code validation, handler logic) is valid when main workflow is tightly coupled
+- Mock spies on internal properties (like CopilotClientImpl.sdk getter) don't work — test through public interface
+- Fake timers work seamlessly across integration test boundaries
+
+**Files created:**
+- `tests/integration/chat-id-enforcement.test.ts`
+- `tests/integration/pairing-flow.test.ts`
+- `tests/integration/sdk-crash-recovery.test.ts`
+
+**Test count:** 130 → 148 tests across 10 files (7 unit test files + 3 integration test files).
+
+### 2026-04-30 — interactiveDestructive Permission Tests
+
+Added two new test files for the interactiveDestructive permission system: `tests/copilot/permissions.test.ts` and `tests/bot/prompt.test.ts`.
+
+**What the tests lock down:**
+1. **Tool classification** (`tests/copilot/permissions.test.ts` — 12 checks):
+   - Confirms `isDestructive()` returns `true` for coarse-grained write/exec tools (`edit`, `create`, `powershell`, `bash`, `git_commit`, `gh_pr_create`, `gh_issue_create`)
+   - Confirms read-only tools (`view`, `grep`, `glob`) and unknown tools default to non-destructive
+   - Verifies `DESTRUCTIVE_TOOLS` is a `Set` and contains the baseline destructive tool names
+
+2. **Telegram permission prompt** (`tests/bot/prompt.test.ts` — 6 tests):
+   - User approval resolves `true`; denial resolves `false`
+   - Timeout resolves `false` and edits the prompt message to show timeout/denial
+   - Long args are truncated in the outbound Telegram prompt text
+   - Prompt is posted to the requested `message_thread_id`
+   - Inline keyboard callback payloads use `perm:approve:{id}` / `perm:deny:{id}` and share the same request id
+
+**Mock pattern:**
+- Minimal fake bot with `bot.api.sendMessage`, `bot.api.editMessageText`, and `bot.on('callback_query:data', ...)`
+- Callback simulation by invoking the captured handler with a fake `callbackQuery` context
+- `vi.useFakeTimers()` for deterministic timeout coverage
+
+**Implementation detail discovered:**
+- `promptUserForPermission()` signature is positional: `(bot, chatId, topicId, toolName, args, timeoutMs?)`
+- The prompt module registers one callback-query middleware per bot using a `WeakMap` registry keyed by request ID
+- Args truncation currently uses `maxLength = 200` with `...` suffix (`slice(0, 197) + '...'`)
+
+**Verification:**
+- `npx vitest run tests/copilot/permissions.test.ts` ✓
+- `npx vitest run tests/bot/prompt.test.ts` ✓
+- `npm test` ✓ (`162 passed | 4 skipped`)
+
+### 2026-05-01 — Phase 4 Wave 2: interactiveDestructive Permission Tests Complete
+
+Completed test implementation for interactiveDestructive permission system across both classification and prompt UX layers.
+
+**Coverage delivered:**
+
+1. **Destructive tool classifier** (`tests/copilot/permissions.test.ts`):
+   - Tests `isDestructive()` correctly identifies coarse-grained set: `edit`, `create`, `powershell`, `bash`, `git_commit`, `gh_pr_create`, `gh_issue_create`
+   - Confirms read-only tools and unknown tools default to safe
+   - Verifies classifier is stable and deterministic
+
+2. **Permission prompt UX** (`tests/bot/prompt.test.ts`):
+   - UUID-based routing: correct approval/denial routing to right prompt
+   - 60-second timeout with state cleanup
+   - Argument truncation (200 char max)
+   - Message edits for approve/deny/timeout outcomes
+   - Concurrent request isolation
+
+3. **Integration test patterns:**
+   - Component-part testing for config, code validation, handler logic
+   - Factory interface testing (not getter-only private properties)
+   - Proper grammY Bot initialization with botInfo
+
+**Test metrics:**
+- Total: 162 passed, 4 skipped (166 total across 12 files)
+- New: 18 tests (permissions.test.ts + prompt.test.ts)
+- Baseline: 144 passed + 4 skipped maintained
+
+**Key discovery:** SDK permission requests often omit `toolName`, providing only generic `kind` field (`'shell'`, `'write'`). Added compatibility mapping in impl.ts to normalize these before classification, so coarse-grained policy works across known SDK permission kinds even when toolName is missing.
+

@@ -6,22 +6,17 @@
  */
 
 import 'dotenv/config';
-import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { createBot } from './bot/index.js';
 import { registerHandlers } from './bot/handlers.js';
 import { SessionRegistry } from './sessions/registry.js';
 import { CopilotClientImpl, type PermissionPolicy } from './copilot/impl.js';
-import { loadConfig, saveConfig, getConfigPath } from './config/config.js';
+import { loadConfig, saveConfig, getConfigPath, getReachDataDir } from './config/config.js';
 import { Bot } from 'grammy';
 
 function getRegistryPath(): string {
-  if (os.platform() === 'win32') {
-    const appData = process.env.APPDATA ?? path.join(os.homedir(), 'AppData', 'Roaming');
-    return path.join(appData, 'reach', 'registry.json');
-  }
-  return path.join(os.homedir(), '.config', 'reach', 'registry.json');
+  return path.join(getReachDataDir(), 'registry.json');
 }
 
 async function main(): Promise<void> {
@@ -34,9 +29,9 @@ async function main(): Promise<void> {
   const model = process.env.REACH_MODEL ?? 'claude-sonnet-4';
   
   // Validate permission policy
-  const validPolicies = ['approveAll', 'denyAll'] as const;
+  const validPolicies = ['approveAll', 'denyAll', 'interactiveDestructive'] as const;
   const rawPolicy = process.env.REACH_PERMISSION_POLICY ?? 'approveAll';
-  if (!validPolicies.includes(rawPolicy as any)) {
+  if (!validPolicies.includes(rawPolicy as PermissionPolicy)) {
     console.error(`[reach] Fatal: REACH_PERMISSION_POLICY must be one of: ${validPolicies.join(', ')}`);
     process.exit(1);
   }
@@ -107,7 +102,13 @@ async function main(): Promise<void> {
   const factory = new CopilotClientImpl(model, permissionPolicy);
   const bot = createBot(token, chatId);
 
-  const relay = registerHandlers({ bot, registry, factory, globalModel: model });
+  const relay = registerHandlers({
+    bot,
+    registry,
+    factory,
+    globalModel: model,
+    permissionPolicy,
+  });
 
   await registry.load();
   console.log(`[reach] Model: ${model}`);

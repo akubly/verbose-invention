@@ -1,8 +1,14 @@
-import type { Context } from 'grammy';
-import type { CopilotSessionFactory, CopilotSession } from '../copilot/factory.js';
+import type { Bot, Context } from 'grammy';
+import type {
+  CopilotSessionFactory,
+  CopilotSession,
+  PermissionPromptCallback,
+} from '../copilot/factory.js';
 import type { ISessionRegistry } from '../sessions/registry.js';
 import { IdleMonitor } from '../idleMonitor.js';
-import { StreamTimeoutError } from '../copilot/impl.js';
+import { StreamTimeoutError, type PermissionPolicy } from '../copilot/impl.js';
+
+const PERMISSION_PROMPT_MODULE = '../bot/prompt.js';
 
 /** Throttle Telegram message edits to stay within ~1/s rate limit. */
 const STREAM_EDIT_THROTTLE_MS = 800;
@@ -16,13 +22,23 @@ export class Relay {
     private readonly registry: ISessionRegistry,
     private readonly factory: CopilotSessionFactory,
     private readonly globalModel: string,
+    private readonly bot?: Bot,
+    private readonly permissionPolicy?: PermissionPolicy,
   ) {}
 
   async relay(ctx: Context): Promise<void> {
     const topicId = ctx.message?.message_thread_id;
     const userText = ctx.message?.text;
+    const bot = this.bot;
 
     if (!topicId || !userText) return;
+
+    if (this.permissionPolicy === 'interactiveDestructive' && !bot) {
+      const message = '⚠️ interactiveDestructive mode requires bot reference — check wiring';
+      console.warn('[relay] interactiveDestructive mode requires bot reference — check wiring');
+      await ctx.reply(message, { message_thread_id: topicId });
+      return;
+    }
 
     const entry = this.registry.resolve(topicId);
     if (!entry) {
@@ -45,7 +61,28 @@ export class Relay {
 
     if (!session) {
       try {
-        session = await this.factory.resume(entry.sessionName, entry.model) ?? await this.factory.create(entry.sessionName, entry.model);
+        let permissionCallback: PermissionPromptCallback | undefined;
+        if (this.permissionPolicy === 'interactiveDestructive') {
+          if (!bot) {
+            throw new Error('interactiveDestructive mode requires bot reference — check wiring');
+          }
+
+          const chatId = ctx.chat?.id;
+          if (chatId === undefined) {
+            const message = '⚠️ interactiveDestructive mode requires chat context for permission prompts';
+            console.warn('[relay] interactiveDestructive mode requires chat context for permission prompts');
+            await ctx.reply(message, { message_thread_id: topicId });
+            return;
+          }
+
+          const { promptUserForPermission } = await import(PERMISSION_PROMPT_MODULE);
+          permissionCallback = (toolName: string, args: string) =>
+            promptUserForPermission(bot, chatId, topicId, toolName, args);
+        }
+
+        session = await this.factory.resume(entry.sessionName, entry.model, permissionCallback)
+          ?? await this.factory.create(entry.sessionName, entry.model, permissionCallback);
+
         this.activeSessions.set(topicId, { sessionName: entry.sessionName, session });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

@@ -370,6 +370,28 @@ describe('registerHandlers', () => {
       expect(ctx.api.editMessageText).toHaveBeenCalled();
     });
 
+    it('passes the interactive permission policy through to Relay', async () => {
+      const session = makeMockSession(['Response from Copilot']);
+      const { bot, onHandlers } = makeMockBot();
+      const registry = makeStubRegistry([ENTRY]);
+      const factory = makeMockFactory(session);
+      registerHandlers({
+        bot: bot as any,
+        registry,
+        factory,
+        globalModel: 'test-model',
+        permissionPolicy: 'interactiveDestructive',
+      });
+
+      const handler = onHandlers.get('message:text')!;
+      const ctx = makeMockCtx({
+        message: { message_thread_id: 42, text: 'Build the parser' },
+      });
+      await handler(ctx);
+
+      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', undefined, expect.any(Function));
+    });
+
     it('replies with guidance when topic has no linked session', async () => {
       const { bot, onHandlers } = makeMockBot();
       const registry = makeStubRegistry(); // no entries

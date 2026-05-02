@@ -165,3 +165,60 @@ Phase 3 Wave 2 changes to `relay.ts`:
 - Kat: updating `HandlerOptions` and `registerHandlers()` to pass `globalModel` from main
 
 **Verification:** All 16 relay tests pass. TypeScript compilation blocked by expected missing `globalModel` parameter in `main.ts` (Noble Six's file) — this is expected until the full wave integrates.
+
+### 2026-04-25 — Phase 4 Wave 1: ESLint Setup + getReachDataDir() Extraction
+
+Completed two P0/P1 tasks for code quality and DRY:
+
+**1. ESLint Configuration (P0)**
+
+Created `.eslintrc.json` for TypeScript linting:
+- Parser: `@typescript-eslint/parser` with `tsconfig.json` project reference
+- Extends: `eslint:recommended` + `@typescript-eslint/recommended`
+- Ignores: `dist/`, `node_modules/`
+- Fixed 8 violations across codebase:
+  - `src/bot/handlers.ts`: Removed unnecessary escape in regex (`\-` → `-`)
+  - `src/copilot/factory.ts`: Added `@typescript-eslint/no-unused-vars` suppressions for stub method params
+  - `src/copilot/impl.ts`: Fixed `prefer-const` false positive with eslint-disable for `thisPromise` pattern
+  - `src/main.ts`: Changed `as any` to `as PermissionPolicy` for type-safe validation
+  - `src/service/install.ts`: Added `@typescript-eslint/no-explicit-any` suppression for event handler signature
+
+**2. DRY Refactor: getReachDataDir() (P1)**
+
+Extracted duplicated platform path logic from `config.ts` and `main.ts`:
+- Added `getReachDataDir()` to `src/config/config.ts` — returns `%APPDATA%\reach` (Windows) or `~/.config/reach` (Unix)
+- Refactored `getConfigPath()` to call `getReachDataDir()` + `config.json`
+- Refactored `getRegistryPath()` in `main.ts` to import and use `getReachDataDir()` + `registry.json`
+- Removed unused `os` import from `main.ts`
+- Added unit test in `tests/config/config.test.ts` verifying platform-aware path resolution
+
+**Verification:**
+- ESLint: Zero violations (`npm run lint` passes)
+- Tests: 138/144 pass (new test included; 6 pre-existing integration test failures unrelated to this work)
+- TypeScript: Compiles clean (`npx tsc --noEmit`)
+
+**Pattern:** Centralized platform-aware path resolution reduces duplication and simplifies future changes (e.g., adding a third file would use the same base dir).
+
+### 2026-05-01 — Topic-Scoped Permission Prompt Injection in Relay
+
+Updated `src/relay/relay.ts` to support Aaron's Option C permission architecture without breaking the existing 3-arg constructor/tests:
+
+- `Relay` constructor now accepts optional `bot` and `permissionPolicy` args after `globalModel`
+- On first create/resume only, relay builds a per-session permission callback when `permissionPolicy === 'interactiveDestructive'` and a bot is available
+- The callback is bound to the active Telegram `chatId` + `topicId`, so destructive tool prompts route back into the same forum topic as the active session
+- Non-interactive policies preserve existing behavior: relay still calls `factory.resume(name, model)` / `factory.create(name, model)` with no extra arg when no callback is needed
+
+**Verification:** `npm run lint`, `npx tsc --noEmit`, and `npx vitest run tests/relay/` all pass in the current tree.
+
+### 2026-05-01 — Phase 4 Wave 2: Relay Permission Callback Integration
+
+Completed relay integration for interactiveDestructive mode using Option C (relay injects topic-aware callback).
+
+**Changes:**
+- Relay now accepts optional `bot` and `permissionPolicy` params (backward-compatible — all existing tests pass)
+- When creating/resuming a session with `permissionPolicy === 'interactiveDestructive'`, relay builds a per-session permission callback bound to the active `chatId` + `topicId`
+- Callback routing sends destructive tool prompts back into the same forum topic where the user is interacting (provides context)
+- Session creation fails with clear error if callback is required but bot is missing (fail-fast wiring validation)
+
+**Test:** All 16 relay tests pass. No test changes needed — existing constructor calls remain valid (optional params default to undefined).
+

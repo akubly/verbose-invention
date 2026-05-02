@@ -101,7 +101,7 @@ describe('Relay', () => {
       await relay.relay(makeMockCtx() as any);
 
       // resume() is attempted before create()
-      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', undefined);
+      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', undefined, undefined);
     });
 
     it('creates a new session when resume() returns null', async () => {
@@ -112,8 +112,8 @@ describe('Relay', () => {
 
       await relay.relay(makeMockCtx() as any);
 
-      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', undefined);
-      expect(factory.create).toHaveBeenCalledWith('reach-myapp', undefined);
+      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', undefined, undefined);
+      expect(factory.create).toHaveBeenCalledWith('reach-myapp', undefined, undefined);
     });
 
     it('reuses the cached in-memory session on subsequent relay calls', async () => {
@@ -242,6 +242,51 @@ describe('Relay', () => {
     });
   });
 
+  describe('interactive destructive wiring', () => {
+    it('replies with a clear error when bot wiring is missing', async () => {
+      const factory = makeMockFactory();
+      const registry = makeStubRegistry([SESSION_ENTRY]);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const relay = new Relay(registry, factory, 'test-model', undefined, 'interactiveDestructive');
+      const ctx = makeMockCtx();
+
+      await relay.relay(ctx as any);
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[relay] interactiveDestructive mode requires bot reference — check wiring',
+      );
+      expect(ctx.reply).toHaveBeenCalledWith(
+        '⚠️ interactiveDestructive mode requires bot reference — check wiring',
+        { message_thread_id: 42 },
+      );
+      expect(factory.resume).not.toHaveBeenCalled();
+      expect(factory.create).not.toHaveBeenCalled();
+    });
+
+    it('replies with a clear error when chat context is missing', async () => {
+      const factory = makeMockFactory();
+      const registry = makeStubRegistry([SESSION_ENTRY]);
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const relay = new Relay(registry, factory, 'test-model', {} as any, 'interactiveDestructive');
+      const ctx = {
+        ...makeMockCtx(),
+        chat: undefined,
+      };
+
+      await relay.relay(ctx as any);
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[relay] interactiveDestructive mode requires chat context for permission prompts',
+      );
+      expect(ctx.reply).toHaveBeenCalledWith(
+        '⚠️ interactiveDestructive mode requires chat context for permission prompts',
+        { message_thread_id: 42 },
+      );
+      expect(factory.resume).not.toHaveBeenCalled();
+      expect(factory.create).not.toHaveBeenCalled();
+    });
+  });
+
   // ── model parameter passing ───────────────────────────────────────────────
 
   describe('model parameter passing', () => {
@@ -257,7 +302,7 @@ describe('Relay', () => {
 
       await relay.relay(makeMockCtx() as any);
 
-      expect(factory.create).toHaveBeenCalledWith('reach-myapp', 'claude-opus-4.5');
+      expect(factory.create).toHaveBeenCalledWith('reach-myapp', 'claude-opus-4.5', undefined);
     });
 
     it('relay passes entry.model to factory.resume()', async () => {
@@ -271,7 +316,7 @@ describe('Relay', () => {
 
       await relay.relay(makeMockCtx() as any);
 
-      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', 'claude-opus-4.6');
+      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', 'claude-opus-4.6', undefined);
     });
 
     it('relay passes undefined model when entry has no model', async () => {
@@ -286,7 +331,7 @@ describe('Relay', () => {
 
       await relay.relay(makeMockCtx() as any);
 
-      expect(factory.create).toHaveBeenCalledWith('reach-myapp', undefined);
+      expect(factory.create).toHaveBeenCalledWith('reach-myapp', undefined, undefined);
     });
   });
 

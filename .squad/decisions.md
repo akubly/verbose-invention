@@ -400,6 +400,188 @@ Coordinator fixed 2 crash recovery test mocks post-run (AsyncIterable contract m
 
 ---
 
+### 2026-04-30 — Phase 4 Scoping — Hardening and Polish
+
+**Author:** Noble Six  
+**Date:** 2026-04-30  
+**Context:** Aaron confirms Reach is feature-complete for personal use. Phase 4 focuses on reliability, code quality, and maintainability before broader use.
+
+#### Prioritization Summary
+
+| Item | Priority | Complexity | Est. Effort | Owner | Blocking? |
+|------|----------|------------|-------------|-------|-----------|
+| ESLint setup | **P0** | Small | 30 min | Carter | Blocks P1 |
+| Extract getReachDataDir() | **P1** | Small | 45 min | Carter | No |
+| Integration tests | **P1** | Medium | 3-4 hours | Jun | No |
+| interactiveDestructive mode | **P2** | Large | 6-8 hours | Noble Six + Kat | No |
+
+#### Wave 1 (Foundation, 45 min total) — Completed ✓
+1. **ESLint setup (Carter)** — Created `.eslintrc.json` with TypeScript-ESLint config. `npm run lint` passes clean.
+2. **getReachDataDir() extraction (Carter)** — Centralized platform-aware path logic in `src/config/config.ts`. Refactored `main.ts` and `config.ts` to call shared function. Eliminated DRY violation.
+
+#### Wave 2 (Quality + Enhancement, 6-8 hours total) — Planned
+1. **Integration tests (Jun)** — 27 new tests: chat ID enforcement (9), pairing flow (10), SDK crash recovery (8). Component-part testing for tightly coupled workflows.
+2. **interactiveDestructive mode (Noble Six + Kat)** — Permission callback threading (Option C: relay injects topic-aware callback). Telegram inline keyboard prompts for destructive tools. Requires architecture decision before implementation.
+
+#### Open Questions for Aaron
+1. **interactiveDestructive priority:** Confirm P2 acceptable. If needed before rollout, promote to P1.
+2. **Tool classification granularity:** Coarse-grained (all `powershell` destructive) or fine-grained (parse command string)? Recommend starting coarse.
+3. **Permission prompt location:** Same topic (keeps context) or dedicated admin topic?
+
+#### Verification Criteria
+- **Wave 1:** `npm run lint` passes, `npm run typecheck` passes, `npm run test` passes (144/148), `getReachDataDir()` exported, zero duplication.
+- **Wave 2:** 27 integration tests pass (148 → 175 total), interactiveDestructive mode works end-to-end (manual smoke test), Telegram prompt timeout tested.
+
+---
+
+### 2026-04-30 — Integration Test Strategy Decisions
+
+**Author:** Jun (Test Engineer)  
+**Date:** 2026-04-30  
+**Context:** Writing integration tests for three critical cross-boundary flows
+
+#### Decision 1: Component-Part Testing for Tightly Coupled Workflows
+
+**Decision:** When a workflow is tightly coupled to a main entry point (like pairing in `main.ts`), test the component parts separately rather than trying to integration-test the full workflow.
+
+**Rationale:**
+- The pairing flow in `main.ts` is deeply intertwined with process.exit(), setTimeout(), and bot lifecycle
+- Mocking all of these correctly would be brittle and test the mocks more than the code
+- Testing config round-trip, code validation, and /pair handler logic separately provides the same coverage with less brittleness
+
+**Example:** `pairing-flow.test.ts` tests:
+- Config persistence (saveConfig → loadConfig)
+- Pairing code validation (6-digit range)
+- /pair handler behavior (code matching, supergroup check)
+- End-to-end scenario combining all parts
+
+#### Decision 2: Test Through Public Interfaces, Not Internal Properties
+
+**Decision:** When a class has getter-only properties or complex internal state, test through its public interface rather than trying to spy on internals.
+
+**Rationale:**
+- Attempting to spy on `CopilotClientImpl.sdk` fails because it's a getter-only property
+- Testing backoff behavior through the factory interface is more robust and less coupled to implementation details
+- If the implementation changes (e.g., different backoff algorithm), interface tests still pass
+
+**Example:** Replaced direct CopilotClientImpl backoff tests with relay-level tests that verify the factory continues working after crashes.
+
+#### Decision 3: grammY Bot Initialization in Tests
+
+**Decision:** Always provide `botInfo` in the Bot constructor for integration tests that call `bot.handleUpdate()`.
+
+**Rationale:**
+- grammY requires `botInfo` to be set OR `bot.init()` to be called before processing updates
+- Providing botInfo in constructor is simpler than async init and works for all test scenarios
+- Prevents "Bot not initialized!" errors that break tests
+
+**Example:**
+```typescript
+const bot = new Bot('fake-token', { 
+  botInfo: { 
+    id: 123, 
+    is_bot: true, 
+    first_name: 'TestBot', 
+    // ... other required fields
+  },
+  client: {
+    callApi: vi.fn().mockResolvedValue({ ok: true, result: { message_id: 100 } }),
+  } as any,
+});
+```
+
+#### Impact
+
+These decisions affect how future integration tests should be written:
+1. **For tightly coupled code:** Prefer component-part testing over full-workflow mocking
+2. **For class internals:** Test through public interfaces, avoid spying on private/getter properties
+3. **For grammY bots:** Always provide botInfo in constructor when testing bot.handleUpdate()
+
+---
+
+### 2026-04-30 — User decisions — interactiveDestructive design choices
+
+**By:** Aaron (via Copilot)
+
+**What:**
+1. `interactiveDestructive` stays P2 — not a launch blocker for personal use
+2. Tool classification: coarse-grained — all `powershell`, `bash`, `edit`, `create`, `git_commit` etc. are destructive. No command-string parsing.
+3. Permission prompts go to the same Telegram topic as the active session (inline with conversation context)
+
+**Why:** Aaron's decision after reviewing Noble Six's trade-off analysis. Coarse-grained is safer; same-topic provides context for approval decisions.
+
+---
+
+### 2026-05-01 — Phase 4 Wave 2: interactiveDestructive Implementation
+
+**Author:** Noble Six, Kat, Carter, Jun  
+**Date:** 2026-05-01  
+**Status:** Implemented
+
+Phase 4 Wave 2 delivers the `interactiveDestructive` permission mode — a complete system for prompting users via Telegram before executing destructive tools.
+
+#### Decisions
+
+1. **Destructive Tool Classifier (Noble Six)**
+   - Coarse-grained classification: `edit`, `create`, `powershell`, `bash`, `git_commit`, `gh_pr_create`, `gh_issue_create` are destructive
+   - Exported from `src/copilot/permissions.ts` as authoritative list
+   - No command-string parsing; simpler and safer for permission policy
+
+2. **Permission Handler Threading (Carter)**
+   - Relay accepts optional `bot` and `permissionPolicy` constructor parameters
+   - When `permissionPolicy === 'interactiveDestructive'`, relay creates per-topic permission callback
+   - Callback signature: `(toolName: string, args?: string) => Promise<boolean>`
+   - Passed to `CopilotSessionFactory.create()` and `.resume()`
+
+3. **Permission Prompt UX (Kat)**
+   - Inline keyboard prompt: `[Approve] [Deny]` buttons in Telegram
+   - UUID-based routing for concurrent requests (multiple users can prompt simultaneously)
+   - 60-second timeout with auto-cleanup
+   - Approval/denial routed back via callback promise resolution
+
+4. **SDK Permission Normalization (Noble Six)**
+   - `getPermissionToolName()` maps generic SDK permission kinds to coarse tools:
+     - `'shell'` → `'powershell'`
+     - `'write'` → `'edit'`
+   - Unknown kinds flow through unchanged (best-effort mapping for currently known SDK categories)
+
+#### Architecture
+
+```
+Session Creation
+  → CopilotClientImpl checks permissionPolicy
+  → If 'interactiveDestructive', injects permission callback from relay
+  → On destructive tool request, SDK emits permission event
+  → impl.ts calls injected callback with tool name + args
+  → Callback waits for user response via Telegram inline keyboard
+  → Response resolves callback promise (true = approve, false = deny)
+  → SDK continues or fails based on callback result
+```
+
+#### Test Coverage
+
+- `tests/copilot/permissions.test.ts` — Destructive tool classifier tests
+- `tests/bot/prompt.test.ts` — Permission prompt UX and timeout tests
+- **Total:** 162 passed, 4 skipped (166 total across 12 files)
+
+#### Artifacts
+
+- `src/copilot/permissions.ts` — Destructive tool classifier
+- Updated `src/copilot/factory.ts` — Optional permission callback parameter
+- Updated `src/copilot/impl.ts` — Permission handler integration
+- `src/bot/prompt.ts` — Inline keyboard permission prompt handler
+- Updated `src/relay/relay.ts` — Per-topic callback creation
+- Updated `main.ts` — Accept `REACH_PERMISSION_POLICY` env var
+- Updated `README.md` and `.env.example` — Documentation
+
+#### Verification
+
+- `npm run lint` ✅
+- `npx tsc --noEmit` ✅
+- `npx vitest run` ✅ (162 passed, 4 skipped)
+
+---
+
 ## Governance
 
 - All meaningful changes require team consensus

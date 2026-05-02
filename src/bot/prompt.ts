@@ -134,7 +134,9 @@ export async function promptUserForPermission(
         await ctx.answerCallbackQuery();
       }
 
-      await bot.api.editMessageText(chatId, promptMessage.message_id, formatOutcomeText(outcome, toolName));
+      await bot.api.editMessageText(chatId, promptMessage.message_id, formatOutcomeText(outcome, toolName), {
+        reply_markup: { inline_keyboard: [] },
+      });
     } finally {
       resolveResult?.(outcome === 'approve');
     }
@@ -148,7 +150,7 @@ export async function promptUserForPermission(
 
   const timeoutPromise = new Promise<boolean>((resolve) => {
     timeoutHandle = setTimeout(() => {
-      void complete('timeout').then(() => resolve(false));
+      void complete('timeout').then(() => resolve(false)).catch(() => {});
     }, timeoutMs);
   });
 

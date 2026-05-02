@@ -1,10 +1,12 @@
 /**
- * Integration test: Pairing flow.
+ * Integration test: Pairing flow components.
  *
- * Tests the pairing code flow components:
+ * Tests the pairing flow pieces that can be exercised without booting src/main.ts:
  * - Config round-trip (save → load)
  * - Pairing code validation (6-digit range)
- * - /pair command handler behavior
+ * - Pairing validation/config persistence via a test-local /pair handler
+ *
+ * Note: Full /pair wiring in src/main.ts is deferred to manual testing.
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -96,9 +98,11 @@ describe('Integration: Pairing flow', () => {
 
     it('creates parent directory if it does not exist', async () => {
       const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'reach-test-dir-'));
-      const configPath = path.join(tempDir, 'config.json');
+      const configPath = path.join(tempDir, 'nonexistent-subdir', 'config.json');
 
       await saveConfig(configPath, { telegramChatId: 12345 });
+
+      await expect(fs.access(path.dirname(configPath))).resolves.toBeUndefined();
 
       // Verify the config was written
       const loaded = await loadConfig(configPath);
@@ -142,9 +146,11 @@ describe('Integration: Pairing flow', () => {
     });
   });
 
-  // ── /pair command handler behavior ────────────────────────────────────────────
-
-  describe('/pair command handler', () => {
+  // ── /pair validation logic (test-local handler) ───────────────────────────────
+  // These tests intentionally register a local /pair handler so they can isolate
+  // pairing validation and config persistence without booting src/main.ts.
+  // Full main.ts wiring is deferred to manual testing.
+  describe('/pair validation logic (test-local handler)', () => {
     it('validates pairing code matches expected code', async () => {
       const CORRECT_CODE = '123456';
       const WRONG_CODE = '654321';
@@ -273,17 +279,17 @@ describe('Integration: Pairing flow', () => {
     });
   });
 
-  // ── End-to-end pairing scenario ───────────────────────────────────────────────
+  // ── End-to-end pairing scenario (test-local handler) ──────────────────────────
 
-  describe('end-to-end pairing scenario', () => {
-    it('completes full pairing workflow: generate code → validate → save config', async () => {
+  describe('end-to-end pairing scenario (test-local handler)', () => {
+    it('completes pairing workflow with a test-local handler: generate code → validate → save config', async () => {
       const configPath = getTempConfigPath();
-      
-      // Step 1: Generate pairing code (simulate main.ts behavior)
+
+      // Step 1: Generate a pairing code for this isolated workflow test
       const pairingCode = String(Math.floor(Math.random() * 900000) + 100000);
       expect(pairingCode.length).toBe(6);
 
-      // Step 2: Create bot and /pair handler
+      // Step 2: Create bot and test-local /pair handler
       const CHAT_ID = -1001234567890;
       const bot = new Bot('fake-token', { botInfo: { id: 123, is_bot: true, first_name: 'TestBot', username: 'testbot', can_join_groups: true, can_read_all_group_messages: true, supports_inline_queries: false, can_connect_to_business: false, has_main_web_app: false } });
       let pairSuccess = false;

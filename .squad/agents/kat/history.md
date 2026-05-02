@@ -134,7 +134,7 @@ Built `src/bot/prompt.ts` as a standalone permission prompt helper for grammY:
 
 ### 2026-05-01 — Phase 4 Wave 2: Telegram Permission Prompt Integration
 
-Completed `src/bot/prompt.ts` integration with the interactiveDestructive permission flow. Factory and relay injectthe callback; bot prompts appear in the active forum topic as inline keyboard messages.
+Completed `src/bot/prompt.ts` integration with the interactiveDestructive permission flow. Factory and relay inject the callback; bot prompts appear in the active forum topic as inline keyboard messages.
 
 **Key implementation decisions:**
 1. **UUID routing** — Each permission request has a UUID; callback_data contains the UUID so button presses route back to the correct prompt handler. Scales to concurrent users without state coupling.

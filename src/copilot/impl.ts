@@ -19,7 +19,7 @@ import type {
   CopilotSessionFactory,
   PermissionPromptCallback,
 } from './factory.js';
-import { isDestructive } from './permissions.js';
+import { isDestructive, isKnownSafe } from './permissions.js';
 
 const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -59,7 +59,12 @@ function makePermissionHandler(
     return async (req: PermissionRequest, invocation) => {
       const toolRequest = req as ToolPermissionRequest;
       const toolName = getPermissionToolName(toolRequest);
-      if (!isDestructive(toolName)) return approveAll(req, invocation);
+      if (isKnownSafe(toolName)) {
+        return approveAll(req, invocation);
+      }
+      if (!isDestructive(toolName)) {
+        return { kind: 'denied-by-rules' as const, rules: [] };
+      }
       try {
         const approved = await promptCallback(toolName, serializePermissionArgs(toolRequest.args));
         return approved

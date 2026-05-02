@@ -12,9 +12,10 @@ const mockSdkClient = {
 
 vi.mock('@github/copilot-sdk', () => ({
   CopilotClient: vi.fn(() => mockSdkClient),
-  approveAll: vi.fn(),
+  approveAll: vi.fn(() => ({ kind: 'approved' as const })),
 }));
 
+import { approveAll } from '@github/copilot-sdk';
 import { CopilotClientImpl } from '../../src/copilot/impl.js';
 
 // ─── Mock SDK session with event-emitter semantics ────────────────────────────
@@ -294,7 +295,76 @@ describe('CopilotClientImpl', () => {
         process.platform === 'win32' ? 'powershell' : 'bash',
         JSON.stringify({ command: 'echo test' }),
       );
+      expect(approveAll).not.toHaveBeenCalled();
       expect(result).toEqual({ kind: 'approved' });
+    });
+
+    it('auto-approves known-safe requests in interactiveDestructive mode', async () => {
+      const promptCallback = vi.fn().mockResolvedValue(true);
+      const interactiveImpl = new CopilotClientImpl('claude-sonnet-4', 'interactiveDestructive');
+
+      await interactiveImpl.create('test', undefined, promptCallback);
+
+      const createOptions = mockSdkClient.createSession.mock.calls[0]?.[0];
+      expect(createOptions?.onPermissionRequest).toBeTypeOf('function');
+
+      const request = {
+        kind: 'read' as const,
+        path: 'src/copilot/impl.ts',
+        intention: 'Inspect existing implementation',
+      };
+      const result = await createOptions.onPermissionRequest(request, {});
+
+      expect(promptCallback).not.toHaveBeenCalled();
+      expect(approveAll).toHaveBeenCalledWith(request, {});
+      expect(result).toEqual({ kind: 'approved' });
+    });
+
+    it('denies unknown requests in interactiveDestructive mode', async () => {
+      const promptCallback = vi.fn().mockResolvedValue(true);
+      const interactiveImpl = new CopilotClientImpl('claude-sonnet-4', 'interactiveDestructive');
+
+      await interactiveImpl.create('test', undefined, promptCallback);
+
+      const createOptions = mockSdkClient.createSession.mock.calls[0]?.[0];
+      expect(createOptions?.onPermissionRequest).toBeTypeOf('function');
+
+      const result = await createOptions.onPermissionRequest(
+        {
+          kind: 'custom-tool',
+          toolName: 'future-dangerous-tool',
+          args: { target: 'repo' },
+        },
+        {},
+      );
+
+      expect(promptCallback).not.toHaveBeenCalled();
+      expect(approveAll).not.toHaveBeenCalled();
+      expect(result).toEqual({ kind: 'denied-by-rules', rules: [] });
+    });
+
+    it('denies unknown MCP tools even when marked read-only', async () => {
+      const promptCallback = vi.fn().mockResolvedValue(true);
+      const interactiveImpl = new CopilotClientImpl('claude-sonnet-4', 'interactiveDestructive');
+
+      await interactiveImpl.create('test', undefined, promptCallback);
+
+      const createOptions = mockSdkClient.createSession.mock.calls[0]?.[0];
+      expect(createOptions?.onPermissionRequest).toBeTypeOf('function');
+
+      const result = await createOptions.onPermissionRequest(
+        {
+          kind: 'mcp',
+          toolName: 'unknown-readonly-tool',
+          readOnly: true,
+          args: { query: 'status' },
+        },
+        {},
+      );
+
+      expect(promptCallback).not.toHaveBeenCalled();
+      expect(approveAll).not.toHaveBeenCalled();
+      expect(result).toEqual({ kind: 'denied-by-rules', rules: [] });
     });
 
     it.skip('would test makePermissionHandler returns approveAll for approveAll policy', () => {

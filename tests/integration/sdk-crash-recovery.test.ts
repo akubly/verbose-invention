@@ -1,8 +1,11 @@
 /**
- * Integration test: SDK crash recovery.
+ * Integration test: relay-level SDK crash recovery.
  *
- * Tests the SDK crash recovery round-trip through relay → factory → backoff.
- * Verifies that SDK crashes trigger factory restart and backoff logic.
+ * Tests relay-level crash recovery behavior across the relay/factory contract.
+ * Verifies that SDK-like failures trigger the expected restart/reset interactions.
+ *
+ * Note: Uses factory stubs here; CopilotClientImpl backoff coverage lives
+ * separately from this suite (see tests/copilot/impl.test.ts).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -53,7 +56,10 @@ const SESSION_ENTRY: SessionEntry = {
 
 // ─── tests ────────────────────────────────────────────────────────────────────
 
-describe('Integration: SDK crash recovery', () => {
+// Uses factory stubs by design so this suite can focus on Relay's contract with
+// the factory interface. CopilotClientImpl backoff logic is tested separately
+// in tests/copilot/impl.test.ts.
+describe('Integration: relay-level SDK crash recovery', () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -206,7 +212,7 @@ describe('Integration: SDK crash recovery', () => {
     expect(workingSession.send).toHaveBeenCalled();
   });
 
-  // ── backoff timing ────────────────────────────────────────────────────────────
+  // ── cache/reset behavior ──────────────────────────────────────────────────────
 
   it('relay continues to process messages after cached session is cleared', async () => {
     // Test that relay re-fetches session after cache is cleared
@@ -243,7 +249,7 @@ describe('Integration: SDK crash recovery', () => {
 
   // ── end-to-end recovery scenario ──────────────────────────────────────────────
 
-  it('completes full recovery cycle: crash → reset → backoff → success', async () => {
+  it('completes relay-level recovery cycle: crash → reset → recreate → success', async () => {
     let restartCount = 0;
     let sessionCreateCount = 0;
 
@@ -300,7 +306,7 @@ describe('Integration: SDK crash recovery', () => {
     expect(finalText).toContain('Recovered!');
   });
 
-  it('handles multiple sequential crashes with increasing backoff', async () => {
+  it('handles multiple sequential crashes by resetting the factory each time', async () => {
     const crashingSessions: CopilotSession[] = [1, 2, 3].map(() => ({
       send: vi.fn().mockReturnValue({
         async *[Symbol.asyncIterator]() {

@@ -21,7 +21,7 @@ Phase 3 PR merged. Reach is feature-complete for personal use. Phase 4 focuses o
 **Wave 3 (pending):**
 - Additional hardening items (logging, error recovery, operator runbook) — TBD
 
-**Status:** Phase 4 Wave 2 complete. 162 tests passing, 4 integration tests skipped. Ready for Phase 3 PR merge or additional wave.
+**Status:** Phase 4 Wave 2 complete. 162 tests passing, 4 integration tests skipped. Ready for Phase 4 PR merge or additional wave.
 
 **Scoping:** `.squad/decisions.md`
 

@@ -24,6 +24,7 @@ function makeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry {
     list: vi.fn(() => Array.from(map.values())),
     remove: vi.fn(async (topicId: number) => map.delete(topicId)),
     load: vi.fn(),
+    move: vi.fn(),
   } as unknown as ISessionRegistry;
 }
 

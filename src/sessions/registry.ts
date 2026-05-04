@@ -13,8 +13,21 @@ export interface ISessionRegistry {
   load(): Promise<void>;
   register(topicId: number, chatId: number, sessionName: string, model?: string): Promise<void>;
   resolve(telegramTopicId: number): SessionEntry | undefined;
+  findByName(sessionName: string): SessionEntry | undefined;
+  /** Returns every entry whose sessionName matches — may be >1 when legacy duplicates exist on disk. */
+  findAllByName(sessionName: string): SessionEntry[];
   list(): SessionEntry[];
   remove(telegramTopicId: number): Promise<boolean>;
+  /**
+   * Re-binds a named session from one topic to another.
+   * Serialized via the internal mutation queue — only one registry mutation runs at a time.
+   * Reads identity (sessionName, chatId, model) from the stored source entry;
+   * the caller supplies only the two topic IDs.
+   * Builds a new entries snapshot, persists it to disk, then atomically swaps
+   * this.entries to the new map. No rollback path — this.entries is never mutated on failure.
+   * Throws if fromTopicId is not registered, toTopicId is already bound, or persist fails.
+   */
+  move(fromTopicId: number, toTopicId: number): Promise<void>;
 }
 
 /**
@@ -24,9 +37,15 @@ export interface ISessionRegistry {
  */
 export class SessionRegistry implements ISessionRegistry {
   private entries = new Map<number, SessionEntry>();
-  private writeQueue: Promise<void> = Promise.resolve();
+  private mutationQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly persistPath: string) {}
+
+  private enqueueMutation<T>(op: () => Promise<T>): Promise<T> {
+    const next = this.mutationQueue.then(op, op);
+    this.mutationQueue = next.catch(() => undefined);
+    return next;
+  }
 
   async load(): Promise<void> {
     this.entries.clear();
@@ -58,6 +77,18 @@ export class SessionRegistry implements ISessionRegistry {
         }
         this.entries.set(Number(key), value);
       }
+      // Detect duplicate names (warn but preserve — may predate uniqueness enforcement)
+      const namesSeen = new Map<string, number>();
+      for (const [topicId, entry] of this.entries) {
+        const prev = namesSeen.get(entry.sessionName);
+        if (prev !== undefined) {
+          console.warn(
+            `[registry] Duplicate session name "${entry.sessionName}" found for topics ${prev} and ${topicId}. New registrations with this name will be rejected.`,
+          );
+        } else {
+          namesSeen.set(entry.sessionName, topicId);
+        }
+      }
       console.log(`[registry] Loaded ${this.entries.size} session(s) from ${this.persistPath}`);
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return; // first run
@@ -71,20 +102,45 @@ export class SessionRegistry implements ISessionRegistry {
   }
 
   async register(topicId: number, chatId: number, sessionName: string, model?: string): Promise<void> {
-    const entry: SessionEntry = {
-      sessionName,
-      topicId,
-      chatId,
-      createdAt: new Date().toISOString(),
-      ...(model !== undefined && { model }),
-    };
-    this.entries.set(topicId, entry);
-    await this.persist();
-    console.log(`[registry] Registered topic ${topicId} → "${sessionName}"`);
+    return this.enqueueMutation(async () => {
+      const duplicate = this.findByName(sessionName);
+      if (duplicate && duplicate.topicId !== topicId) {
+        throw new Error(
+          `Session name "${sessionName}" is already in use by topic ${duplicate.topicId}. Choose a different name or /remove the other session first.`,
+        );
+      }
+      const entry: SessionEntry = {
+        sessionName,
+        topicId,
+        chatId,
+        createdAt: new Date().toISOString(),
+        ...(model !== undefined && { model }),
+      };
+      const newEntries = new Map(this.entries);
+      newEntries.set(topicId, entry);
+      await this.doPersistEntries(newEntries);
+      this.entries = newEntries;
+      console.log(`[registry] Registered topic ${topicId} → "${sessionName}"`);
+    });
   }
 
   resolve(telegramTopicId: number): SessionEntry | undefined {
     return this.entries.get(telegramTopicId);
+  }
+
+  findByName(sessionName: string): SessionEntry | undefined {
+    for (const entry of this.entries.values()) {
+      if (entry.sessionName === sessionName) return entry;
+    }
+    return undefined;
+  }
+
+  findAllByName(sessionName: string): SessionEntry[] {
+    const result: SessionEntry[] = [];
+    for (const entry of this.entries.values()) {
+      if (entry.sessionName === sessionName) result.push(entry);
+    }
+    return result;
   }
 
   list(): SessionEntry[] {
@@ -92,24 +148,38 @@ export class SessionRegistry implements ISessionRegistry {
   }
 
   async remove(telegramTopicId: number): Promise<boolean> {
-    const removed = this.entries.delete(telegramTopicId);
-    if (removed) {
-      await this.persist();
+    return this.enqueueMutation(async () => {
+      if (!this.entries.has(telegramTopicId)) return false;
+      const newEntries = new Map(this.entries);
+      newEntries.delete(telegramTopicId);
+      await this.doPersistEntries(newEntries);
+      this.entries = newEntries;
       console.log(`[registry] Removed topic ${telegramTopicId}`);
-    }
-    return removed;
+      return true;
+    });
   }
 
-  private persist(): Promise<void> {
-    const op = this.writeQueue.then(() => this.doPersist());
-    // Queue always advances — swallow errors for continuation only
-    this.writeQueue = op.catch(() => {});
-    // But return the actual operation so callers see errors
-    return op;
+  async move(fromTopicId: number, toTopicId: number): Promise<void> {
+    return this.enqueueMutation(async () => {
+      const source = this.entries.get(fromTopicId);
+      if (!source) {
+        throw new Error(`No session found for topic ${fromTopicId}`);
+      }
+      if (this.entries.has(toTopicId)) {
+        throw new Error(`Destination topic ${toTopicId} is already bound to "${this.entries.get(toTopicId)!.sessionName}"`);
+      }
+      const newEntry: SessionEntry = { ...source, topicId: toTopicId };
+      const newEntries = new Map(this.entries);
+      newEntries.delete(fromTopicId);
+      newEntries.set(toTopicId, newEntry);
+      await this.doPersistEntries(newEntries);
+      this.entries = newEntries;
+      console.log(`[registry] Moved "${source.sessionName}" from topic ${fromTopicId} to topic ${toTopicId}`);
+    });
   }
 
-  private async doPersist(): Promise<void> {
-    const data: RegistryData = { version: 1, entries: Object.fromEntries(this.entries) };
+  private async doPersistEntries(entries: Map<number, SessionEntry>): Promise<void> {
+    const data: RegistryData = { version: 1, entries: Object.fromEntries(entries) };
     await fs.mkdir(path.dirname(this.persistPath), { recursive: true });
     const tmp = this.persistPath + '.tmp';
     await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf-8');

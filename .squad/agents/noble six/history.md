@@ -50,6 +50,7 @@ Splitting   ──┘
 |---|--------|-----------------|
 | Chunk numbering `[n/total]`? | No | Two-pass omits on single-chunk; never `[1/1]` |
 | Max chunks cap? | 10 chunks, truncate | Acceptable (typical responses shorter) |
+| Max chunks cap? | 25 chunks, truncate | Acceptable (DoS-guard hard cap in relay) |
 | HTML fallback? | No | MarkdownV2 → plain text only |
 | Accept degradation? | Yes | Fallback chain allows graceful fallback |
 | `/resume` move semantics? | Option A (move) | Unbind old, bind new; SDK cache handles stale |

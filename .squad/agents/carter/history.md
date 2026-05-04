@@ -1,4 +1,4 @@
-# Carter — History
+﻿# Carter — History
 
 ## Core Context
 
@@ -47,7 +47,24 @@
 - Total Phase 5: 263 tests pass, lint clean
 - Pushed to `user/aaron/phase5-telegram-ux`
 
-## Phase 5 PR #5 Copilot Re-review Fix (2026-05-03)
+## Phase 5 PR #5 Cycle 3 Review Fix (2026-05-03)
+
+**G-B: Truncation marker not budgeted for footer/prefix (messageSplitter.ts:95)**
+- Root cause: `TRUNCATION_MARKER` was appended raw as the last chunk during maxChunks capping.
+  Footer (`\n\n` + footer text) and numbering prefix (`[N/N]\n`) were then layered on top.
+  For tight `maxLen` values, the final chunk could exceed the advertised limit.
+- **Fix:** Added `MIN_TRUNCATION_MARKER = '_(truncated)_'` constant. When applying the maxChunks
+  cap, compute `available = effectiveMax - markerPrefixLen - footerOverhead`. Select:
+  - Full marker if `available >= TRUNCATION_MARKER.length`
+  - Minimum marker if `available >= MIN_TRUNCATION_MARKER.length`
+  - Throw `Error("maxLen too small...")` if neither fits (defensive; requires absurdly small maxLen)
+- Prefix computed worst-case as `[${maxChunks}/${maxChunks}]\n`.length (only when numbering).
+- New tests (4): full marker fits with tight maxLen+footer+numbering; minimum marker fallback;
+  throw branch; final chunk length ≤ maxLen assertion.
+- Total: 267 tests pass (264 new passing vs 263 baseline + 4 new splitter tests), lint clean.
+- Commit: `d0f82f5` — pushed to `user/aaron/phase5-telegram-ux`.
+
+
 
 Chained issue caught in Copilot re-review of PR #5 F-D fix:
 
@@ -187,10 +204,10 @@ Added `/** Utility for callers that want to skip escaping overhead on clean text
 
 ## F7 Refactor: Port injection for relay layer (session N+1)
 
-**Task:** Aaron directed: introduce port interfaces so elay.ts has zero imports from ../bot/ or ../sessions/.
+**Task:** Aaron directed: introduce port interfaces so elay.ts has zero imports from ../bot/ or ../sessions/.
 
 **Approach:** 
-- Created src/relay/ports.ts with three exported types: ResolvedSession (minimal session shape), SessionLookup (esolve() only), PermissionPrompter (prompt method).
+- Created src/relay/ports.ts with three exported types: ResolvedSession (minimal session shape), SessionLookup (esolve() only), PermissionPrompter (prompt method).
 - Rewrote Relay constructor from (registry: ISessionRegistry, factory, model, bot?: Bot, permissionPolicy?: PermissionPolicy) to (sessionLookup: SessionLookup, factory, model, permissionPrompter?: PermissionPrompter).
 - SessionEntry is NOT imported by ports.ts or relay.ts — ResolvedSession defines only the two fields relay actually uses (sessionName, model).
 - Removed const PERMISSION_PROMPT_MODULE = '../bot/prompt.js' and the dynamic import. handlers.ts now statically imports promptUserForPermission and wraps it in a PermissionPrompter closure at the composition root.
@@ -202,7 +219,7 @@ Added `/** Utility for callers that want to skip escaping overhead on clean text
 - "interactiveDestructive wiring" describe block renamed to "permission prompter wiring"; "bot wiring missing" test replaced with "proceeds without prompting" test; "chat context missing" test updated to use injected prompter.
 - Integration test updated in parallel.
 
-**Verification:** 	sc --noEmit PASS, itest run 245 passed | 4 skipped, lint PASS (0 warnings).
+**Verification:** 	sc --noEmit PASS, itest run 245 passed | 4 skipped, lint PASS (0 warnings).
 
 **Key lessons:**
 - The PermissionPolicy concept belongs at the composition root, not in the relay. The relay should not know about policy names — it just receives a prompter or it doesn't.

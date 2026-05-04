@@ -13,8 +13,15 @@ export interface ISessionRegistry {
   load(): Promise<void>;
   register(topicId: number, chatId: number, sessionName: string, model?: string): Promise<void>;
   resolve(telegramTopicId: number): SessionEntry | undefined;
+  findByName(sessionName: string): SessionEntry | undefined;
   list(): SessionEntry[];
   remove(telegramTopicId: number): Promise<boolean>;
+  /**
+   * Atomically re-binds a named session from one topic to another.
+   * Mutates both Map entries in memory then calls persist() exactly once.
+   * If persist() throws, the in-memory state is rolled back.
+   */
+  move(fromTopicId: number, toTopicId: number, sessionName: string, chatId: number, model?: string): Promise<void>;
 }
 
 /**
@@ -58,6 +65,18 @@ export class SessionRegistry implements ISessionRegistry {
         }
         this.entries.set(Number(key), value);
       }
+      // Detect duplicate names (warn but preserve — may predate uniqueness enforcement)
+      const namesSeen = new Map<string, number>();
+      for (const [topicId, entry] of this.entries) {
+        const prev = namesSeen.get(entry.sessionName);
+        if (prev !== undefined) {
+          console.warn(
+            `[registry] Duplicate session name "${entry.sessionName}" found for topics ${prev} and ${topicId}. New registrations with this name will be rejected.`,
+          );
+        } else {
+          namesSeen.set(entry.sessionName, topicId);
+        }
+      }
       console.log(`[registry] Loaded ${this.entries.size} session(s) from ${this.persistPath}`);
     } catch (err: unknown) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return; // first run
@@ -71,6 +90,13 @@ export class SessionRegistry implements ISessionRegistry {
   }
 
   async register(topicId: number, chatId: number, sessionName: string, model?: string): Promise<void> {
+    // Enforce name uniqueness across different topics
+    const duplicate = this.findByName(sessionName);
+    if (duplicate && duplicate.topicId !== topicId) {
+      throw new Error(
+        `Session name "${sessionName}" is already in use by topic ${duplicate.topicId}. Choose a different name or /remove the other session first.`,
+      );
+    }
     const entry: SessionEntry = {
       sessionName,
       topicId,
@@ -87,6 +113,13 @@ export class SessionRegistry implements ISessionRegistry {
     return this.entries.get(telegramTopicId);
   }
 
+  findByName(sessionName: string): SessionEntry | undefined {
+    for (const entry of this.entries.values()) {
+      if (entry.sessionName === sessionName) return entry;
+    }
+    return undefined;
+  }
+
   list(): SessionEntry[] {
     return Array.from(this.entries.values());
   }
@@ -98,6 +131,32 @@ export class SessionRegistry implements ISessionRegistry {
       console.log(`[registry] Removed topic ${telegramTopicId}`);
     }
     return removed;
+  }
+
+  async move(fromTopicId: number, toTopicId: number, sessionName: string, chatId: number, model?: string): Promise<void> {
+    const oldEntry = this.entries.get(fromTopicId);
+    if (!oldEntry) {
+      throw new Error(`No session found for topic ${fromTopicId}`);
+    }
+    const newEntry: SessionEntry = {
+      sessionName,
+      topicId: toTopicId,
+      chatId,
+      createdAt: oldEntry.createdAt,
+      ...(model !== undefined && { model }),
+    };
+    // Mutate in-memory first, then persist exactly once
+    this.entries.delete(fromTopicId);
+    this.entries.set(toTopicId, newEntry);
+    try {
+      await this.persist();
+      console.log(`[registry] Moved "${sessionName}" from topic ${fromTopicId} to topic ${toTopicId}`);
+    } catch (err) {
+      // Rollback in-memory state so the registry stays consistent
+      this.entries.delete(toTopicId);
+      this.entries.set(fromTopicId, oldEntry);
+      throw err;
+    }
   }
 
   private persist(): Promise<void> {

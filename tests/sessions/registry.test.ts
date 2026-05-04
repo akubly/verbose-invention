@@ -271,4 +271,96 @@ describe('SessionRegistry', () => {
       expect(registry.list()).toEqual([]);
     });
   });
+
+  // ── name uniqueness ──────────────────────────────────────────────────────────
+
+  describe('name uniqueness', () => {
+    it('allows registering a new unique name on a different topic', async () => {
+      await registry.register(1, -100, 'alpha');
+      await expect(registry.register(2, -100, 'beta')).resolves.not.toThrow();
+    });
+
+    it('throws when registering a name already used by a different topic', async () => {
+      await registry.register(1, -100, 'dup-name');
+      await expect(registry.register(2, -100, 'dup-name')).rejects.toThrow(/dup-name/);
+    });
+
+    it('allows re-registering the same topicId with a new name (update in-place)', async () => {
+      await registry.register(1, -100, 'name-v1');
+      await expect(registry.register(1, -100, 'name-v2')).resolves.not.toThrow();
+      expect(registry.resolve(1)?.sessionName).toBe('name-v2');
+    });
+
+    it('warns about duplicate names found on load but loads all entries', async () => {
+      const data = {
+        version: 1,
+        entries: {
+          '1': { sessionName: 'dup', topicId: 1, chatId: -100, createdAt: '2024-01-01T00:00:00.000Z' },
+          '2': { sessionName: 'dup', topicId: 2, chatId: -100, createdAt: '2024-01-01T00:00:00.000Z' },
+        },
+      };
+      await fs.mkdir(path.dirname(storePath), { recursive: true });
+      await fs.writeFile(storePath, JSON.stringify(data), 'utf-8');
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await registry.load();
+        expect(registry.list()).toHaveLength(2);
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/[Dd]uplicate.*dup|dup.*[Dd]uplicate/));
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
+
+  // ── move ─────────────────────────────────────────────────────────────────────
+
+  describe('move', () => {
+    it('moves an entry from one topic to another', async () => {
+      await registry.register(1, -100, 'session-a');
+      await registry.move(1, 2, 'session-a', -100);
+      expect(registry.resolve(1)).toBeUndefined();
+      expect(registry.resolve(2)?.sessionName).toBe('session-a');
+    });
+
+    it('carries model through on move', async () => {
+      await registry.register(1, -100, 'session-b', 'claude-opus-4.5');
+      await registry.move(1, 2, 'session-b', -100, 'claude-opus-4.5');
+      expect(registry.resolve(2)?.model).toBe('claude-opus-4.5');
+    });
+
+    it('preserves createdAt from the original entry', async () => {
+      await registry.register(1, -100, 'session-c');
+      const original = registry.resolve(1)!;
+      await registry.move(1, 2, 'session-c', -100);
+      expect(registry.resolve(2)?.createdAt).toBe(original.createdAt);
+    });
+
+    it('throws when the source topicId is not registered', async () => {
+      await expect(registry.move(999, 2, 'ghost', -100)).rejects.toThrow(/999/);
+    });
+
+    it('persists the final state after a successful move', async () => {
+      await registry.register(1, -100, 'session-d');
+      await registry.move(1, 2, 'session-d', -100);
+
+      const reloaded = new SessionRegistry(storePath);
+      await reloaded.load();
+
+      expect(reloaded.resolve(1)).toBeUndefined();
+      expect(reloaded.resolve(2)?.sessionName).toBe('session-d');
+    });
+
+    it('rolls back in-memory state when persist throws (atomic guarantee)', async () => {
+      await registry.register(1, -100, 'session-e');
+
+      vi.spyOn(registry as any, 'doPersist').mockRejectedValueOnce(new Error('disk full'));
+
+      await expect(registry.move(1, 2, 'session-e', -100)).rejects.toThrow('disk full');
+
+      // In-memory state must be restored — old binding back, new binding absent
+      expect(registry.resolve(1)?.sessionName).toBe('session-e');
+      expect(registry.resolve(2)).toBeUndefined();
+    });
+  });
 });

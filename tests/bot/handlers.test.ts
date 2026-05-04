@@ -32,9 +32,11 @@ function makeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry {
   return {
     register: vi.fn(),
     resolve: vi.fn((topicId: number) => map.get(topicId)),
+    findByName: vi.fn((name: string) => Array.from(map.values()).find((e) => e.sessionName === name)),
     list: vi.fn(() => Array.from(map.values())),
     remove: vi.fn(async (topicId: number) => map.delete(topicId)),
     load: vi.fn(),
+    move: vi.fn(),
   } as unknown as ISessionRegistry;
 }
 
@@ -84,6 +86,7 @@ describe('registerHandlers', () => {
     expect(commandHandlers.has('new')).toBe(true);
     expect(commandHandlers.has('list')).toBe(true);
     expect(commandHandlers.has('remove')).toBe(true);
+    expect(commandHandlers.has('resume')).toBe(true);
     expect(commandHandlers.has('help')).toBe(true);
     expect(onHandlers.has('message:text')).toBe(true);
     expect(bot.catch).toHaveBeenCalled();

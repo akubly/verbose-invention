@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Relay } from '../../src/relay/relay.js';
-import type { SessionRegistry, SessionEntry } from '../../src/sessions/registry.js';
+import type { SessionLookup } from '../../src/relay/ports.js';
+import type { SessionEntry } from '../../src/sessions/registry.js';
 import { makeMockFactory, makeMockSession, makeStream } from '../mocks/sdk.js';
 import { StreamTimeoutError } from '../../src/copilot/impl.js';
+import { escapeMarkdownV2 } from '../../src/relay/markdownV2.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -24,16 +26,12 @@ function makeMockCtx(
   };
 }
 
-/** Stub SessionRegistry — satisfies the shape Relay needs. */
-function makeStubRegistry(entries: SessionEntry[] = []): SessionRegistry {
+/** Stub SessionLookup — satisfies the shape Relay needs. */
+function makeStubRegistry(entries: SessionEntry[] = []): SessionLookup {
   const map = new Map(entries.map((e) => [e.topicId, e]));
   return {
-    register: vi.fn(),
     resolve: vi.fn((topicId: number) => map.get(topicId)),
-    list: vi.fn(() => Array.from(map.values())),
-    remove: vi.fn(),
-    load: vi.fn(),
-  } as unknown as SessionRegistry;
+  };
 }
 
 const SESSION_ENTRY: SessionEntry = {
@@ -90,7 +88,7 @@ describe('Relay', () => {
 
       const editCalls = (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
       const finalText = editCalls[editCalls.length - 1][2] as string;
-      expect(finalText).toBe('The answer is 42.\n\n📎 reach-myapp · test-model');
+      expect(finalText).toBe(escapeMarkdownV2('The answer is 42.\n\n📎 reach-myapp · test-model'));
     });
 
     it('resumes an existing session (not create) on the first relay', async () => {
@@ -140,7 +138,7 @@ describe('Relay', () => {
 
       const editCalls = (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
       const finalText = editCalls[editCalls.length - 1][2] as string;
-      expect(finalText).toBe('_(empty response)_\n\n📎 reach-myapp · test-model');
+      expect(finalText).toBe(escapeMarkdownV2('_(empty response)_\n\n📎 reach-myapp · test-model'));
     });
   });
 
@@ -242,32 +240,24 @@ describe('Relay', () => {
     });
   });
 
-  describe('interactive destructive wiring', () => {
-    it('replies with a clear error when bot wiring is missing', async () => {
+  describe('permission prompter wiring', () => {
+    it('proceeds without prompting when no permissionPrompter is configured', async () => {
       const factory = makeMockFactory();
       const registry = makeStubRegistry([SESSION_ENTRY]);
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const relay = new Relay(registry, factory, 'test-model', undefined, 'interactiveDestructive');
+      const relay = new Relay(registry, factory, 'test-model'); // no prompter
       const ctx = makeMockCtx();
 
       await relay.relay(ctx as any);
 
-      expect(warnSpy).toHaveBeenCalledWith(
-        '[relay] interactiveDestructive mode requires bot reference — check wiring',
-      );
-      expect(ctx.reply).toHaveBeenCalledWith(
-        '⚠️ interactiveDestructive mode requires bot reference — check wiring',
-        { message_thread_id: 42 },
-      );
-      expect(factory.resume).not.toHaveBeenCalled();
-      expect(factory.create).not.toHaveBeenCalled();
+      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', undefined, undefined);
     });
 
-    it('replies with a clear error when chat context is missing', async () => {
+    it('replies with a clear error and does not call factory when prompter is configured but chat context is absent', async () => {
       const factory = makeMockFactory();
       const registry = makeStubRegistry([SESSION_ENTRY]);
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const relay = new Relay(registry, factory, 'test-model', {} as any, 'interactiveDestructive');
+      const mockPrompter = { prompt: vi.fn().mockResolvedValue(true) };
+      const relay = new Relay(registry, factory, 'test-model', mockPrompter);
       const ctx = {
         ...makeMockCtx(),
         chat: undefined,
@@ -276,10 +266,10 @@ describe('Relay', () => {
       await relay.relay(ctx as any);
 
       expect(warnSpy).toHaveBeenCalledWith(
-        '[relay] interactiveDestructive mode requires chat context for permission prompts',
+        '[relay] permission prompting requires chat context — cannot prompt',
       );
       expect(ctx.reply).toHaveBeenCalledWith(
-        '⚠️ interactiveDestructive mode requires chat context for permission prompts',
+        '⚠️ permission prompting requires chat context — cannot prompt',
         { message_thread_id: 42 },
       );
       expect(factory.resume).not.toHaveBeenCalled();
@@ -365,7 +355,7 @@ describe('Relay', () => {
 
       const editCalls = (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
       const finalText = editCalls[editCalls.length - 1][2] as string;
-      expect(finalText).toContain('📎 reach-myapp · claude-opus-4.5');
+      expect(finalText).toContain(escapeMarkdownV2('📎 reach-myapp · claude-opus-4.5'));
     });
 
     it('final message includes HUD footer with global model when no per-session model', async () => {
@@ -378,7 +368,7 @@ describe('Relay', () => {
 
       const editCalls = (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
       const finalText = editCalls[editCalls.length - 1][2] as string;
-      expect(finalText).toContain('📎 reach-myapp · claude-sonnet-4');
+      expect(finalText).toContain(escapeMarkdownV2('📎 reach-myapp · claude-sonnet-4'));
     });
   });
 

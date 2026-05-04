@@ -187,6 +187,23 @@ Added `MAX_ACCUMULATED_BYTES = 100_000` cap in stream loop with truncation messa
 **F11 — Overlong code line in splitCodeBlock (IMPORTANT → FIXED)**
 Added `lineCapacity = maxLen - overhead` guard. Lines exceeding capacity are hard-cut into `Math.ceil(line.length / lineCapacity)` segments via `Array.from`. Each segment then goes through normal group-packing logic.
 
+---
+
+## PR #5 Cycle 4 — 2026-05-03
+
+### H-C Finding: advancePast() drops separator newline after code blocks (FIXED)
+
+**Bug:** `advancePast()` consumed the `\n` immediately following a closing ` ``` ` fence. When a code block was followed by normal text, that separator newline was eaten, causing the next chunk to start with the text directly stuck to the closing fence with no blank line — breaking Markdown paragraph structure.
+
+**Root cause:** The original implementation was `blockEnd < text.length && text[blockEnd] === '\n' ? blockEnd + 1 : blockEnd` — it explicitly skipped one character past the fence if it was a newline.
+
+**Fix:** Simplified `advancePast()` to `return blockEnd` — advance exactly to `block.end` (past the ` ``` `) and leave all subsequent whitespace/newlines for the normal paragraph splitter to handle.
+
+**Test added:** Regression test verifies `'some text\n\n\`\`\`js\nconst x = 1;\n\`\`\`\nmore text'` preserves the newline between the fence and `more text`.
+
+**Results:** 268 tests pass (267 prior + 1 new), tsc clean, lint clean. Commit `1c3261e`.
+
+
 **F12 — Code-block detector mis-pairs fences (MINOR → FIXED)**
 Added odd-fence count check at end of `escapeMarkdownV2`. If `(result.match(/```/g) ?? []).length % 2 !== 0`, return `escapePlain(text)` immediately.
 

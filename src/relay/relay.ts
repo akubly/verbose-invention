@@ -16,8 +16,12 @@ const CHUNK_SEND_DELAY_MS = 100;
 const MAX_ACCUMULATED_BYTES = 100_000;
 /** DoS guard: cap split chunk array to avoid flooding Telegram with hundreds of messages. */
 const MAX_CHUNKS = 25;
-/** Headroom reserved from maxLen for MarkdownV2 \-escape expansion (~30% of 4096). */
-const MARKDOWN_ESCAPE_RESERVE_BYTES = 1229;
+/**
+ * Worst-case MarkdownV2 escape budget: a chunk made entirely of special chars
+ * doubles in size after escaping. Using half of Telegram's 4096-char limit (≈ 2048)
+ * as the effective max guarantees even 100%-special-char content stays under 4096.
+ */
+const MARKDOWN_ESCAPE_EFFECTIVE_MAX = 2048;
 
 /** Throttle Telegram message edits to stay within ~1/s rate limit. */
 const STREAM_EDIT_THROTTLE_MS = 800;
@@ -130,14 +134,16 @@ export class Relay {
       const modelStr = String(entry.model ?? this.globalModel);
       const footer = `📎 ${entry.sessionName} · ${modelStr}`;
       const body = accumulated || '_(empty response)_';
-      const chunks = splitForTelegram(body, { footer, numbering: true, reserveBytes: MARKDOWN_ESCAPE_RESERVE_BYTES });
+      const chunks = splitForTelegram(body, { footer, numbering: true, effectiveMaxLen: MARKDOWN_ESCAPE_EFFECTIVE_MAX });
 
-      // F10: cap chunk array to prevent flooding Telegram with hundreds of messages.
+      // F10: cap chunk array to exactly MAX_CHUNKS to prevent flooding Telegram.
+      // Slice to MAX_CHUNKS-1 real chunks and replace the last slot with the
+      // truncation marker so the total is always ≤ MAX_CHUNKS.
       const allChunks = chunks.length > MAX_CHUNKS
-        ? [...chunks.slice(0, MAX_CHUNKS), '_(response truncated — too many chunks)_']
+        ? [...chunks.slice(0, MAX_CHUNKS - 1), '_(response truncated — too many chunks)_']
         : chunks;
 
-      await this.safeEdit(
+      const firstOk = await this.safeEdit(
         ctx,
         placeholder.chat.id,
         placeholder.message_id,
@@ -145,6 +151,15 @@ export class Relay {
         true,
         entry.sessionName,
       );
+
+      if (!firstOk) {
+        console.error(
+          `[relay] First-chunk edit failed — aborting follow-up chunks for topic ${topicId}; updating placeholder`,
+        );
+        // Best-effort: replace "…" with a brief error so the user isn't left at the placeholder.
+        await this.safeEdit(ctx, placeholder.chat.id, placeholder.message_id, '_(failed to render reply — see logs)_');
+        return;
+      }
 
       // F9: track failures per chunk for log fidelity.
       const totalChunks = allChunks.length;
@@ -205,7 +220,7 @@ export class Relay {
     text: string,
     tryMarkdown = false,
     sessionLabel = '',
-  ): Promise<void> {
+  ): Promise<boolean> {
     try {
       if (tryMarkdown) {
         await this.withMarkdownFallback(
@@ -216,8 +231,10 @@ export class Relay {
       } else {
         await ctx.api.editMessageText(chatId, messageId, text);
       }
+      return true;
     } catch (editErr) {
       console.warn(`[relay] editMessageText failed (chat=${chatId}, msg=${messageId}):`, editErr);
+      return false;
     }
   }
 

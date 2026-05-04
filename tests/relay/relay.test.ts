@@ -372,7 +372,78 @@ describe('Relay', () => {
     });
   });
 
-  // ── crash recovery ──────────────────────────────────────────────────────────
+  // ── chunk cap ────────────────────────────────────────────────────────────────
+
+  describe('chunk cap (F-D / F10)', () => {
+    it('caps multi-chunk send at exactly MAX_CHUNKS (25) — never 26', async () => {
+      // Real timers needed: 24 follow-up chunks × 100ms delay would hang fake timers.
+      vi.useRealTimers();
+
+      // 26 paragraphs of 1800 chars each → 26 chunks at effectiveMax=2048 (each fits
+      // under the per-chunk budget); cap must trim to MAX_CHUNKS-1 real + 1 marker = 25.
+      const bigContent = Array.from({ length: 26 }, () => 'x'.repeat(1800)).join('\n\n');
+      const session = makeMockSession([bigContent]);
+      const factory = makeMockFactory(session);
+      const registry = makeStubRegistry([SESSION_ENTRY]);
+      const relay = new Relay(registry, factory, 'test-model');
+      const ctx = makeMockCtx();
+
+      await relay.relay(ctx as any);
+
+      // First chunk via editMessageText, remaining via ctx.reply.
+      const replyCalls = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls;
+      // "…" placeholder + follow-up chunks (MAX_CHUNKS - 1 = 24 at most)
+      const followUpReplies = replyCalls.filter(
+        (c: unknown[]) => c[0] !== '…',
+      );
+      // Total = 1 (edit) + followUps ≤ MAX_CHUNKS = 25 → followUps ≤ 24
+      expect(followUpReplies.length).toBeLessThanOrEqual(24);
+
+      // Last follow-up must be the truncation marker
+      const lastReply = followUpReplies[followUpReplies.length - 1]?.[0] as string | undefined;
+      expect(lastReply).toContain('truncated');
+    }, 10_000);
+  });
+
+  // ── first-chunk failure (F-E) ─────────────────────────────────────────────────
+
+  describe('first-chunk failure (F-E)', () => {
+    it('aborts follow-up chunks and updates placeholder when first-chunk edit fails', async () => {
+      // Two-chunk response so we can confirm chunk 2 is never sent
+      const chunk1 = 'x'.repeat(2020);
+      const chunk2 = 'y'.repeat(2020);
+      const session = makeMockSession([chunk1 + '\n\n' + chunk2]);
+      const factory = makeMockFactory(session);
+      const registry = makeStubRegistry([SESSION_ENTRY]);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const relay = new Relay(registry, factory, 'test-model');
+      const ctx = makeMockCtx();
+
+      // Make every editMessageText call fail (non-parse-entities → safeEdit returns false)
+      (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new Error('Telegram API unavailable'),
+      );
+
+      await relay.relay(ctx as any);
+
+      // ctx.reply called only once — for the "…" placeholder; no follow-up chunks
+      expect(ctx.reply).toHaveBeenCalledTimes(1);
+      expect(ctx.reply).toHaveBeenCalledWith('…', { message_thread_id: 42 });
+
+      // Error log emitted for first-chunk failure
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('First-chunk edit failed'),
+      );
+
+      // safeEdit warned about the failed editMessageText calls
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('editMessageText failed'),
+        expect.anything(),
+      );
+    });
+  });
+
 
   describe('SDK crash recovery', () => {
     it('relay calls factory.resetForRestart() on non-timeout SDK error', async () => {

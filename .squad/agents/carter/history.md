@@ -43,8 +43,29 @@
 
 - Wave 1 complete: MarkdownV2 escaping live and tested
 - Wave 2 complete: Message splitting live and tested
-- Total Phase 5: 235 tests pass, tsc clean, lint clean
-- Ready for production deployment
+- PR #5 review fixes complete (F-A, F-D, F-E)
+- Total Phase 5: 257 tests pass, lint clean
+- Pushed to `user/aaron/phase5-telegram-ux`
+
+## Phase 5 PR #5 Copilot Review Fixes (2026-05-03)
+
+Three findings from Copilot review of PR #5, all addressed:
+
+**F-A: MarkdownV2 budget (relay.ts:20)**
+- `MARKDOWN_ESCAPE_RESERVE_BYTES = 1229` was insufficient: a 2867-char all-specials chunk
+  escapes to ~5734 chars, blowing Telegram's 4096 limit.
+- **Fix:** Replaced with `MARKDOWN_ESCAPE_EFFECTIVE_MAX = 2048` (= 4096 ÷ 2 worst-case ratio).
+- Renamed `reserveBytes` → `effectiveMaxLen` in `SplitOptions` for cleaner caller API.
+- Decision file: `.squad/decisions/inbox/carter-pr5-review-fixes.md`
+
+**F-D: Chunk cap off-by-one (relay.ts:137)**
+- Old: `slice(0, MAX_CHUNKS)` + marker = 26 chunks total (1 over cap).
+- **Fix:** `slice(0, MAX_CHUNKS - 1)` + marker = exactly 25 chunks total.
+
+**F-E: First-chunk failure leaves orphaned follow-ups (relay.ts:155)**
+- `safeEdit()` returned `void` and swallowed errors; loop continued sending chunks 2..N.
+- **Fix:** `safeEdit` returns `Promise<boolean>`; on `firstOk === false`, abort follow-up loop
+  and best-effort update placeholder with `_(failed to render reply — see logs)_`.
 
 ## Recent Learnings (Active)
 

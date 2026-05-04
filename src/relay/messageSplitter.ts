@@ -16,10 +16,12 @@ export interface SplitOptions {
   /** HUD string appended (with \n\n separator) to the last chunk only. */
   footer?: string;
   /**
-   * Bytes to subtract from maxLen before splitting, creating headroom for
-   * post-split transformations (e.g. MarkdownV2 escape expansion, ~30% of maxLen).
+   * Hard cap on the effective chunk size before post-split transformations
+   * (e.g. MarkdownV2 escape expansion). Overrides maxLen as the working budget.
+   * Use when the caller knows the desired ceiling directly (e.g. 2048 for a
+   * worst-case 2× escape ratio against Telegram's 4096-char limit).
    */
-  reserveBytes?: number;
+  effectiveMaxLen?: number;
 }
 
 interface CodeBlockInfo {
@@ -34,9 +36,10 @@ const DEFAULT_MAX_LEN = 4096;
 
 export function splitForTelegram(text: string, opts: SplitOptions = {}): string[] {
   const maxLen = opts.maxLen ?? DEFAULT_MAX_LEN;
-  // F4: subtract reserveBytes to leave headroom for post-split transformations
-  // (e.g. MarkdownV2 escape expansion, typically ~5-10%, budgeted at 30%).
-  const effectiveMax = maxLen - (opts.reserveBytes ?? 0);
+  // Use effectiveMaxLen directly when provided; otherwise fall back to maxLen.
+  // effectiveMaxLen lets callers specify the desired working budget (e.g. 2048
+  // for a worst-case 2× MarkdownV2 escape ratio) without computing a delta.
+  const effectiveMax = opts.effectiveMaxLen ?? maxLen;
   const numbering = opts.numbering ?? false;
   const footer = opts.footer;
   const footerOverhead = footer != null ? footer.length + 2 : 0;

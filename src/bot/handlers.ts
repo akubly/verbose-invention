@@ -188,7 +188,7 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
     if (matches.length > 1) {
       const lines = matches.map((e) => `  • topic #${e.topicId} (chatId ${e.chatId})`).join('\n');
       await ctx.reply(
-        `⚠️ Multiple sessions named "${name}" exist (legacy duplicates):\n${lines}\nCannot disambiguate — please rename one with /rename or /remove the unwanted entry.`,
+        `⚠️ Multiple sessions named "${name}" exist (legacy duplicates):\n${lines}\nCannot disambiguate. Use /remove in the topic of the entry you want to drop, then /resume here.`,
         { message_thread_id: topicId },
       );
       return;
@@ -210,15 +210,9 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
       return;
     }
 
-    const chatId = ctx.chat?.id;
-    if (!chatId) {
-      await ctx.reply('❌ Could not determine chat ID.', { message_thread_id: topicId });
-      return;
-    }
-
     const oldTopicId = found.topicId;
     try {
-      await registry.move(oldTopicId, topicId, name, chatId, found.model);
+      await registry.move(oldTopicId, topicId);
       await ctx.reply(
         `✅ Resumed session "${name}" (was bound to topic #${oldTopicId}).`,
         { message_thread_id: topicId },

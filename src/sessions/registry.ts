@@ -20,12 +20,14 @@ export interface ISessionRegistry {
   remove(telegramTopicId: number): Promise<boolean>;
   /**
    * Atomically re-binds a named session from one topic to another.
+   * Reads identity (sessionName, chatId, model) from the stored source entry —
+   * the caller supplies only the two topic IDs.
    * Verifies that toTopicId is unbound before any mutation, then mutates both
    * Map entries in memory and calls persist() exactly once.
-   * Throws if toTopicId is already bound (TOCTOU-safe).
+   * Throws if fromTopicId is not registered or toTopicId is already bound (TOCTOU-safe).
    * If persist() throws, the in-memory state is rolled back.
    */
-  move(fromTopicId: number, toTopicId: number, sessionName: string, chatId: number, model?: string): Promise<void>;
+  move(fromTopicId: number, toTopicId: number): Promise<void>;
 }
 
 /**
@@ -145,7 +147,7 @@ export class SessionRegistry implements ISessionRegistry {
     return removed;
   }
 
-  async move(fromTopicId: number, toTopicId: number, sessionName: string, chatId: number, model?: string): Promise<void> {
+  async move(fromTopicId: number, toTopicId: number): Promise<void> {
     const oldEntry = this.entries.get(fromTopicId);
     if (!oldEntry) {
       throw new Error(`No session found for topic ${fromTopicId}`);
@@ -157,19 +159,18 @@ export class SessionRegistry implements ISessionRegistry {
     if (destEntry) {
       throw new Error(`Destination topic ${toTopicId} is already bound to "${destEntry.sessionName}"`);
     }
+    // Identity is read from the stored source entry — caller cannot rename or
+    // change chatId/model by passing different args.
     const newEntry: SessionEntry = {
-      sessionName,
+      ...oldEntry,
       topicId: toTopicId,
-      chatId,
-      createdAt: oldEntry.createdAt,
-      ...(model !== undefined && { model }),
     };
     // Mutate in-memory first, then persist exactly once
     this.entries.delete(fromTopicId);
     this.entries.set(toTopicId, newEntry);
     try {
       await this.persist();
-      console.log(`[registry] Moved "${sessionName}" from topic ${fromTopicId} to topic ${toTopicId}`);
+      console.log(`[registry] Moved "${oldEntry.sessionName}" from topic ${fromTopicId} to topic ${toTopicId}`);
     } catch (err) {
       // Rollback in-memory state so the registry stays consistent
       this.entries.delete(toTopicId);

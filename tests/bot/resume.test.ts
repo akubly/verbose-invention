@@ -60,20 +60,16 @@ function makeResumeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry 
     load: vi.fn(),
     findByName: vi.fn((name: string) => nameMap.get(name)),
     findAllByName: vi.fn((name: string) => Array.from(map.values()).filter((e) => e.sessionName === name)),
-    move: vi.fn(async (fromTopicId: number, toTopicId: number, sessionName: string, chatId: number, model?: string) => {
+    move: vi.fn(async (fromTopicId: number, toTopicId: number) => {
       const old = map.get(fromTopicId);
       if (old) {
         map.delete(fromTopicId);
-        nameMap.delete(sessionName);
         const newEntry: SessionEntry = {
-          sessionName,
+          ...old,
           topicId: toTopicId,
-          chatId,
-          createdAt: old.createdAt,
-          ...(model !== undefined && { model }),
         };
         map.set(toTopicId, newEntry);
-        nameMap.set(sessionName, newEntry);
+        nameMap.set(old.sessionName, newEntry);
       }
     }),
   } as unknown as ISessionRegistry & { findByName: ReturnType<typeof vi.fn>; findAllByName: ReturnType<typeof vi.fn>; move: ReturnType<typeof vi.fn> };
@@ -272,13 +268,7 @@ describe('/resume command', () => {
     await handler(ctx);
 
     // Must use atomic move — not separate remove + register
-    expect(registry.move).toHaveBeenCalledWith(
-      99,
-      10,
-      'my-session',
-      -1001234567890,
-      undefined, // REMOTE_ENTRY has no model — carry forward as undefined
-    );
+    expect(registry.move).toHaveBeenCalledWith(99, 10);
     expect(registry.remove).not.toHaveBeenCalled();
     expect(registry.register).not.toHaveBeenCalled();
   });
@@ -297,13 +287,8 @@ describe('/resume command', () => {
     const ctx = makeMockCtx({ match: 'my-session' });
     await handler(ctx);
 
-    expect(registry.move).toHaveBeenCalledWith(
-      99,
-      10,
-      'my-session',
-      -1001234567890,
-      'claude-opus-4.5',
-    );
+    // move() is identity-preserving — model is carried forward from the stored entry
+    expect(registry.move).toHaveBeenCalledWith(99, 10);
   });
 
   it('confirms move with a success message mentioning the old topic ID', async () => {
@@ -409,7 +394,7 @@ describe('/resume command', () => {
     expect(replyText).toContain('99');
   });
 
-  it('mentions /rename and /remove in the legacy-duplicates refusal', async () => {
+  it('mentions /remove (not /rename) in the legacy-duplicates refusal', async () => {
     const dup1: SessionEntry = { sessionName: 'my-session', topicId: 42, chatId: -100, createdAt: '2026-01-01T00:00:00.000Z' };
     const dup2: SessionEntry = { sessionName: 'my-session', topicId: 99, chatId: -100, createdAt: '2026-01-01T00:00:00.000Z' };
 
@@ -423,7 +408,8 @@ describe('/resume command', () => {
     await handler(ctx);
 
     const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
-    expect(replyText).toMatch(/\/rename|\/remove/);
+    expect(replyText).toContain('/remove');
+    expect(replyText).not.toContain('/rename');
   });
 
   // ── F-C: move() destination-bound error surfaced cleanly ─────────────────

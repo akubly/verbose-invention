@@ -318,31 +318,38 @@ describe('SessionRegistry', () => {
   describe('move', () => {
     it('moves an entry from one topic to another', async () => {
       await registry.register(1, -100, 'session-a');
-      await registry.move(1, 2, 'session-a', -100);
+      await registry.move(1, 2);
       expect(registry.resolve(1)).toBeUndefined();
       expect(registry.resolve(2)?.sessionName).toBe('session-a');
     });
 
     it('carries model through on move', async () => {
       await registry.register(1, -100, 'session-b', 'claude-opus-4.5');
-      await registry.move(1, 2, 'session-b', -100, 'claude-opus-4.5');
+      await registry.move(1, 2);
       expect(registry.resolve(2)?.model).toBe('claude-opus-4.5');
     });
 
     it('preserves createdAt from the original entry', async () => {
       await registry.register(1, -100, 'session-c');
       const original = registry.resolve(1)!;
-      await registry.move(1, 2, 'session-c', -100);
+      await registry.move(1, 2);
       expect(registry.resolve(2)?.createdAt).toBe(original.createdAt);
     });
 
+    it('preserves the stored sessionName and chatId — identity cannot be changed by the caller', async () => {
+      await registry.register(1, -100, 'session-orig');
+      await registry.move(1, 2);
+      expect(registry.resolve(2)?.sessionName).toBe('session-orig');
+      expect(registry.resolve(2)?.chatId).toBe(-100);
+    });
+
     it('throws when the source topicId is not registered', async () => {
-      await expect(registry.move(999, 2, 'ghost', -100)).rejects.toThrow(/999/);
+      await expect(registry.move(999, 2)).rejects.toThrow(/999/);
     });
 
     it('persists the final state after a successful move', async () => {
       await registry.register(1, -100, 'session-d');
-      await registry.move(1, 2, 'session-d', -100);
+      await registry.move(1, 2);
 
       const reloaded = new SessionRegistry(storePath);
       await reloaded.load();
@@ -356,7 +363,7 @@ describe('SessionRegistry', () => {
 
       vi.spyOn(registry as any, 'doPersist').mockRejectedValueOnce(new Error('disk full'));
 
-      await expect(registry.move(1, 2, 'session-e', -100)).rejects.toThrow('disk full');
+      await expect(registry.move(1, 2)).rejects.toThrow('disk full');
 
       // In-memory state must be restored — old binding back, new binding absent
       expect(registry.resolve(1)?.sessionName).toBe('session-e');
@@ -368,7 +375,7 @@ describe('SessionRegistry', () => {
     it('throws when the destination topicId is already bound', async () => {
       await registry.register(1, -100, 'session-a');
       await registry.register(2, -100, 'session-b');
-      await expect(registry.move(1, 2, 'session-a', -100)).rejects.toThrow(
+      await expect(registry.move(1, 2)).rejects.toThrow(
         /already bound to|[Dd]estination/,
       );
     });
@@ -376,13 +383,13 @@ describe('SessionRegistry', () => {
     it('error message from move() names the conflicting session', async () => {
       await registry.register(1, -100, 'session-a');
       await registry.register(2, -100, 'session-b');
-      await expect(registry.move(1, 2, 'session-a', -100)).rejects.toThrow(/session-b/);
+      await expect(registry.move(1, 2)).rejects.toThrow(/session-b/);
     });
 
     it('leaves both entries intact when destination is already bound (no mutation)', async () => {
       await registry.register(1, -100, 'session-a');
       await registry.register(2, -100, 'session-b');
-      await expect(registry.move(1, 2, 'session-a', -100)).rejects.toThrow();
+      await expect(registry.move(1, 2)).rejects.toThrow();
 
       expect(registry.resolve(1)?.sessionName).toBe('session-a');
       expect(registry.resolve(2)?.sessionName).toBe('session-b');

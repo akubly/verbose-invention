@@ -42,6 +42,7 @@ interface CodeBlockInfo {
 
 const DEFAULT_MAX_LEN = 4096;
 const TRUNCATION_MARKER = '_(response truncated — too many chunks)_';
+const MIN_TRUNCATION_MARKER = '_(truncated)_';
 
 export function splitForTelegram(text: string, opts: SplitOptions = {}): string[] {
   const maxLen = opts.maxLen ?? DEFAULT_MAX_LEN;
@@ -88,7 +89,22 @@ export function splitForTelegram(text: string, opts: SplitOptions = {}): string[
   // shrinking the array — capped prefix length ≤ natural prefix length,
   // so already-sized chunks still fit within effectiveMax.
   if (maxChunks != null && chunks.length > maxChunks) {
-    chunks = [...chunks.slice(0, maxChunks - 1), TRUNCATION_MARKER];
+    // Budget the truncation marker to account for the numbering prefix and footer
+    // that will be layered on top, so the final chunk never exceeds effectiveMax.
+    const markerPrefixLen = numbering ? `[${maxChunks}/${maxChunks}]\n`.length : 0;
+    const available = effectiveMax - markerPrefixLen - footerOverhead;
+    let marker: string;
+    if (available >= TRUNCATION_MARKER.length) {
+      marker = TRUNCATION_MARKER;
+    } else if (available >= MIN_TRUNCATION_MARKER.length) {
+      marker = MIN_TRUNCATION_MARKER;
+    } else {
+      throw new Error(
+        `maxLen too small to fit truncation marker with prefix and footer ` +
+        `(available=${available}, min=${MIN_TRUNCATION_MARKER.length})`,
+      );
+    }
+    chunks = [...chunks.slice(0, maxChunks - 1), marker];
   }
 
   if (footer != null) {

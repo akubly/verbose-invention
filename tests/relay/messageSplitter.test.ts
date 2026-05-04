@@ -381,5 +381,52 @@ describe('splitForTelegram', () => {
         expect(chunk).not.toContain(footer);
       }
     });
+
+    it('final chunk does not exceed maxLen with tight maxLen + footer + numbering (full marker fits)', () => {
+      // Use a large enough maxLen that the full marker fits after prefix+footer.
+      // tenParagraphs at maxLen=60 produces 10 natural chunks; cap to 5.
+      // TRUNCATION_MARKER = 40 chars, prefix [5/5]\n = 6 chars, footer = 10 chars, sep = 2 → 58 ≤ 60
+      const footer = 'ABCDEFGH'; // 8 chars; 6 + 40 + 2 + 8 = 56 ≤ 60 — full marker should fit
+      const result = splitForTelegram(tenParagraphs, {
+        maxLen: 60, numbering: true, maxChunks: 5, footer,
+      });
+      expect(result).toHaveLength(5);
+      for (const chunk of result) {
+        expect(chunk.length, `chunk too long: ${JSON.stringify(chunk)}`).toBeLessThanOrEqual(60);
+      }
+      expect(result[result.length - 1]).toContain('truncated');
+      expect(result[result.length - 1]).toContain(footer);
+    });
+
+    it('falls back to minimum marker when budget is too tight for full marker', () => {
+      // Squeeze maxLen so the full marker (40 chars) doesn't fit but the minimum (13 chars) does.
+      // Build 5 short paragraphs so maxLen can be very small and still generate 2+ chunks.
+      const text = Array.from({ length: 5 }, (_, i) => `P${i}:${'x'.repeat(10)}`).join('\n\n');
+      // prefix [2/2]\n = 6 chars, footer = 8 chars → available = maxLen - 6 - 10
+      // MIN_TRUNCATION_MARKER = '_(truncated)_' = 13 chars
+      // full TRUNCATION_MARKER = 40 chars
+      // With maxLen=35: available = 35 - 6 - 10 = 19 → 13 ≤ 19 < 40 → min marker
+      const footer = 'ABCDEFGH'; // 8 chars; sep \n\n = 2 → footerOverhead = 10
+      const result = splitForTelegram(text, {
+        maxLen: 35, numbering: true, maxChunks: 2, footer,
+      });
+      expect(result).toHaveLength(2);
+      const last = result[result.length - 1] ?? '';
+      expect(last.length, `last chunk too long: ${JSON.stringify(last)}`).toBeLessThanOrEqual(35);
+      // Minimum marker is present
+      expect(last).toContain('_(truncated)_');
+      expect(last).toContain(footer);
+    });
+
+    it('throws when even the minimum marker cannot fit within the budget', () => {
+      // MIN_TRUNCATION_MARKER = 13 chars; make available < 13.
+      // prefix [2/2]\n = 6, footer overhead = 2 + footer.length
+      // maxLen=20: available = 20 - 6 - (2+8) = 4 < 13 → must throw
+      const text = Array.from({ length: 5 }, (_, i) => `P${i}:${'x'.repeat(10)}`).join('\n\n');
+      const footer = 'ABCDEFGH'; // 8 chars
+      expect(() =>
+        splitForTelegram(text, { maxLen: 20, numbering: true, maxChunks: 2, footer }),
+      ).toThrow(/maxLen too small/);
+    });
   });
 });

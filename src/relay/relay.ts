@@ -134,20 +134,23 @@ export class Relay {
       const modelStr = String(entry.model ?? this.globalModel);
       const footer = `📎 ${entry.sessionName} · ${modelStr}`;
       const body = accumulated || '_(empty response)_';
-      const chunks = splitForTelegram(body, { footer, numbering: true, effectiveMaxLen: MARKDOWN_ESCAPE_EFFECTIVE_MAX });
+      const chunks = splitForTelegram(body, {
+        footer,
+        numbering: true,
+        effectiveMaxLen: MARKDOWN_ESCAPE_EFFECTIVE_MAX,
+        maxChunks: MAX_CHUNKS,
+      });
 
-      // F10: cap chunk array to exactly MAX_CHUNKS to prevent flooding Telegram.
-      // Slice to MAX_CHUNKS-1 real chunks and replace the last slot with the
-      // truncation marker so the total is always ≤ MAX_CHUNKS.
-      const allChunks = chunks.length > MAX_CHUNKS
-        ? [...chunks.slice(0, MAX_CHUNKS - 1), '_(response truncated — too many chunks)_']
-        : chunks;
+      // Truncation (if any) is handled inside splitForTelegram: when chunk count
+      // exceeds MAX_CHUNKS the splitter replaces the last slot with a truncation
+      // marker BEFORE numbering/footer composition, so every delivered chunk
+      // carries consistent [n/MAX_CHUNKS] totals and the marker gets the HUD footer.
 
       const firstOk = await this.safeEdit(
         ctx,
         placeholder.chat.id,
         placeholder.message_id,
-        allChunks[0] ?? '',
+        chunks[0] ?? '',
         true,
         entry.sessionName,
       );
@@ -162,11 +165,11 @@ export class Relay {
       }
 
       // F9: track failures per chunk for log fidelity.
-      const totalChunks = allChunks.length;
+      const totalChunks = chunks.length;
       let failedChunks = 0;
-      for (let i = 1; i < allChunks.length; i++) {
+      for (let i = 1; i < chunks.length; i++) {
         await new Promise<void>((resolve) => setTimeout(resolve, CHUNK_SEND_DELAY_MS));
-        const ok = await this.safeSend(ctx, topicId, allChunks[i] ?? '', true, entry.sessionName, i + 1, totalChunks);
+        const ok = await this.safeSend(ctx, topicId, chunks[i] ?? '', true, entry.sessionName, i + 1, totalChunks);
         if (!ok) failedChunks++;
       }
       if (failedChunks > 0) {

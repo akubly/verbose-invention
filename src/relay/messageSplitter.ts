@@ -22,6 +22,14 @@ export interface SplitOptions {
    * worst-case 2× escape ratio against Telegram's 4096-char limit).
    */
   effectiveMaxLen?: number;
+  /**
+   * Maximum number of chunks to deliver. When the natural split produces more
+   * chunks than this limit, the array is truncated to maxChunks-1 natural chunks
+   * and a truncation marker is appended as the final chunk — BEFORE numbering
+   * and footer composition. This ensures all delivered chunks carry consistent
+   * [n/maxChunks] totals and the truncation chunk receives the HUD footer.
+   */
+  maxChunks?: number;
 }
 
 interface CodeBlockInfo {
@@ -33,6 +41,7 @@ interface CodeBlockInfo {
 }
 
 const DEFAULT_MAX_LEN = 4096;
+const TRUNCATION_MARKER = '_(response truncated — too many chunks)_';
 
 export function splitForTelegram(text: string, opts: SplitOptions = {}): string[] {
   const maxLen = opts.maxLen ?? DEFAULT_MAX_LEN;
@@ -42,6 +51,7 @@ export function splitForTelegram(text: string, opts: SplitOptions = {}): string[
   const effectiveMax = opts.effectiveMaxLen ?? maxLen;
   const numbering = opts.numbering ?? false;
   const footer = opts.footer;
+  const maxChunks = opts.maxChunks;
   const footerOverhead = footer != null ? footer.length + 2 : 0;
 
   // F1: Preliminary split (no prefix overhead) determines whether numbering is
@@ -69,6 +79,16 @@ export function splitForTelegram(text: string, opts: SplitOptions = {}): string[
       if (candidate.length <= 1) break; // fits in one chunk with prefix reserved
       estTotal = candidate.length;
     }
+  }
+
+  // Apply maxChunks cap BEFORE footer and numbering composition so that:
+  //  - all delivered chunks carry consistent [n/maxChunks] totals, and
+  //  - the truncation marker (last chunk) receives the HUD footer.
+  // The cap is safe to apply after the two-pass split because we are only
+  // shrinking the array — capped prefix length ≤ natural prefix length,
+  // so already-sized chunks still fit within effectiveMax.
+  if (maxChunks != null && chunks.length > maxChunks) {
+    chunks = [...chunks.slice(0, maxChunks - 1), TRUNCATION_MARKER];
   }
 
   if (footer != null) {

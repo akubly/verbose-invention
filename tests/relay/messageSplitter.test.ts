@@ -318,4 +318,68 @@ describe('splitForTelegram', () => {
     expect(last).toMatch(/^\[\d+\/\d+\]/);
     expect(last).toContain(footer);
   });
+
+  // ── maxChunks cap ─────────────────────────────────────────────────────────
+
+  describe('maxChunks cap', () => {
+    // Helper: 10 paragraphs of 30 chars each. At maxLen=60, each fits in one
+    // numbered chunk (30 < 60 − prefix), so the natural total is 10.
+    const tenParagraphs = Array.from({ length: 10 }, (_, i) =>
+      `Para${String(i + 1).padStart(2, '0')}: ${'x'.repeat(24)}`  // exactly 32 chars
+    ).join('\n\n');
+
+    it('does not truncate when chunk count is within maxChunks', () => {
+      const result = splitForTelegram(tenParagraphs, {
+        maxLen: 60, numbering: true, maxChunks: 10,
+      });
+      expect(result.length).toBeLessThanOrEqual(10);
+      expect(result.some((c) => c.includes('truncated'))).toBe(false);
+    });
+
+    it('truncates to exactly maxChunks when natural total exceeds it', () => {
+      const result = splitForTelegram(tenParagraphs, {
+        maxLen: 60, numbering: true, maxChunks: 5,
+      });
+      expect(result.length).toBe(5);
+    });
+
+    it('last chunk is the truncation marker when capped', () => {
+      const result = splitForTelegram(tenParagraphs, {
+        maxLen: 60, numbering: true, maxChunks: 5,
+      });
+      expect(result[result.length - 1]).toContain('truncated');
+    });
+
+    it('all chunks carry consistent [n/maxChunks] numbering when capped', () => {
+      const result = splitForTelegram(tenParagraphs, {
+        maxLen: 60, numbering: true, maxChunks: 5,
+      });
+      expect(result[0]).toMatch(/^\[1\/5\]/);
+      expect(result[4]).toMatch(/^\[5\/5\]/);
+      // No chunk references the original uncapped total
+      for (const chunk of result) {
+        expect(chunk).not.toMatch(/\/10\]/);
+      }
+    });
+
+    it('HUD footer appears on the truncation marker (last chunk) when capped', () => {
+      const footer = '📎 myapp · claude';
+      const result = splitForTelegram(tenParagraphs, {
+        maxLen: 60, numbering: true, maxChunks: 5, footer,
+      });
+      const last = result[result.length - 1] ?? '';
+      expect(last).toContain('truncated');
+      expect(last).toContain(footer);
+    });
+
+    it('non-last chunks do NOT carry the footer when capped', () => {
+      const footer = '📎 myapp · claude';
+      const result = splitForTelegram(tenParagraphs, {
+        maxLen: 60, numbering: true, maxChunks: 5, footer,
+      });
+      for (const chunk of result.slice(0, -1)) {
+        expect(chunk).not.toContain(footer);
+      }
+    });
+  });
 });

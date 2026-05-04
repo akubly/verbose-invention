@@ -43,9 +43,26 @@
 
 - Wave 1 complete: MarkdownV2 escaping live and tested
 - Wave 2 complete: Message splitting live and tested
-- PR #5 review fixes complete (F-A, F-D, F-E)
-- Total Phase 5: 257 tests pass, lint clean
+- PR #5 review fixes complete (F-A, F-D, F-E + re-review F-D chained)
+- Total Phase 5: 263 tests pass, lint clean
 - Pushed to `user/aaron/phase5-telegram-ux`
+
+## Phase 5 PR #5 Copilot Re-review Fix (2026-05-03)
+
+Chained issue caught in Copilot re-review of PR #5 F-D fix:
+
+**F-D (re-review): Stale `[n/total]` and missing footer on capped responses**
+- Root cause: the post-split cap in relay.ts sliced chunks AFTER `splitForTelegram` had
+  already composed `[n/26]` prefixes and appended the footer to the (now-dropped) last chunk.
+  Result: users saw `[1/26]…[24/26]` (stale totals) + a bare truncation marker (no footer).
+- **Fix:** Added `maxChunks?: number` to `SplitOptions` in `messageSplitter.ts`. When set,
+  the cap is applied inside `splitForTelegram` AFTER the two-pass split but BEFORE
+  numbering/footer composition: raw chunks are trimmed to `maxChunks-1` + truncation marker,
+  then numbered with `[n/maxChunks]` totals, then footer appended to the (truncation) last chunk.
+- Relay now passes `maxChunks: MAX_CHUNKS` directly; post-split slice/append removed.
+- New splitter tests: 6 covering `maxChunks` (no-op when under limit, exact count, marker,
+  consistent numbering, footer on marker, no footer on earlier chunks).
+- Decision appended: `.squad/decisions/inbox/carter-pr5-review-fixes.md`
 
 ## Phase 5 PR #5 Copilot Review Fixes (2026-05-03)
 

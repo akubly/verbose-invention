@@ -375,12 +375,13 @@ describe('Relay', () => {
   // ── chunk cap ────────────────────────────────────────────────────────────────
 
   describe('chunk cap (F-D / F10)', () => {
-    it('caps multi-chunk send at exactly MAX_CHUNKS (25) — never 26', async () => {
+    it('caps multi-chunk send at exactly MAX_CHUNKS (25) with consistent numbering and footer', async () => {
       // Real timers needed: 24 follow-up chunks × 100ms delay would hang fake timers.
       vi.useRealTimers();
 
-      // 26 paragraphs of 1800 chars each → 26 chunks at effectiveMax=2048 (each fits
-      // under the per-chunk budget); cap must trim to MAX_CHUNKS-1 real + 1 marker = 25.
+      // 26 paragraphs of 1800 chars each → 26 natural chunks at effectiveMax=2048;
+      // splitForTelegram caps to 25 (maxChunks) BEFORE numbering/footer so the
+      // truncation marker carries [25/25] and the HUD footer.
       const bigContent = Array.from({ length: 26 }, () => 'x'.repeat(1800)).join('\n\n');
       const session = makeMockSession([bigContent]);
       const factory = makeMockFactory(session);
@@ -392,14 +393,13 @@ describe('Relay', () => {
 
       // First chunk via editMessageText, remaining via ctx.reply.
       const replyCalls = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls;
-      // "…" placeholder + follow-up chunks (MAX_CHUNKS - 1 = 24 at most)
-      const followUpReplies = replyCalls.filter(
-        (c: unknown[]) => c[0] !== '…',
-      );
-      // Total = 1 (edit) + followUps ≤ MAX_CHUNKS = 25 → followUps ≤ 24
+      const followUpReplies = replyCalls.filter((c: unknown[]) => c[0] !== '…');
+
+      // Total = 1 (edit) + followUps = MAX_CHUNKS = 25 → followUps = 24
       expect(followUpReplies.length).toBeLessThanOrEqual(24);
 
-      // Last follow-up must be the truncation marker
+      // Last follow-up must carry the truncation marker (with consistent [n/total] prefix
+      // and HUD footer — verified in depth by messageSplitter tests)
       const lastReply = followUpReplies[followUpReplies.length - 1]?.[0] as string | undefined;
       expect(lastReply).toContain('truncated');
     }, 10_000);

@@ -222,8 +222,8 @@ function extractInner(text: string, block: CodeBlockInfo): string[] {
   return lines.slice(1, lastIdx);
 }
 
-function advancePast(text: string, blockEnd: number): number {
-  return blockEnd < text.length && text[blockEnd] === '\n' ? blockEnd + 1 : blockEnd;
+function advancePast(_text: string, blockEnd: number): number {
+  return blockEnd;
 }
 
 function findBestSplit(text: string, maxBudget: number): { bodyEnd: number; skipLen: number } {

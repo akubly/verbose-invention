@@ -277,6 +277,17 @@ describe('splitForTelegram', () => {
     }
   });
 
+  it('preserves newline between closing fence and following paragraph', () => {
+    // Regression: advancePast() used to consume the \n after ```, collapsing
+    // the separator between the code block and the next paragraph.
+    const text = 'some text\n\n```js\nconst x = 1;\n```\nmore text';
+    const result = splitForTelegram(text, { maxLen: 4096 });
+    // Single chunk — the whole thing fits; verify the newline after ``` is preserved.
+    const joined = result.join('');
+    expect(joined).toContain('```\nmore text');
+    expect(joined).not.toContain('```more text');
+  });
+
   // ── all chunks non-empty and content preserved ────────────────────────────
 
   it('produces no empty chunks', () => {

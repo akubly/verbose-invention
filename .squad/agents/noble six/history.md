@@ -1,25 +1,28 @@
-# Noble Six  History
+# Noble Six — History
 
 ## Core Context
 
-- **Project:** Reach  a TypeScript daemon bridging Telegram to GitHub Copilot CLI sessions on a personal Windows machine via named session registry and bidirectional streaming.
+- **Project:** Reach — a TypeScript daemon bridging Telegram to GitHub Copilot CLI sessions on a personal Windows machine via named session registry and bidirectional streaming.
 - **Role:** Lead / Architect
 - **Joined:** 2026-04-12T06:02:10.439Z
 
-## Current Phase: Phase 5  Telegram UX QoL Scoping & Prioritization (2026-05-01)
+## Current Phase: Phase 5 — Telegram UX QoL Scoping & Prioritization (2026-05-01)
 
 ### What I Delivered
 
 **Phase 5 Scope Definition** (`decisions.md`):
-1. **Message Splitting**  Telegram's 4096-char limit handling with semantic boundary preservation
+
+1. **Message Splitting** — Telegram's 4096-char limit handling with semantic boundary preservation
    - Boundary preference: `\n\n` > `\n` > whitespace > hard cut
    - Code block protection: never split mid-block, re-open/close fences on sub-chunks
    - Multi-chunk delivery: first via edit, rest via reply with 100ms delay
-2. **MarkdownV2 Parse Mode**  Legacy Markdown upgrade
+
+2. **MarkdownV2 Parse Mode** — Legacy Markdown upgrade
    - Escape-only strategy (no AST parsing): 18 special chars + `\` in plain text
    - Code region protection: only `\` and `` ` `` escaped inside code
    - Plain-text fallback on rejection
-3. **/resume <name> Command**  Session mobility
+
+3. **/resume <name> Command** — Session mobility
    - Move semantics: unbind old topic, bind to new
    - Registry enhancement: `findByName()` for reverse lookup
    - Model carry-forward from original entry
@@ -27,9 +30,11 @@
 ### Dependency Analysis & Wave Sequencing
 
 **Dependency Graph:**
-```MarkdownV2 
-              Integration (relay.ts)Splitting   
-/resume      Independent (handlers.ts + registry.ts)
+```
+MarkdownV2 ──┐
+             ├─ Integration (relay.ts)
+Splitting   ──┘
+/resume     ─── Independent (handlers.ts + registry.ts)
 ```
 
 **Rationale:** MarkdownV2 before splitting because escaping changes text length; splitting must account for post-escape length.
@@ -45,7 +50,7 @@
 |---|--------|-----------------|
 | Chunk numbering `[n/total]`? | No | Two-pass omits on single-chunk; never `[1/1]` |
 | Max chunks cap? | 10 chunks, truncate | Acceptable (typical responses shorter) |
-| HTML fallback? | No | MarkdownV2  plain text only |
+| HTML fallback? | No | MarkdownV2 → plain text only |
 | Accept degradation? | Yes | Fallback chain allows graceful fallback |
 | `/resume` move semantics? | Option A (move) | Unbind old, bind new; SDK cache handles stale |
 | `/resume --model`? | Defer | Model carried forward, no override flag |
@@ -59,17 +64,23 @@
 
 ## Recent Learnings (Active)
 
-### 2026-05-01  Phase 5: Scope Design & Coordination
+### 2026-05-01 — Phase 5: Scope Design & Coordination
+
 Delivered comprehensive phase scope covering three interconnected UX features:
 
-**Design decisions made:**1. Wave sequencing based on dependency analysis2. Move semantics for `/resume` (simpler invariant: 1 session = 1 topic always)3. Escape-only strategy for MarkdownV2 (covers 95% of real output, avoids AST brittleness)4. Boundary preference ordering (preserves semantic structure)
+**Design decisions made:**
+1. Wave sequencing based on dependency analysis
+2. Move semantics for `/resume` (simpler invariant: 1 session = 1 topic always)
+3. Escape-only strategy for MarkdownV2 (covers 95% of real output, avoids AST brittleness)
+4. Boundary preference ordering (preserves semantic structure)
 
 **Coordination patterns:**
 - Scoped multiple agents in parallel (Carter Waves 1&2, Kat, Jun)
 - Locked contracts early (test-first approach)
 - Documented all edge cases and risk mitigations
 
-### 2026-05-02  Phase 5 Complete (Team Update by Scribe)
+### 2026-05-02 — Phase 5 Complete (Team Update by Scribe)
+
 Phase 5 complete. All decisions merged to `decisions.md`; inbox cleared. 235 tests pass, tsc clean, lint clean.
 
 **Noble Six's contributions:**
@@ -83,4 +94,5 @@ Phase 5 complete. All decisions merged to `decisions.md`; inbox cleared. 235 tes
 **Next phase:** Ready for production. Phase 5 UX improvements provide foundation for future features.
 
 ## Archive
+
 Earlier work (before 2026-05-01) is archived in `history-archive.md` for reference.

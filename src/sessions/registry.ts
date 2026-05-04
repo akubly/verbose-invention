@@ -165,18 +165,17 @@ export class SessionRegistry implements ISessionRegistry {
       ...oldEntry,
       topicId: toTopicId,
     };
-    // Mutate in-memory first, then persist exactly once
+    // Write-first: build the new map snapshot and persist it before touching
+    // this.entries.  If the write fails, this.entries is never mutated, so
+    // concurrent reads cannot observe uncommitted state and no rollback is needed.
+    const snapshot = new Map(this.entries);
+    snapshot.delete(fromTopicId);
+    snapshot.set(toTopicId, newEntry);
+    await this.persistSnapshot(snapshot);
+    // Persist succeeded — safe to update the live map.
     this.entries.delete(fromTopicId);
     this.entries.set(toTopicId, newEntry);
-    try {
-      await this.persist();
-      console.log(`[registry] Moved "${oldEntry.sessionName}" from topic ${fromTopicId} to topic ${toTopicId}`);
-    } catch (err) {
-      // Rollback in-memory state so the registry stays consistent
-      this.entries.delete(toTopicId);
-      this.entries.set(fromTopicId, oldEntry);
-      throw err;
-    }
+    console.log(`[registry] Moved "${oldEntry.sessionName}" from topic ${fromTopicId} to topic ${toTopicId}`);
   }
 
   private persist(): Promise<void> {
@@ -187,8 +186,22 @@ export class SessionRegistry implements ISessionRegistry {
     return op;
   }
 
+  /**
+   * Enqueues a write of an explicit snapshot map (used by move() for write-first
+   * semantics — persists the desired end-state before mutating this.entries).
+   */
+  private persistSnapshot(snapshot: Map<number, SessionEntry>): Promise<void> {
+    const op = this.writeQueue.then(() => this.doPersistEntries(snapshot));
+    this.writeQueue = op.catch(() => {});
+    return op;
+  }
+
   private async doPersist(): Promise<void> {
-    const data: RegistryData = { version: 1, entries: Object.fromEntries(this.entries) };
+    await this.doPersistEntries(this.entries);
+  }
+
+  private async doPersistEntries(entries: Map<number, SessionEntry>): Promise<void> {
+    const data: RegistryData = { version: 1, entries: Object.fromEntries(entries) };
     await fs.mkdir(path.dirname(this.persistPath), { recursive: true });
     const tmp = this.persistPath + '.tmp';
     await fs.writeFile(tmp, JSON.stringify(data, null, 2), 'utf-8');

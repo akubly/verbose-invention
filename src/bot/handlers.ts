@@ -213,6 +213,9 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
     const oldTopicId = found.topicId;
     try {
       await registry.move(oldTopicId, topicId);
+      // Migrate the live SDK session handle so the next message in the new topic
+      // reuses it instead of creating a duplicate session (H-A).
+      relay.rekeySession(oldTopicId, topicId);
       await ctx.reply(
         `✅ Resumed session "${name}" (was bound to topic #${oldTopicId}).`,
         { message_thread_id: topicId },

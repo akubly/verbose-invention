@@ -271,6 +271,24 @@ export class Relay {
     }
   }
 
+  /**
+   * Migrates the in-memory SDK session cache from oldTopicId to newTopicId.
+   * Called by the /resume handler after a successful registry.move() so the
+   * live session handle travels with the binding instead of sitting stale under
+   * the old topic key until idle eviction.
+   * If no cache entry exists for oldTopicId this is a no-op (safe to call
+   * speculatively — first relay after /resume will create a fresh session).
+   */
+  rekeySession(fromTopicId: number, toTopicId: number): void {
+    const cached = this.activeSessions.get(fromTopicId);
+    if (!cached) return;
+    this.activeSessions.delete(fromTopicId);
+    this.activeSessions.set(toTopicId, cached);
+    // Cancel the old idle timer — its closure references fromTopicId and would
+    // evict the wrong key.  The next message in toTopicId resets a fresh timer.
+    this.idleMonitor.cancel(fromTopicId);
+  }
+
   /** Tear down all active sessions and timers (call on graceful shutdown). */
   dispose(): void {
     this.idleMonitor.cancelAll();

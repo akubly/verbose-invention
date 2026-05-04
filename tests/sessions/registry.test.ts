@@ -358,16 +358,35 @@ describe('SessionRegistry', () => {
       expect(reloaded.resolve(2)?.sessionName).toBe('session-d');
     });
 
-    it('rolls back in-memory state when persist throws (atomic guarantee)', async () => {
+    it('leaves in-memory state untouched when persist throws (write-first — no mutation on failure)', async () => {
       await registry.register(1, -100, 'session-e');
 
-      vi.spyOn(registry as any, 'doPersist').mockRejectedValueOnce(new Error('disk full'));
+      vi.spyOn(registry as any, 'doPersistEntries').mockRejectedValueOnce(new Error('disk full'));
 
       await expect(registry.move(1, 2)).rejects.toThrow('disk full');
 
-      // In-memory state must be restored — old binding back, new binding absent
+      // Write-first: entries was never mutated, so old binding is intact and new binding absent
       expect(registry.resolve(1)?.sessionName).toBe('session-e');
       expect(registry.resolve(2)).toBeUndefined();
+    });
+
+    it('does not mutate entries before the disk write completes (write-first)', async () => {
+      await registry.register(1, -100, 'session-f');
+
+      let capturedResolveAtPersist: string | undefined;
+      vi.spyOn(registry as any, 'doPersistEntries').mockImplementationOnce(async () => {
+        // At this point, this.entries must NOT yet be mutated (old key still present)
+        capturedResolveAtPersist = registry.resolve(1)?.sessionName;
+        // Don't call through — successful fake write
+      });
+
+      await registry.move(1, 2);
+
+      // During persist, topic 1 must still have been visible (write-first guarantee)
+      expect(capturedResolveAtPersist).toBe('session-f');
+      // After move(), the live map reflects the new state
+      expect(registry.resolve(1)).toBeUndefined();
+      expect(registry.resolve(2)?.sessionName).toBe('session-f');
     });
 
     // F-C: destination-unbound check inside move() ──────────────────────────

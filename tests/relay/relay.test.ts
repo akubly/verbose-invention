@@ -445,6 +445,64 @@ describe('Relay', () => {
   });
 
 
+  // ── rekeySession (H-A: cache rekey after /resume) ────────────────────────────
+
+  describe('rekeySession', () => {
+    it('moves the cached session to the new topic key so next relay reuses it', async () => {
+      const factory = makeMockFactory();
+      const OLD_TOPIC = 10;
+      const NEW_TOPIC = 20;
+      const entryOld: SessionEntry = { ...SESSION_ENTRY, topicId: OLD_TOPIC };
+      const entryNew: SessionEntry = { ...SESSION_ENTRY, topicId: NEW_TOPIC };
+      const lookupMap = new Map<number, SessionEntry>([[OLD_TOPIC, entryOld]]);
+      const registry: SessionLookup = { resolve: vi.fn((id: number) => lookupMap.get(id)) };
+      const relay = new Relay(registry, factory, 'test-model');
+
+      // Warm the cache for OLD_TOPIC
+      await relay.relay(makeMockCtx('hello', OLD_TOPIC) as any);
+      expect(factory.resume).toHaveBeenCalledTimes(1);
+
+      // Simulate /resume: update the registry lookup to point NEW_TOPIC → session
+      lookupMap.delete(OLD_TOPIC);
+      lookupMap.set(NEW_TOPIC, entryNew);
+
+      // Rekey the relay cache
+      relay.rekeySession(OLD_TOPIC, NEW_TOPIC);
+
+      // Next relay call on NEW_TOPIC must NOT call factory again — cache hit
+      await relay.relay(makeMockCtx('hello', NEW_TOPIC) as any);
+      expect(factory.resume).toHaveBeenCalledTimes(1);
+    });
+
+    it('is a no-op when no cache entry exists for fromTopicId', () => {
+      const factory = makeMockFactory();
+      const registry = makeStubRegistry([SESSION_ENTRY]);
+      const relay = new Relay(registry, factory, 'test-model');
+
+      // No relay call yet — cache is empty; should not throw
+      expect(() => relay.rekeySession(42, 99)).not.toThrow();
+    });
+
+    it('next relay on old topic creates a new session after rekey', async () => {
+      const factory = makeMockFactory();
+      const OLD_TOPIC = 10;
+      const NEW_TOPIC = 20;
+      const entryOld: SessionEntry = { ...SESSION_ENTRY, topicId: OLD_TOPIC };
+      const lookupMap = new Map<number, SessionEntry>([[OLD_TOPIC, entryOld]]);
+      const registry: SessionLookup = { resolve: vi.fn((id: number) => lookupMap.get(id)) };
+      const relay = new Relay(registry, factory, 'test-model');
+
+      await relay.relay(makeMockCtx('hello', OLD_TOPIC) as any);
+      expect(factory.resume).toHaveBeenCalledTimes(1);
+
+      relay.rekeySession(OLD_TOPIC, NEW_TOPIC);
+
+      // OLD_TOPIC now has no cached session — next message there calls factory again
+      await relay.relay(makeMockCtx('hello', OLD_TOPIC) as any);
+      expect(factory.resume).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('SDK crash recovery', () => {
     it('relay calls factory.resetForRestart() on non-timeout SDK error', async () => {
       // send() must return an AsyncIterable that throws — not a rejected Promise

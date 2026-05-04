@@ -368,6 +368,40 @@ describe('/resume command', () => {
     expect(replyText).toContain('/resume');
   });
 
+  // ── H-A: cache rekey after successful move ───────────────────────────────────
+
+  it('calls relay.rekeySession(oldTopicId, newTopicId) after a successful move', async () => {
+    const { bot, commandHandlers } = makeMockBot();
+    const registry = makeResumeStubRegistry([REMOTE_ENTRY]);
+    const factory = makeMockFactory();
+    const relay = registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+
+    const rekeySpy = vi.spyOn(relay, 'rekeySession');
+
+    const handler = commandHandlers.get('resume')!;
+    const ctx = makeMockCtx({ match: 'my-session' }); // current topic = 10, session was at topic 99
+    await handler(ctx);
+
+    // REMOTE_ENTRY.topicId = 99, ctx topic = 10
+    expect(rekeySpy).toHaveBeenCalledWith(99, 10);
+  });
+
+  it('does not call relay.rekeySession when move() throws', async () => {
+    const { bot, commandHandlers } = makeMockBot();
+    const registry = makeResumeStubRegistry([REMOTE_ENTRY]);
+    registry.move.mockRejectedValueOnce(new Error('Destination topic 10 is already bound to "other"'));
+    const factory = makeMockFactory();
+    const relay = registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+
+    const rekeySpy = vi.spyOn(relay, 'rekeySession');
+
+    const handler = commandHandlers.get('resume')!;
+    const ctx = makeMockCtx({ match: 'my-session' });
+    await handler(ctx);
+
+    expect(rekeySpy).not.toHaveBeenCalled();
+  });
+
   // ── F-B: legacy duplicate names ───────────────────────────────────────────
 
   it('refuses with disambiguation list when legacy duplicates share the same name', async () => {

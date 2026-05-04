@@ -501,6 +501,45 @@ describe('Relay', () => {
       await relay.relay(makeMockCtx('hello', OLD_TOPIC) as any);
       expect(factory.resume).toHaveBeenCalledTimes(2);
     });
+
+    it('cancels stale destination timer so it cannot evict the moved session', async () => {
+      const factory = makeMockFactory();
+      const OLD_TOPIC = 30;
+      const NEW_TOPIC = 40;
+      const entryOld: SessionEntry = { ...SESSION_ENTRY, topicId: OLD_TOPIC };
+      const entryNew: SessionEntry = { ...SESSION_ENTRY, topicId: NEW_TOPIC };
+      const lookupMap = new Map<number, SessionEntry>([
+        [OLD_TOPIC, entryOld],
+        [NEW_TOPIC, entryNew],
+      ]);
+      const registry: SessionLookup = { resolve: vi.fn((id: number) => lookupMap.get(id)) };
+      const relay = new Relay(registry, factory, 'test-model');
+
+      // Warm the cache for NEW_TOPIC first — this arms a stale idle timer for it
+      await relay.relay(makeMockCtx('old message', NEW_TOPIC) as any);
+      expect(factory.resume).toHaveBeenCalledTimes(1);
+
+      // Warm the cache for OLD_TOPIC (the source of the move)
+      await relay.relay(makeMockCtx('hello', OLD_TOPIC) as any);
+      expect(factory.resume).toHaveBeenCalledTimes(2);
+
+      // Simulate /resume: registry now maps NEW_TOPIC → old session name
+      lookupMap.delete(OLD_TOPIC);
+
+      // Move the session from OLD_TOPIC → NEW_TOPIC; this must cancel the stale
+      // timer that was armed when we relayed to NEW_TOPIC above.
+      relay.rekeySession(OLD_TOPIC, NEW_TOPIC);
+
+      // Advance fake timers well past the original IDLE_TIMEOUT_MS (300 000 ms).
+      // If the stale timer had NOT been cancelled it would have fired here and
+      // evicted the newly-moved session from NEW_TOPIC.
+      vi.advanceTimersByTime(400_000);
+
+      // The moved session must still be in cache: relay on NEW_TOPIC should NOT
+      // call factory.resume again.
+      await relay.relay(makeMockCtx('after move', NEW_TOPIC) as any);
+      expect(factory.resume).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('SDK crash recovery', () => {

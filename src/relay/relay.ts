@@ -282,6 +282,14 @@ export class Relay {
   rekeySession(fromTopicId: number, toTopicId: number): void {
     const cached = this.activeSessions.get(fromTopicId);
     if (!cached) return;
+    // Cancel any stale timer/entry at the destination first. If toTopicId still
+    // has an old cached session (e.g. from before a /remove that hadn't been
+    // idle-evicted yet) its timer closure would later fire and evict the newly
+    // moved session, silently losing in-memory state.
+    if (this.activeSessions.has(toTopicId)) {
+      this.idleMonitor.cancel(toTopicId);
+      this.activeSessions.delete(toTopicId);
+    }
     this.activeSessions.delete(fromTopicId);
     this.activeSessions.set(toTopicId, cached);
     // Cancel the old idle timer — its closure references fromTopicId and would

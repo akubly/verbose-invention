@@ -271,3 +271,24 @@ Added `/** Utility for callers that want to skip escaping overhead on clean text
 **F7 Resolution:** ports.ts abstraction eliminates all cross-layer imports. relay.ts now has zero imports from ../bot/ or ../sessions/. Composition root (handlers.ts) manages port injection.
 
 **Verification:** 245 tests pass, tsc clean, lint clean.
+
+---
+
+## PR #5 Cycle 5 — 2026-05-03
+
+### I-B: rekeySession() destination timer not cancelled (FIXED)
+
+**Bug:** `rekeySession(fromTopicId, toTopicId)` only cancelled the source-side idle timer. If `toTopicId` still had a stale cached session and armed timer (e.g. from before a `/remove` that hadn't yet been idle-evicted), that old timer would eventually fire and evict the freshly-moved session, silently losing in-memory state.
+
+**Sequence that broke:**
+1. Session relayed to topic 99 → cache + idle timer armed for 99.
+2. `/remove` removes registry binding but in-memory cache and timer remain (idle eviction hasn't fired yet).
+3. `/resume foo` from topic 99 (now empty) — `registry.move()` succeeds.
+4. `rekeySession(oldTopic, 99)` installs the moved session at topic 99 but leaves the stale timer alive.
+5. Old timer fires 300 s later → evicts `activeSessions[99]` — the moved session — silently.
+
+**Fix (`relay.ts:282–290`):** Before installing the moved session at `toTopicId`, check if `activeSessions` already has an entry there. If so: `idleMonitor.cancel(toTopicId)` and `activeSessions.delete(toTopicId)`. Then proceed with the existing source-side logic (pop from `fromTopicId`, cancel its timer, set at `toTopicId`).
+
+**New test:** Pre-warms cache for both source and destination topics (arming a stale timer for `NEW_TOPIC`), calls `rekeySession(OLD, NEW)`, advances fake timers 400 000 ms past the original 300 000 ms TTL, then asserts `factory.resume` was NOT called again — proving the moved session survived.
+
+**Results:** 275 tests pass (274 prior + 1 new), tsc clean, lint clean. Commit `92ab201`. Pushed to `user/aaron/phase5-telegram-ux`.

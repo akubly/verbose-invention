@@ -12,8 +12,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Relay } from '../../src/relay/relay.js';
 import { StreamTimeoutError } from '../../src/copilot/impl.js';
 import type { SessionEntry } from '../../src/types.js';
-import type { ISessionRegistry } from '../../src/sessions/registry.js';
+import type { SessionLookup } from '../../src/relay/ports.js';
 import type { CopilotSession } from '../../src/copilot/factory.js';
+import { escapeMarkdownV2 } from '../../src/relay/markdownV2.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -35,16 +36,12 @@ function makeMockCtx(
   };
 }
 
-/** Stub SessionRegistry for integration tests. */
-function makeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry {
+/** Stub SessionLookup for integration tests. */
+function makeStubRegistry(entries: SessionEntry[] = []): SessionLookup {
   const map = new Map(entries.map((e) => [e.topicId, e]));
   return {
-    register: vi.fn(),
     resolve: vi.fn((topicId: number) => map.get(topicId)),
-    list: vi.fn(() => Array.from(map.values())),
-    remove: vi.fn(async (topicId: number) => map.delete(topicId)),
-    load: vi.fn(),
-  } as unknown as ISessionRegistry;
+  };
 }
 
 const SESSION_ENTRY: SessionEntry = {
@@ -303,7 +300,7 @@ describe('Integration: relay-level SDK crash recovery', () => {
     // Step 3: Verify final message was edited with success
     const editCalls = (ctx2.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
     const finalText = editCalls[editCalls.length - 1][2] as string;
-    expect(finalText).toContain('Recovered!');
+    expect(finalText).toContain(escapeMarkdownV2('Recovered!'));
   });
 
   it('handles multiple sequential crashes by resetting the factory each time', async () => {

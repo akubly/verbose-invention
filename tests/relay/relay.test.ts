@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Relay } from '../../src/relay/relay.js';
-import type { SessionRegistry, SessionEntry } from '../../src/sessions/registry.js';
+import type { SessionLookup } from '../../src/relay/ports.js';
+import type { SessionEntry } from '../../src/sessions/registry.js';
 import { makeMockFactory, makeMockSession, makeStream } from '../mocks/sdk.js';
 import { StreamTimeoutError } from '../../src/copilot/impl.js';
+import { escapeMarkdownV2 } from '../../src/relay/markdownV2.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -24,16 +26,12 @@ function makeMockCtx(
   };
 }
 
-/** Stub SessionRegistry — satisfies the shape Relay needs. */
-function makeStubRegistry(entries: SessionEntry[] = []): SessionRegistry {
+/** Stub SessionLookup — satisfies the shape Relay needs. */
+function makeStubRegistry(entries: SessionEntry[] = []): SessionLookup {
   const map = new Map(entries.map((e) => [e.topicId, e]));
   return {
-    register: vi.fn(),
     resolve: vi.fn((topicId: number) => map.get(topicId)),
-    list: vi.fn(() => Array.from(map.values())),
-    remove: vi.fn(),
-    load: vi.fn(),
-  } as unknown as SessionRegistry;
+  };
 }
 
 const SESSION_ENTRY: SessionEntry = {
@@ -90,7 +88,7 @@ describe('Relay', () => {
 
       const editCalls = (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
       const finalText = editCalls[editCalls.length - 1][2] as string;
-      expect(finalText).toBe('The answer is 42.\n\n📎 reach-myapp · test-model');
+      expect(finalText).toBe(escapeMarkdownV2('The answer is 42.\n\n📎 reach-myapp · test-model'));
     });
 
     it('resumes an existing session (not create) on the first relay', async () => {
@@ -140,7 +138,7 @@ describe('Relay', () => {
 
       const editCalls = (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
       const finalText = editCalls[editCalls.length - 1][2] as string;
-      expect(finalText).toBe('_(empty response)_\n\n📎 reach-myapp · test-model');
+      expect(finalText).toBe(escapeMarkdownV2('_(empty response)_\n\n📎 reach-myapp · test-model'));
     });
   });
 
@@ -242,32 +240,24 @@ describe('Relay', () => {
     });
   });
 
-  describe('interactive destructive wiring', () => {
-    it('replies with a clear error when bot wiring is missing', async () => {
+  describe('permission prompter wiring', () => {
+    it('proceeds without prompting when no permissionPrompter is configured', async () => {
       const factory = makeMockFactory();
       const registry = makeStubRegistry([SESSION_ENTRY]);
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const relay = new Relay(registry, factory, 'test-model', undefined, 'interactiveDestructive');
+      const relay = new Relay(registry, factory, 'test-model'); // no prompter
       const ctx = makeMockCtx();
 
       await relay.relay(ctx as any);
 
-      expect(warnSpy).toHaveBeenCalledWith(
-        '[relay] interactiveDestructive mode requires bot reference — check wiring',
-      );
-      expect(ctx.reply).toHaveBeenCalledWith(
-        '⚠️ interactiveDestructive mode requires bot reference — check wiring',
-        { message_thread_id: 42 },
-      );
-      expect(factory.resume).not.toHaveBeenCalled();
-      expect(factory.create).not.toHaveBeenCalled();
+      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', undefined, undefined);
     });
 
-    it('replies with a clear error when chat context is missing', async () => {
+    it('replies with a clear error and does not call factory when prompter is configured but chat context is absent', async () => {
       const factory = makeMockFactory();
       const registry = makeStubRegistry([SESSION_ENTRY]);
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      const relay = new Relay(registry, factory, 'test-model', {} as any, 'interactiveDestructive');
+      const mockPrompter = { prompt: vi.fn().mockResolvedValue(true) };
+      const relay = new Relay(registry, factory, 'test-model', mockPrompter);
       const ctx = {
         ...makeMockCtx(),
         chat: undefined,
@@ -276,10 +266,10 @@ describe('Relay', () => {
       await relay.relay(ctx as any);
 
       expect(warnSpy).toHaveBeenCalledWith(
-        '[relay] interactiveDestructive mode requires chat context for permission prompts',
+        '[relay] permission prompting requires chat context — cannot prompt',
       );
       expect(ctx.reply).toHaveBeenCalledWith(
-        '⚠️ interactiveDestructive mode requires chat context for permission prompts',
+        '⚠️ permission prompting requires chat context — cannot prompt',
         { message_thread_id: 42 },
       );
       expect(factory.resume).not.toHaveBeenCalled();
@@ -365,7 +355,7 @@ describe('Relay', () => {
 
       const editCalls = (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
       const finalText = editCalls[editCalls.length - 1][2] as string;
-      expect(finalText).toContain('📎 reach-myapp · claude-opus-4.5');
+      expect(finalText).toContain(escapeMarkdownV2('📎 reach-myapp · claude-opus-4.5'));
     });
 
     it('final message includes HUD footer with global model when no per-session model', async () => {
@@ -378,11 +368,179 @@ describe('Relay', () => {
 
       const editCalls = (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
       const finalText = editCalls[editCalls.length - 1][2] as string;
-      expect(finalText).toContain('📎 reach-myapp · claude-sonnet-4');
+      expect(finalText).toContain(escapeMarkdownV2('📎 reach-myapp · claude-sonnet-4'));
     });
   });
 
-  // ── crash recovery ──────────────────────────────────────────────────────────
+  // ── chunk cap ────────────────────────────────────────────────────────────────
+
+  describe('chunk cap (F-D / F10)', () => {
+    it('caps multi-chunk send at exactly MAX_CHUNKS (25) with consistent numbering and footer', async () => {
+      // Real timers needed: 24 follow-up chunks × 100ms delay would hang fake timers.
+      vi.useRealTimers();
+
+      // 26 paragraphs of 1800 chars each → 26 natural chunks at effectiveMax=2048;
+      // splitForTelegram caps to 25 (maxChunks) BEFORE numbering/footer so the
+      // truncation marker carries [25/25] and the HUD footer.
+      const bigContent = Array.from({ length: 26 }, () => 'x'.repeat(1800)).join('\n\n');
+      const session = makeMockSession([bigContent]);
+      const factory = makeMockFactory(session);
+      const registry = makeStubRegistry([SESSION_ENTRY]);
+      const relay = new Relay(registry, factory, 'test-model');
+      const ctx = makeMockCtx();
+
+      await relay.relay(ctx as any);
+
+      // First chunk via editMessageText, remaining via ctx.reply.
+      const replyCalls = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls;
+      const followUpReplies = replyCalls.filter((c: unknown[]) => c[0] !== '…');
+
+      // Total = 1 (edit) + followUps = MAX_CHUNKS = 25 → followUps = 24
+      expect(followUpReplies.length).toBeLessThanOrEqual(24);
+
+      // Last follow-up must carry the truncation marker (with consistent [n/total] prefix
+      // and HUD footer — verified in depth by messageSplitter tests)
+      const lastReply = followUpReplies[followUpReplies.length - 1]?.[0] as string | undefined;
+      expect(lastReply).toContain('truncated');
+    }, 10_000);
+  });
+
+  // ── first-chunk failure (F-E) ─────────────────────────────────────────────────
+
+  describe('first-chunk failure (F-E)', () => {
+    it('aborts follow-up chunks and updates placeholder when first-chunk edit fails', async () => {
+      // Two-chunk response so we can confirm chunk 2 is never sent
+      const chunk1 = 'x'.repeat(2020);
+      const chunk2 = 'y'.repeat(2020);
+      const session = makeMockSession([chunk1 + '\n\n' + chunk2]);
+      const factory = makeMockFactory(session);
+      const registry = makeStubRegistry([SESSION_ENTRY]);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const relay = new Relay(registry, factory, 'test-model');
+      const ctx = makeMockCtx();
+
+      // Make every editMessageText call fail (non-parse-entities → safeEdit returns false)
+      (ctx.api.editMessageText as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new Error('Telegram API unavailable'),
+      );
+
+      await relay.relay(ctx as any);
+
+      // ctx.reply called only once — for the "…" placeholder; no follow-up chunks
+      expect(ctx.reply).toHaveBeenCalledTimes(1);
+      expect(ctx.reply).toHaveBeenCalledWith('…', { message_thread_id: 42 });
+
+      // Error log emitted for first-chunk failure
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('First-chunk edit failed'),
+      );
+
+      // safeEdit warned about the failed editMessageText calls
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('editMessageText failed'),
+        expect.anything(),
+      );
+    });
+  });
+
+
+  // ── rekeySession (H-A: cache rekey after /resume) ────────────────────────────
+
+  describe('rekeySession', () => {
+    it('moves the cached session to the new topic key so next relay reuses it', async () => {
+      const factory = makeMockFactory();
+      const OLD_TOPIC = 10;
+      const NEW_TOPIC = 20;
+      const entryOld: SessionEntry = { ...SESSION_ENTRY, topicId: OLD_TOPIC };
+      const entryNew: SessionEntry = { ...SESSION_ENTRY, topicId: NEW_TOPIC };
+      const lookupMap = new Map<number, SessionEntry>([[OLD_TOPIC, entryOld]]);
+      const registry: SessionLookup = { resolve: vi.fn((id: number) => lookupMap.get(id)) };
+      const relay = new Relay(registry, factory, 'test-model');
+
+      // Warm the cache for OLD_TOPIC
+      await relay.relay(makeMockCtx('hello', OLD_TOPIC) as any);
+      expect(factory.resume).toHaveBeenCalledTimes(1);
+
+      // Simulate /resume: update the registry lookup to point NEW_TOPIC → session
+      lookupMap.delete(OLD_TOPIC);
+      lookupMap.set(NEW_TOPIC, entryNew);
+
+      // Rekey the relay cache
+      relay.rekeySession(OLD_TOPIC, NEW_TOPIC);
+
+      // Next relay call on NEW_TOPIC must NOT call factory again — cache hit
+      await relay.relay(makeMockCtx('hello', NEW_TOPIC) as any);
+      expect(factory.resume).toHaveBeenCalledTimes(1);
+    });
+
+    it('is a no-op when no cache entry exists for fromTopicId', () => {
+      const factory = makeMockFactory();
+      const registry = makeStubRegistry([SESSION_ENTRY]);
+      const relay = new Relay(registry, factory, 'test-model');
+
+      // No relay call yet — cache is empty; should not throw
+      expect(() => relay.rekeySession(42, 99)).not.toThrow();
+    });
+
+    it('next relay on old topic creates a new session after rekey', async () => {
+      const factory = makeMockFactory();
+      const OLD_TOPIC = 10;
+      const NEW_TOPIC = 20;
+      const entryOld: SessionEntry = { ...SESSION_ENTRY, topicId: OLD_TOPIC };
+      const lookupMap = new Map<number, SessionEntry>([[OLD_TOPIC, entryOld]]);
+      const registry: SessionLookup = { resolve: vi.fn((id: number) => lookupMap.get(id)) };
+      const relay = new Relay(registry, factory, 'test-model');
+
+      await relay.relay(makeMockCtx('hello', OLD_TOPIC) as any);
+      expect(factory.resume).toHaveBeenCalledTimes(1);
+
+      relay.rekeySession(OLD_TOPIC, NEW_TOPIC);
+
+      // OLD_TOPIC now has no cached session — next message there calls factory again
+      await relay.relay(makeMockCtx('hello', OLD_TOPIC) as any);
+      expect(factory.resume).toHaveBeenCalledTimes(2);
+    });
+
+    it('cancels stale destination timer so it cannot evict the moved session', async () => {
+      const factory = makeMockFactory();
+      const OLD_TOPIC = 30;
+      const NEW_TOPIC = 40;
+      const entryOld: SessionEntry = { ...SESSION_ENTRY, topicId: OLD_TOPIC };
+      const entryNew: SessionEntry = { ...SESSION_ENTRY, topicId: NEW_TOPIC };
+      const lookupMap = new Map<number, SessionEntry>([
+        [OLD_TOPIC, entryOld],
+        [NEW_TOPIC, entryNew],
+      ]);
+      const registry: SessionLookup = { resolve: vi.fn((id: number) => lookupMap.get(id)) };
+      const relay = new Relay(registry, factory, 'test-model');
+
+      // Warm the cache for NEW_TOPIC first — this arms a stale idle timer for it
+      await relay.relay(makeMockCtx('old message', NEW_TOPIC) as any);
+      expect(factory.resume).toHaveBeenCalledTimes(1);
+
+      // Warm the cache for OLD_TOPIC (the source of the move)
+      await relay.relay(makeMockCtx('hello', OLD_TOPIC) as any);
+      expect(factory.resume).toHaveBeenCalledTimes(2);
+
+      // Simulate /resume: registry now maps NEW_TOPIC → old session name
+      lookupMap.delete(OLD_TOPIC);
+
+      // Move the session from OLD_TOPIC → NEW_TOPIC; this must cancel the stale
+      // timer that was armed when we relayed to NEW_TOPIC above.
+      relay.rekeySession(OLD_TOPIC, NEW_TOPIC);
+
+      // Advance fake timers well past the original IDLE_TIMEOUT_MS (300 000 ms).
+      // If the stale timer had NOT been cancelled it would have fired here and
+      // evicted the newly-moved session from NEW_TOPIC.
+      vi.advanceTimersByTime(400_000);
+
+      // The moved session must still be in cache: relay on NEW_TOPIC should NOT
+      // call factory.resume again.
+      await relay.relay(makeMockCtx('after move', NEW_TOPIC) as any);
+      expect(factory.resume).toHaveBeenCalledTimes(2);
+    });
+  });
 
   describe('SDK crash recovery', () => {
     it('relay calls factory.resetForRestart() on non-timeout SDK error', async () => {

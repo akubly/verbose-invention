@@ -2,7 +2,9 @@ import type { Bot, Context } from 'grammy';
 import type { PermissionPolicy } from '../copilot/impl.js';
 import type { CopilotSessionFactory } from '../copilot/factory.js';
 import type { ISessionRegistry } from '../sessions/registry.js';
+import type { SessionLookup, PermissionPrompter } from '../relay/ports.js';
 import { Relay } from '../relay/relay.js';
+import { promptUserForPermission } from './prompt.js';
 
 /** DNS-label style: lowercase alphanumeric + hyphens, 1–63 chars, no leading hyphen. */
 export const SESSION_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -19,16 +21,27 @@ export interface HandlerOptions {
  * Registers all bot commands and the catch-all relay handler.
  *
  * Commands:
- *   /new <name>   — register a topic→name mapping in the session registry
+ *   /new <name>    — register a topic→name mapping in the session registry
  *                    (the SDK session is created lazily on first relayed message)
- *   /list         — list all registered topic→session mappings
- *   /remove       — delete the session linked to the current topic
- *   /help         — show available commands
+ *   /list          — list all registered topic→session mappings
+ *   /remove        — delete the session linked to the current topic
+ *   /resume <name> — re-link a named session to the current topic (move semantics)
+ *   /help          — show available commands
  *
  * All other text messages in forum topics are relayed to the linked session.
  */
 export function registerHandlers({ bot, registry, factory, globalModel, permissionPolicy }: HandlerOptions): Relay {
-  const relay = new Relay(registry, factory, globalModel, bot, permissionPolicy);
+  const sessionLookup: SessionLookup = { resolve: (topicId) => registry.resolve(topicId) };
+
+  let permissionPrompter: PermissionPrompter | undefined;
+  if (permissionPolicy === 'interactiveDestructive') {
+    permissionPrompter = {
+      prompt: (chatId, topicId, toolName, args) =>
+        promptUserForPermission(bot, chatId, topicId, toolName, args),
+    };
+  }
+
+  const relay = new Relay(sessionLookup, factory, globalModel, permissionPrompter);
 
   // /new <name> [--model <model>] — register a topic→name mapping; SDK session is created lazily on first relay
   bot.command('new', async (ctx) => {
@@ -75,6 +88,15 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
     if (existing) {
       await ctx.reply(
         `⚠️ Topic already linked to "${existing.sessionName}". Use /remove first.`,
+        { message_thread_id: topicId },
+      );
+      return;
+    }
+
+    const nameTaken = registry.findByName(name);
+    if (nameTaken) {
+      await ctx.reply(
+        `⚠️ Session name "${name}" is already in use (topic #${nameTaken.topicId}). Choose a different name.`,
         { message_thread_id: topicId },
       );
       return;
@@ -129,6 +151,89 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
     }
   });
 
+  // /resume <name> — re-link a named session to the current topic (move semantics)
+  bot.command('resume', async (ctx) => {
+    const topicId = ctx.message?.message_thread_id;
+    if (!topicId) {
+      await ctx.reply('❌ /resume must be used inside a forum topic. Run /resume inside the topic you want to bind.');
+      return;
+    }
+
+    const name = ctx.match?.trim();
+    if (!name) {
+      await ctx.reply('❌ Usage: /resume <session-name>', { message_thread_id: topicId });
+      return;
+    }
+
+    if (!SESSION_NAME_RE.test(name)) {
+      await ctx.reply(
+        '❌ Invalid session name. Use lowercase letters, numbers, and hyphens (e.g. reach-myapp).',
+        { message_thread_id: topicId },
+      );
+      return;
+    }
+
+    const matches = registry.findAllByName(name);
+    if (matches.length === 0) {
+      const allNames = registry.list().map((e) => e.sessionName);
+      const close = allNames.filter((n) => n.includes(name) || name.includes(n)).slice(0, 3);
+      const hint = close.length > 0
+        ? ` Did you mean: ${close.map((n) => `"${n}"`).join(', ')}?`
+        : ` Use /list to see available sessions.`;
+      await ctx.reply(`❌ No session named "${name}" found.${hint}`, { message_thread_id: topicId });
+      return;
+    }
+
+    // F-B: refuse when legacy duplicate names exist — cannot safely pick one
+    if (matches.length > 1) {
+      const lines = matches.map((e) => `  • topic #${e.topicId} (chatId ${e.chatId})`).join('\n');
+      await ctx.reply(
+        `⚠️ Multiple sessions named "${name}" exist (legacy duplicates):\n${lines}\nCannot disambiguate. Use /remove in the topic of the entry you want to drop, then /resume here.`,
+        { message_thread_id: topicId },
+      );
+      return;
+    }
+
+    const found = matches[0]!;
+
+    if (found.topicId === topicId) {
+      await ctx.reply(`✅ Session "${name}" is already bound to this topic.`, { message_thread_id: topicId });
+      return;
+    }
+
+    const currentBinding = registry.resolve(topicId);
+    if (currentBinding) {
+      await ctx.reply(
+        `⚠️ Topic already linked to "${currentBinding.sessionName}". Use /remove first.`,
+        { message_thread_id: topicId },
+      );
+      return;
+    }
+
+    const oldTopicId = found.topicId;
+    try {
+      await registry.move(oldTopicId, topicId);
+      // Migrate the live SDK session handle so the next message in the new topic
+      // reuses it instead of creating a duplicate session (H-A).
+      relay.rekeySession(oldTopicId, topicId);
+      await ctx.reply(
+        `✅ Resumed session "${name}" (was bound to topic #${oldTopicId}).`,
+        { message_thread_id: topicId },
+      );
+    } catch (err) {
+      if (err instanceof Error && err.message.includes('already bound to')) {
+        // F-C: destination was bound by a concurrent operation after our pre-check
+        await ctx.reply(
+          `⚠️ Cannot resume "${name}": topic ${topicId} was just linked to another session. Use /remove first.`,
+          { message_thread_id: topicId },
+        );
+      } else {
+        const msg = err instanceof Error ? err.message : String(err);
+        await ctx.reply(`❌ Failed to resume session "${name}": ${msg}`, { message_thread_id: topicId });
+      }
+    }
+  });
+
   // /help — show available commands
   bot.command('help', async (ctx) => {
     const topicId = ctx.message?.message_thread_id;
@@ -136,6 +241,7 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
 
 Commands:
 /new <name> [--model <model>] — Create a session in this topic
+/resume <name> — Re-link an existing session to this topic
 /list — Show all active sessions
 /remove — Unlink the session from this topic
 /pair <code> — Pair this chat with the Reach daemon

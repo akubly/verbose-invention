@@ -6,318 +6,93 @@
 - **Role:** Lead / Architect
 - **Joined:** 2026-04-12T06:02:10.439Z
 
-## Project Background
+## Current Phase: Phase 5 — Telegram UX QoL Scoping & Prioritization (2026-05-01)
 
-**Why Reach exists:** Aaron (akubly on GitHub) wanted to control Copilot CLI sessions from his phone when away from his keyboard. Enterprise users use Teams MCP for this; personal users have no equivalent. Reach is the personal-user answer.
+### What I Delivered
 
-**Sister project:** Cairn (`D:\git\stunning-adventure`, `akubly/stunning-adventure`) — a Copilot CLI session intelligence daemon that detects patterns and generates insights. Reach is the mobile bridge; Cairn is the insight engine. Same owner, independent projects. Read Cairn's architecture for inspiration on how to structure a TypeScript CLI companion daemon.
+**Phase 5 Scope Definition** (`decisions.md`):
 
-**Name:** Reach (from Halo lore — humanity's most important military planet). The squad is Halo-themed: Noble Six (me), Carter, Kat, Jun, Scribe, Ralph.
+1. **Message Splitting** — Telegram's 4096-char limit handling with semantic boundary preservation
+   - Boundary preference: `\n\n` > `\n` > whitespace > hard cut
+   - Code block protection: never split mid-block, re-open/close fences on sub-chunks
+   - Multi-chunk delivery: first via edit, rest via reply with 100ms delay
 
-## What's Been Built (Day 1)
+2. **MarkdownV2 Parse Mode** — Legacy Markdown upgrade
+   - Escape-only strategy (no AST parsing): 18 special chars + `\` in plain text
+   - Code region protection: only `\` and `` ` `` escaped inside code
+   - Plain-text fallback on rejection
 
-- `src/types.ts` — `SessionEntry`, `CopilotChunk`, `CopilotSession`, `CopilotClient` interfaces
-- `src/sessions/registry.ts` — durable `topicId → SessionEntry` JSON-backed registry
-- `src/relay/relay.ts` — bidirectional relay with streaming throttle and idle eviction
-- `src/bot/index.ts` — grammY Bot factory with chat ID guard
-- `src/bot/handlers.ts` — `/new`, `/list`, `/remove`, catch-all relay handler
-- `src/idleMonitor.ts` — per-topic idle timer for in-memory session eviction
-- `src/copilot/factory.ts` — `StubCopilotClient` (placeholder until SDK binding lands)
-- `docs/bridge-design.md` — Carter's detailed bridge layer design doc
+3. **/resume <name> Command** — Session mobility
+   - Move semantics: unbind old topic, bind to new
+   - Registry enhancement: `findByName()` for reverse lookup
+   - Model carry-forward from original entry
 
-## Critical Open Work (Noble Six Owns)
+### Dependency Analysis & Wave Sequencing
 
-**The `@github/copilot-sdk` binding is the highest-priority outstanding item.** The `CopilotClient` interface in `src/types.ts` is a best-guess placeholder. Noble Six must:
-1. Read the real SDK API (installed as `@github/copilot-sdk` in `node_modules`)
-2. Verify/adjust `CopilotSession.send()` return type (is it `AsyncIterable<CopilotChunk>` or something else?)
-3. Implement a real `CopilotClientImpl` in `src/copilot/impl.ts` (or similar)
-4. Wire it into a `src/main.ts` DI root
+**Dependency Graph:**
+```
+MarkdownV2 ──┐
+             ├─ Integration (relay.ts)
+Splitting   ──┘
+/resume     ─── Independent (handlers.ts + registry.ts)
+```
 
-Other open questions: registry file location (recommend `%APPDATA%\reach\registry.json`), session name validation, `REACH_CHAT_ID` env var guard.
+**Rationale:** MarkdownV2 before splitting because escaping changes text length; splitting must account for post-escape length.
 
-## Key Architecture Decisions
+**Recommended Sequencing:**
+- Wave 1 (parallel): MarkdownV2 (Carter) + /resume (Kat)
+- Wave 2 (after V2): Message Splitting (Carter, depends on V2 length calculations)
+- Tests: Jun writes all three test suites in parallel (pure functions + TDD)
 
-1. External daemon (not CLI extension) — required to start new sessions remotely
-2. Telegram forum topics as sessions — one topic = one named Copilot session
-3. grammY for the Telegram bot — TypeScript-first, plugin-rich
-4. Named session registry persisted to JSON, SDK handles recreated lazily
-5. CopilotClient interface as abstraction boundary — relay never imports SDK directly
+### Aaron's 6 Open Questions (ANSWERED)
 
-## Inspiration Map (from research)
+| Q | Answer | Implementation |
+|---|--------|-----------------|
+| Chunk numbering `[n/total]`? | No | Two-pass omits on single-chunk; never `[1/1]` |
+| Max chunks cap? | 25 chunks, truncate | Acceptable (DoS-guard hard cap in relay) |
+| HTML fallback? | No | MarkdownV2 → plain text only |
+| Accept degradation? | Yes | Fallback chain allows graceful fallback |
+| `/resume` move semantics? | Option A (move) | Unbind old, bind new; SDK cache handles stale |
+| `/resume --model`? | Defer | Model carried forward, no override flag |
 
-| Feature | Source |
-|---------|--------|
-| `Client` interface abstraction | `austenstone/copilot-remote` |
-| Deterministic/named session IDs | `austenstone/copilot-remote` |
-| Edit-in-place streaming | `austenstone/copilot-remote` |
-| HUD footer pattern (TBD) | `julianchun/copilot-telegram-bot` |
-| Two-tier permissions (TBD) | `julianchun/copilot-telegram-bot` |
-| Session pairing codes (TBD) | `examon/copilot-cli-telegram-bridge` |
-| `/new <friendly-name>` single command | Reach original |
-| Windows Service support | Reach original |
+### Current Status
 
-## Learnings
+- Scope locked and documented in `decisions.md`
+- All 4 decisions inbox files merged
+- Inbox cleared
+- Wave 1 & 2 agents (Carter, Kat, Jun) ready to execute
 
-### 2026-04-14 — Phase 3 Interface Changes — Per-Session Model Override
+## Recent Learnings (Active)
 
-Implemented the interface changes for per-session model override (already decided in `decisions.md`). Key changes:
+### 2026-05-01 — Phase 5: Scope Design & Coordination
 
-1. **`SessionEntry.model?: string`** — Added optional model field to `SessionEntry` in `src/types.ts`. Falls back to global `REACH_MODEL` if undefined.
+Delivered comprehensive phase scope covering three interconnected UX features:
 
-2. **`CopilotSessionFactory` signature update** — Added optional `model?: string` parameter to both `resume()` and `create()` methods in `src/copilot/factory.ts`. Updated `StubCopilotSessionFactory` stub to match.
+**Design decisions made:**
+1. Wave sequencing based on dependency analysis
+2. Move semantics for `/resume` (simpler invariant: 1 session = 1 topic always)
+3. Escape-only strategy for MarkdownV2 (covers 95% of real output, avoids AST brittleness)
+4. Boundary preference ordering (preserves semantic structure)
 
-3. **`CopilotClientImpl` model override** — Updated `resume()` and `create()` in `src/copilot/impl.ts` to use `model ?? this.model` when calling SDK. Constructor `model` becomes the global default; per-call `model` param overrides it.
+**Coordination patterns:**
+- Scoped multiple agents in parallel (Carter Waves 1&2, Kat, Jun)
+- Locked contracts early (test-first approach)
+- Documented all edge cases and risk mitigations
 
-**Verification:**
-- TypeScript compiles clean (`npx tsc --noEmit` ✅)
-- Tests: 101 passed, 6 failed. Failures are expected — Jun wrote TDD tests for Phase 3 command handler features (`/new --model`, `/list` showing model, `/help` documenting `--model`) which aren't implemented yet. The interface changes are backward-compatible and correct.
+### 2026-05-02 — Phase 5 Complete (Team Update by Scribe)
 
-**Architecture designs written** — `.squad/decisions/inbox/noble six-phase3-designs.md` covers:
+Phase 5 complete. All decisions merged to `decisions.md`; inbox cleared. 235 tests pass, tsc clean, lint clean.
 
-1. **SDK Crash Auto-Recovery (P1)** — Recommended error-triggered restart with backoff. Reactive approach (no polling). Evict sessions on SDK errors, null out `startPromise`, let next message trigger fresh SDK start. SDK session history survives (persisted to disk), so users don't lose context.
+**Noble Six's contributions:**
+- Scoped and prioritized Phase 5 (3 UX improvements)
+- Analyzed dependencies and recommended wave sequencing
+- Answered 6 of Aaron's open questions
+- All scope decisions successfully applied by implementation agents
 
-2. **HUD Footer (P2)** — Recommended session name + model appended to every final message (e.g., `📎 reach-myapp · claude-sonnet-4`). Always available, minimal noise, actionable. Deferred repo/branch until SDK API is verified to expose them.
+**Team coordination:** Wave-based execution enabled parallel work (Wave 1: MarkdownV2 + /resume); Wave 2 (message splitting) built on Wave 1 foundations.
 
-3. **Two-Tier Permissions (P2)** — Recommended configurable policy via `REACH_PERMISSION_POLICY` env var. Three modes: `approveAll` (default, current behavior), `interactiveDestructive` (Telegram prompts for destructive tools), `denyAll` (read-only). Implement policy switch now, defer Telegram prompts to Phase 4.
+**Next phase:** Ready for production. Phase 5 UX improvements provide foundation for future features.
 
-4. **Pairing Codes (P2)** — Recommended one-time 6-digit code on daemon startup. User sends `/pair <code>` in Telegram, daemon validates and persists chat ID to `config.json`. Proves ownership of both machine and group without manual chat ID lookup. Backward-compat: if `TELEGRAM_CHAT_ID` env var is set, skip pairing.
+## Archive
 
-**Trade-off analysis principle:** Every recommendation includes alternatives considered, trade-offs, and rationale. Named the constraints (latency, complexity, UX friction, security risk) so Aaron can override with context I lack.
-
-**File paths:**
-- Interface changes: `src/types.ts`, `src/copilot/factory.ts`, `src/copilot/impl.ts`
-- Design doc: `.squad/decisions/inbox/noble six-phase3-designs.md`
-- Test updates: `tests/relay/relay.test.ts` (updated assertions to account for optional `model` param)
-
-
-
-### 2026-04-11 — SDK API Surface Discovery
-
-Investigated `@github/copilot-sdk` v0.2.2 (public preview). Key findings:
-
-1. **No named sessions.** SDK uses opaque `sessionId` strings. Accepts custom IDs on `createSession({ sessionId: "..." })`, so we use the friendly name directly as the ID.
-2. **Event-based streaming, not AsyncIterable.** `session.on("assistant.message_delta", cb)` yields `{ deltaContent: string }` chunks. `session.on("session.idle", cb)` signals completion. Must bridge to `AsyncIterable<string>` via async generator.
-3. **`send()` returns `Promise<string>` (message ID)**, not an iterable. `sendAndWait()` returns the final `AssistantMessageEvent`.
-4. **`onPermissionRequest` is required** on `createSession`. Using `approveAll` for personal tool.
-5. **SDK spawns/manages a Copilot CLI server process** via JSON-RPC (stdio by default). One `CopilotClient` instance serves all sessions.
-6. **Session state persists to disk.** `resumeSession(id, config)` restores conversation history. Maps directly to Reach's lazy-recreation pattern.
-7. **Adapter pattern chosen.** `CopilotSessionFactoryImpl` wraps the SDK, `CopilotSessionAdapter` bridges events→AsyncIterable. Relay code unchanged.
-
-ADR written: `docs/adr-001-copilot-sdk-binding.md`
-
-### 2026-04-12 — Cross-Agent Note from Carter
-
-Carter changed the bridge layer API during test alignment:
-
-1. **CopilotSession.send() now yields string, not CopilotChunk** — stream chunks are plain strings (not `{ text: string }` objects). The async generator bridge in `CopilotSessionAdapter` should yield each `deltaContent` chunk as-is.
-2. **CopilotClient replaced by CopilotSessionFactory** — new interface in `src/copilot/factory.ts`:
-   ```typescript
-   export interface CopilotSessionFactory {
-     resume(sessionName: string): Promise<CopilotSession | null>;
-     create(sessionName: string): Promise<CopilotSession>;
-   }
-   ```
-   Sessions are name-based, not opaque ID-based. Caller tries `resume()` first, falls back to `create()` if null.
-
-**Action for Noble Six:** When building `src/copilot/impl.ts`, update the ADR implementation sketch to match the new `CopilotSessionFactory` interface and plain-string streaming. The relay layer and tests are already aligned; SDK binding is the remaining integration point.
-
-### 2026-04-12 — SDK Binding Implementation & main.ts DI Root
-
-Implemented `src/copilot/impl.ts` and `src/main.ts`. Key learnings:
-
-1. **`getSessionMetadata()` does NOT auto-start the SDK client** — unlike `createSession()`/`resumeSession()` which auto-start when `autoStart: true` (default), `getSessionMetadata()` throws if the client isn't connected. Required adding `ensureStarted()` with lazy `sdk.start()` call.
-2. **Async generator bridge pattern** — Queue-based bridge with `notify` callback. Event listeners (`assistant.message_delta`, `session.idle`, `session.error`) are subscribed BEFORE `sdkSession.send()` is fired. `send()` is fire-and-forget (returns message ID); the generator yields from the queue until `session.idle` signals done. `finally` block cleans up all subscriptions.
-3. **`approveAll` is a `const PermissionHandler`**, not a function — imported and passed directly to both `SessionConfig` and `ResumeSessionConfig`.
-4. **`onPermissionRequest` is required** in both `SessionConfig` and `ResumeSessionConfig` (the `Pick` type preserves the non-optional constraint from `SessionConfig`).
-5. **`resume()` uses two-phase check** — `getSessionMetadata()` returns `undefined` for unknown sessions (no throw), then `resumeSession()` is wrapped in try/catch to handle corrupted session data gracefully (returns `null` instead of throwing).
-6. **Registry path** — Windows: `%APPDATA%\reach\registry.json`, Unix: `~/.config/reach/registry.json`. Platform detected via `os.platform()`.
-7. **Graceful shutdown** — `Promise.allSettled([bot.stop(), factory.stop()])` ensures both teardowns run even if one fails. `process.exit(0)` in `.finally()`.
-8. **All 56 tests pass** — No test changes required. The impl.ts is cleanly isolated behind the `CopilotSessionFactory` interface.
-
-### 2026-04-12 — Phase 2 Planning ("Go Live")
-
-Analyzed PR #1 outcomes: 73 passing tests (registry 17, relay 13, idleMonitor 13, handlers 18, impl 12), full bridge layer operational, SDK binding live, main.ts DI wired, ADR-001 documented. The codebase is feature-complete as a *library* but not yet usable as a *product*.
-
-**Phase 2 theme: Operational Infrastructure.** Aaron needs to *run* Reach, not just *build* it. Critical gaps:
-1. No Windows Service installer (Ralph owns)
-2. No setup documentation (Scribe owns)
-3. Session name validation missing (Carter owns — ADR-001 recommended `^[a-z0-9][a-z0-9\-]{0,62}$`)
-4. `TELEGRAM_CHAT_ID` optional (Kat to enforce as required)
-5. Model selection deferred — currently global `REACH_MODEL` env var; Aaron to decide if per-session needed
-6. SDK crash recovery strategy open (Noble Six to implement health check + auto-reconnect)
-
-**Prioritization principle:** P0 = blocks Aaron's first real session. P1 = quality of life. P2 = polish that can wait for feedback. `/help` command, HUD footer, two-tier permissions, pairing codes all deferred to P1/P2 — they're nice but not critical for proving the core value loop.
-
-**Key insight:** The Windows Service installer is the highest-leverage item. Without it, Aaron has to manually run `npm start` in a terminal and keep it alive. With it, Reach becomes a true background daemon that survives reboots.
-
-**Trade-off on model selection:** Recommended keeping global for Phase 2. Per-session model adds cognitive load (every `/new` requires a model choice or uses a default), implementation complexity (registry schema change, factory API change), and unclear user value at 1-person scale. Aaron can change models by restarting the service or adding `/model` command later. Asked Aaron to approve or override.
-
-**Trade-off on CLI crash recovery:** Implemented health check + auto-reconnect in `impl.ts` (P1). Alternative was "restart service manually" — rejected because daemon should self-heal. SDK spawns a single CLI process; if it crashes, all sessions break until reconnect. Auto-recovery makes Reach resilient to transient failures.
-
-**Dependency graph:** Windows Service → README (Scribe needs to document the installer). Everything else parallelizable. Critical path is Service + README; that's the unlock for Aaron's first session.
-
-**File paths learned:**
-- Windows Service install logic: `src/service/install.ts` (to be created)
-- Session name validator: `src/sessions/validator.ts` (to be created)
-- README: `README.md` (to be created at repo root)
-
-**Proposal location:** `.squad/decisions/inbox/noble six-phase-2-proposal.md` — waiting for Aaron's approval on model decision and overall Phase 2 priority order.
-
-### 2026-04-12 — Windows Service Installer Implementation
-
-Implemented `src/service/install.ts` — a CLI tool for registering/unregistering Reach as a Windows Service via node-windows v1.0.0-beta.8.
-
-**Key design choices:**
-
-1. **Service configuration** — name: "Reach", description: "Telegram ↔ GitHub Copilot CLI session bridge", script: `dist/main.js`, auto-restart enabled via node-windows defaults (maxRestarts: 3, wait: 1s, grow: 0.25).
-2. **Working directory set explicitly** — `workingDirectory: path.resolve(__dirname, '..', '..')` points to the project root, ensuring the service can access `.env` and registry files from the project directory.
-3. **Pre-install validation** — checks `dist/main.js` exists before attempting installation; exits with helpful message if not found.
-4. **Error handling** — listens for `alreadyinstalled`, `error`, and `alreadyuninstalled` events; provides admin privilege hints when permission errors occur.
-5. **Event-driven flow** — `install` → `start` on success; uninstall cleans up and exits gracefully.
-6. **Node options** — `--enable-source-maps` passed to service for better debugging in Windows Event Log.
-
-**Trade-offs:**
-
-- **Global service vs. user-scoped** — Chose system-wide service (requires admin). Alternative: user-level task via Task Scheduler (no admin, but more fragile, no auto-restart). System service is the Windows-native pattern for daemons.
-- **node-windows over alternatives** — PM2, NSSM, or custom winsw XML. node-windows wins: zero config, TypeScript-friendly, handles wrapper generation, event log integration.
-- **Auto-start on install** — Service starts immediately after installation. Alternative: let user start manually. Auto-start reduces friction — installer does the complete job.
-
-**File paths:**
-- Installer: `src/service/install.ts` → `dist/service/install.js`
-- Service script: `dist/main.js`
-- Package scripts: `service:install`, `service:uninstall` (already defined in package.json)
-
-### 2026-04-14 — Phase 2 Test Coverage & Integration
-
-Jun (Test Lead) wrote 25 new tests across Phase 2 features:
-
-1. **Service Installer Tests** — Created `tests/service/install.test.ts` (6 tests) using TDD approach: mocked `node-windows` at module level, read actual node-windows source to ensure accurate mocks, provided reference implementation that defines contract. Once real installer implementation (this file) landed, tests validated against it.
-
-2. **/help Command Tests** — Added 2 tests to `tests/bot/handlers.test.ts` using existing `makeMockBot()` pattern. Verifies help text contains all commands and works in general chat.
-
-3. **TELEGRAM_CHAT_ID Enforcement** — Deferred from unit tests to Phase 3 integration tests (feature spans `main.ts` process.exit and grammY middleware, both hard to unit-test cleanly without brittle mocks).
-
-**Result:** All 81 tests passing (56 original + 25 new). Test suite provides confidence for Phase 2 Go Live.
-
-**Key learning documented:** TDD approach for parallel implementation—read real dependencies, mock at module level, provide reference impl, swap to dynamic import once real implementation lands. Avoid unit tests when alternative strategies (integration, manual) provide better ROI with less brittleness.
-
-### 2026-04-22 — Phase 3 Wave 2: SDK Crash Recovery + Permissions + Pairing Config
-
-Implemented three architectural enhancements to improve reliability, security, and UX:
-
-1. **SDK Crash Auto-Recovery** — Added exponential backoff to `ensureStarted()` in `src/copilot/impl.ts`. Tracks restart count and last restart time; applies backoff (1s → 2s → 4s → max 30s) if restarting within 60s window. Resets backoff after 60s of successful uptime. Added `resetForRestart()` method (optional on `CopilotSessionFactory` interface) for relay to call on SDK errors—forces clean restart on next session call.
-
-2. **Two-Tier Permissions Policy** — Added `PermissionPolicy` type (`'approveAll' | 'denyAll'`) and `makePermissionHandler()` factory in `src/copilot/impl.ts`. Wired to `REACH_PERMISSION_POLICY` env var in `main.ts` (defaults to `'approveAll'`). `denyAll` returns `{ kind: 'denied-by-rules', rules: [] }` per SDK's `PermissionRequestResult` type. `interactiveDestructive` deferred to Phase 4 (requires Telegram prompt integration).
-
-3. **Persistent Pairing Config** — Created `src/config/config.ts` with platform-aware config path (`%APPDATA%\reach\config.json` on Windows, `~/.config/reach/config.json` on Unix). `loadConfig()` / `saveConfig()` use atomic write (tmp + rename). `main.ts` now checks `TELEGRAM_CHAT_ID` env var first, falls back to `config.telegramChatId`, and enters pairing mode if neither exists. Pairing mode generates 6-digit code, listens for `/pair <code>`, saves chat ID to config, exits for restart. Pairing bot uses unguarded `new Bot(token)` (no chat filter during pairing).
-
-**Architecture trade-offs:**
-
-- **Backoff strategy:** Chose time-window + exponential over restart-count-only. Time window prevents cascading backoff from old failures; exponential caps at 30s (not unbounded). Alternative: fixed backoff—rejected as too aggressive for transient issues.
-  
-- **Permission policy design:** Chose env var + factory pattern over subclassing. Makes policy testable in isolation; no need to new up different impl classes. `denyAll` as second tier (not just `approveAll`) provides read-only mode for Phase 3; `interactiveDestructive` adds Telegram prompt layer in Phase 4.
-
-- **Pairing UX:** One-time 6-digit code on first run, user-initiated `/pair` command, persisted to config. Alternative: manual chat ID lookup—rejected as too technical (requires Telegram API knowledge). 5-minute timeout prevents indefinite code exposure.
-
-- **Config persistence:** Atomic write (tmp + rename) prevents corruption on crash. Platform detection ensures paths match OS conventions. No encryption (file permissions assumed sufficient for single-user daemon).
-
-**Key discovery:** SDK `PermissionRequestResult` type requires `{ kind: 'denied-by-rules', rules: [] }` shape (not `{ decision: 'deny' }`). Found by reading `node_modules/@github/copilot-sdk/dist/generated/rpc.d.ts`. Initial attempt failed TypeScript compilation; corrected after RPC type inspection.
-
-**Interface extension:** Added optional `resetForRestart?()` to `CopilotSessionFactory` in `src/copilot/factory.ts`. Only `CopilotClientImpl` provides it (stub doesn't need it). Relay (Carter's file) will call `factory.resetForRestart?.()` on stream errors.
-
-**Parallel work coordination:** Carter working on `src/relay/relay.ts` (HUD footer + resetForRestart call), Kat on `src/bot/handlers.ts` (globalModel param + `/pair` handler). No file conflicts—clean separation of ownership.
-
-**Verification:** 
-- TypeScript compiles clean (`npx tsc --noEmit` ✅)
-- All 114 tests pass (`npx vitest run` ✅, 7 more than expected—suite grew during Phase 3)
-
-**Files modified:**
-- `src/copilot/impl.ts` — backoff state, `PermissionPolicy`, `makePermissionHandler()`, `resetForRestart()`
-- `src/copilot/factory.ts` — added optional `resetForRestart?()` to interface
-- `src/main.ts` — pairing mode flow, config loading, `REACH_PERMISSION_POLICY` wiring
-- `src/config/config.ts` — NEW, persistent config management
-
-### 2026-04-23 — Phase 4 Scoping: Hardening and Polish
-
-Aaron declared Reach feature-complete for personal use — Phase 4 focuses on reliability, code quality, and maintainability. Scoped 4 items from the roadmap:
-
-**Prioritization outcomes:**
-1. **ESLint setup (P0)** — Foundation quality gate. .eslintrc.json doesn't exist; package.json lint script will fail. Blocks all other work (no new code without linting). Assigned to Carter (tooling/infra owner). 30 min effort.
-
-2. **Extract getReachDataDir() (P1)** — DRY refactor. `main.ts::getRegistryPath()` and `config.ts::getConfigPath()` duplicate platform-aware path logic (`%APPDATA%\reach` on Windows, `~/.config/reach` on Unix). Not urgent but tech debt compounds if we add more data files. Assigned to Carter. 45 min effort. Blocked by ESLint (should pass clean linting after refactor).
-
-3. **Integration tests (P1)** — Missing end-to-end test coverage for 3 critical flows: TELEGRAM_CHAT_ID enforcement (main.ts + middleware), pairing flow (6-digit code → config persistence → exit), SDK crash recovery (relay → factory restart → backoff). 119 unit tests exist; need component integration tests (mocked I/O, not real Telegram API or SDK). Assigned to Jun (test strategy owner). 3-4 hours effort. Blocked by ESLint.
-
-4. **interactiveDestructive permission mode (P2)** — UX enhancement. Phase 3 delivered `approveAll` and `denyAll` policies. Missing: auto-approve read-only tools, prompt Telegram for destructive tools (file writes, shell commands). Requires tool classification logic + async Telegram inline keyboard prompt + timeout handling. High complexity (cross-cutting change: factory, relay, bot, types). Assigned to Noble Six (architecture) + Kat (Telegram UX). 6-8 hours effort. Blocked by ESLint.
-
-**Trade-off: P2 demotion of interactiveDestructive.** `approveAll` (current mode) works for Aaron today; `denyAll` provides read-only option for security-conscious users. `interactiveDestructive` is the "Goldilocks zone" — useful but not critical. High complexity (tool classification, async Telegram prompt, race conditions) justifies deferral.
-
-**Parallelization strategy:**
-- **Wave 1:** ESLint setup (Carter) → getReachDataDir() refactor (Carter) — 45 min total, sequential
-- **Wave 2:** Integration tests (Jun) **||** interactiveDestructive mode (Noble Six + Kat) — 6-8 hours, parallel (zero file conflicts)
-
-**Open questions for Aaron:**
-1. Confirm P2 for interactiveDestructive is acceptable (promote to P1 if needed before broader rollout)
-2. Tool classification granularity: coarse-grained (`powershell` always destructive) or command-string parsing (`Get-Process` safe, `Remove-Item` destructive)? Recommend coarse-grained for Phase 4, refine later.
-3. Permission prompt location: same topic as active session (recommended) or dedicated "admin" topic?
-
-**Architecture decision pending:** interactiveDestructive requires threading topic context from relay into permission handler. Three options:
-- **A:** Pass `(bot, chatId, topicId)` into every `session.send()` call (breaks current interface)
-- **B:** Factory holds `Map<sessionName, topicId>` to resolve topic for prompts
-- **C:** Relay injects topic-aware callback when creating sessions (cleanest separation)
-
-**Recommendation: Option C** — relay knows topic context, factory doesn't. Permission callback is injected per-session at `factory.resume()`/`factory.create()` time.
-
-**File paths:**
-- Scoping doc: `.squad/decisions/inbox/noble six-phase4-scope.md` (detailed 17KB analysis)
-- New files in Phase 4: `.eslintrc.json`, `tests/integration/*.test.ts`, `src/copilot/permissions.ts`, `src/bot/prompt.ts`, `tests/copilot/permissions.test.ts`, `tests/bot/prompt.test.ts`
-- Modified files: `src/config/config.ts` (add getReachDataDir), `src/main.ts` (refactor + wire permission callback), `src/copilot/impl.ts` (add interactiveDestructive handler), `src/types.ts` (add PermissionPromptCallback type)
-
-**Verification criteria:**
-- Wave 1 complete: `npm run lint` passes, `getReachDataDir()` exported, zero duplication
-- Wave 2 complete: 130+ tests passing (119 + 11 new), manual smoke test of interactiveDestructive mode with real tool approval/denial
-
-### 2026-05-01 — interactiveDestructive Permission Architecture Implementation
-
-Implemented the architecture-side half of `interactiveDestructive` with Option C-compatible session callbacks and coarse-grained tool classification.
-
-1. **`src/copilot/permissions.ts`** — Added exported `DESTRUCTIVE_TOOLS` and `isDestructive()` for the coarse-grained destructive set Aaron chose: `edit`, `create`, `powershell`, `bash`, `git_commit`, `gh_pr_create`, `gh_issue_create`. This is the authoritative list to extend when new destructive tools are introduced.
-2. **Factory contract extension** — Added `PermissionPromptCallback` plus optional `permissionCallback` params on `CopilotSessionFactory.create()` / `resume()` so relay can inject a per-session, topic-aware approval function without changing the relay→session send contract.
-3. **`CopilotClientImpl` permission handler** — Extended `PermissionPolicy` with `interactiveDestructive`; `makePermissionHandler()` now requires a callback in that mode, auto-approves non-destructive requests, and prompts only for destructive ones. Because the SDK permission type is generic (`kind: 'shell' | 'write' | ...`), I added a small compatibility mapping via `getPermissionToolName()` (`shell` → `powershell`, `write` → `edit`) before classification so Reach still honors the coarse-grained policy for the known SDK permission kinds even if `toolName` is omitted. Prompt failures now deny the request rather than crashing the permission flow.
-4. **`main.ts` policy wiring** — `REACH_PERMISSION_POLICY` now accepts `interactiveDestructive` alongside `approveAll` and `denyAll`. Main intentionally does not construct the callback; that remains Carter's relay responsibility per Option C.
-5. **Operator docs** — Updated `README.md` and `.env.example` so the new permission policy is discoverable outside the code.
-
-**Trade-off captured:** Chose coarse-grained classification over command parsing for safety and simplicity. This may over-prompt on harmless shell commands, but it reduces false negatives within the chosen destructive tool set while keeping the implementation stable against current SDK request-shape variance.
-
-**Verification:**
-- `npm run lint` ✅
-- `npx tsc --noEmit` ✅
-- `npx vitest run` ✅
-
-**Files modified:**
-- `src/copilot/permissions.ts` — NEW
-- `src/copilot/impl.ts`
-- `src/copilot/factory.ts`
-- `src/main.ts`
-- `.squad/decisions/inbox/noble six-interactive-destructive.md` — NEW
-
-### 2026-05-01 — Phase 4 Wave 2: interactiveDestructive Completion
-
-Final wave of permissions implementation, with Kat building the Telegram prompt UX, Carter threading callbacks through relay, and Jun testing end-to-end. Architecture architecture decision (Option C relay injection) proved clean—zero conflicts between agent files, permission handling decoupled from session transport.
-
-**Outcome:** 162 tests pass (4 skipped integration tests), `npm run lint` clean, `npx tsc --noEmit` clean.
-
-**Key learnings:**
-- SDK permission requests emit generic `kind` fields (`'shell'`, `'write'` etc.) without always providing `toolName` — normalized via `getPermissionToolName()` mapping before classification
-- UUID-based async prompt routing scales to concurrent users without thread safety concerns (Node.js single-threaded)
-- 60s timeout + auto-cleanup is more robust than promise race (avoids orphaned handlers on cascade failures)
-- Coarse-grained classification produces false positives (read-only `Get-Process` over `powershell` gets prompted) but zero false negatives — chosen for safety
-
-**Files landed:**
-- `src/copilot/permissions.ts` — Classifier
-- `src/bot/prompt.ts` — NEW (Kat), inline keyboard prompt with UUID routing
-- `tests/copilot/permissions.test.ts` — NEW (Jun)
-- `tests/bot/prompt.test.ts` — NEW (Jun)
-- `src/relay/relay.ts` — Updated (Carter), per-topic callback creation
-- `.eslintrc.json` — NEW (Carter, Wave 1)
-
+Earlier work (before 2026-05-01) is archived in `history-archive.md` for reference.

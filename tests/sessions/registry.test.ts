@@ -271,4 +271,316 @@ describe('SessionRegistry', () => {
       expect(registry.list()).toEqual([]);
     });
   });
+
+  // ── name uniqueness ──────────────────────────────────────────────────────────
+
+  describe('name uniqueness', () => {
+    it('allows registering a new unique name on a different topic', async () => {
+      await registry.register(1, -100, 'alpha');
+      await expect(registry.register(2, -100, 'beta')).resolves.not.toThrow();
+    });
+
+    it('throws when registering a name already used by a different topic', async () => {
+      await registry.register(1, -100, 'dup-name');
+      await expect(registry.register(2, -100, 'dup-name')).rejects.toThrow(/dup-name/);
+    });
+
+    it('allows re-registering the same topicId with a new name (update in-place)', async () => {
+      await registry.register(1, -100, 'name-v1');
+      await expect(registry.register(1, -100, 'name-v2')).resolves.not.toThrow();
+      expect(registry.resolve(1)?.sessionName).toBe('name-v2');
+    });
+
+    it('warns about duplicate names found on load but loads all entries', async () => {
+      const data = {
+        version: 1,
+        entries: {
+          '1': { sessionName: 'dup', topicId: 1, chatId: -100, createdAt: '2024-01-01T00:00:00.000Z' },
+          '2': { sessionName: 'dup', topicId: 2, chatId: -100, createdAt: '2024-01-01T00:00:00.000Z' },
+        },
+      };
+      await fs.mkdir(path.dirname(storePath), { recursive: true });
+      await fs.writeFile(storePath, JSON.stringify(data), 'utf-8');
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await registry.load();
+        expect(registry.list()).toHaveLength(2);
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/[Dd]uplicate.*dup|dup.*[Dd]uplicate/));
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
+
+  // ── move ─────────────────────────────────────────────────────────────────────
+
+  describe('move', () => {
+    it('moves an entry from one topic to another', async () => {
+      await registry.register(1, -100, 'session-a');
+      await registry.move(1, 2);
+      expect(registry.resolve(1)).toBeUndefined();
+      expect(registry.resolve(2)?.sessionName).toBe('session-a');
+    });
+
+    it('carries model through on move', async () => {
+      await registry.register(1, -100, 'session-b', 'claude-opus-4.5');
+      await registry.move(1, 2);
+      expect(registry.resolve(2)?.model).toBe('claude-opus-4.5');
+    });
+
+    it('preserves createdAt from the original entry', async () => {
+      await registry.register(1, -100, 'session-c');
+      const original = registry.resolve(1)!;
+      await registry.move(1, 2);
+      expect(registry.resolve(2)?.createdAt).toBe(original.createdAt);
+    });
+
+    it('preserves the stored sessionName and chatId — identity cannot be changed by the caller', async () => {
+      await registry.register(1, -100, 'session-orig');
+      await registry.move(1, 2);
+      expect(registry.resolve(2)?.sessionName).toBe('session-orig');
+      expect(registry.resolve(2)?.chatId).toBe(-100);
+    });
+
+    it('throws when the source topicId is not registered', async () => {
+      await expect(registry.move(999, 2)).rejects.toThrow(/999/);
+    });
+
+    it('persists the final state after a successful move', async () => {
+      await registry.register(1, -100, 'session-d');
+      await registry.move(1, 2);
+
+      const reloaded = new SessionRegistry(storePath);
+      await reloaded.load();
+
+      expect(reloaded.resolve(1)).toBeUndefined();
+      expect(reloaded.resolve(2)?.sessionName).toBe('session-d');
+    });
+
+    it('leaves in-memory state untouched when persist throws (write-first — no mutation on failure)', async () => {
+      await registry.register(1, -100, 'session-e');
+
+      vi.spyOn(registry as any, 'doPersistEntries').mockRejectedValueOnce(new Error('disk full'));
+
+      await expect(registry.move(1, 2)).rejects.toThrow('disk full');
+
+      // Write-first: entries was never mutated, so old binding is intact and new binding absent
+      expect(registry.resolve(1)?.sessionName).toBe('session-e');
+      expect(registry.resolve(2)).toBeUndefined();
+    });
+
+    it('does not mutate entries before the disk write completes (write-first)', async () => {
+      await registry.register(1, -100, 'session-f');
+
+      let capturedResolveAtPersist: string | undefined;
+      vi.spyOn(registry as any, 'doPersistEntries').mockImplementationOnce(async () => {
+        // At this point, this.entries must NOT yet be mutated (old key still present)
+        capturedResolveAtPersist = registry.resolve(1)?.sessionName;
+        // Don't call through — successful fake write
+      });
+
+      await registry.move(1, 2);
+
+      // During persist, topic 1 must still have been visible (write-first guarantee)
+      expect(capturedResolveAtPersist).toBe('session-f');
+      // After move(), the live map reflects the new state
+      expect(registry.resolve(1)).toBeUndefined();
+      expect(registry.resolve(2)?.sessionName).toBe('session-f');
+    });
+
+    // F-C: destination-unbound check inside move() ──────────────────────────
+
+    it('throws when the destination topicId is already bound', async () => {
+      await registry.register(1, -100, 'session-a');
+      await registry.register(2, -100, 'session-b');
+      await expect(registry.move(1, 2)).rejects.toThrow(
+        /already bound to|[Dd]estination/,
+      );
+    });
+
+    it('error message from move() names the conflicting session', async () => {
+      await registry.register(1, -100, 'session-a');
+      await registry.register(2, -100, 'session-b');
+      await expect(registry.move(1, 2)).rejects.toThrow(/session-b/);
+    });
+
+    it('leaves both entries intact when destination is already bound (no mutation)', async () => {
+      await registry.register(1, -100, 'session-a');
+      await registry.register(2, -100, 'session-b');
+      await expect(registry.move(1, 2)).rejects.toThrow();
+
+      expect(registry.resolve(1)?.sessionName).toBe('session-a');
+      expect(registry.resolve(2)?.sessionName).toBe('session-b');
+    });
+
+    // ── concurrency serialization ───────────────────────────────────────────
+
+    it('move() serializes against concurrent register() — register runs only after move completes', async () => {
+      await registry.register(1, -100, 'session-a');
+
+      let resolveMoveGate!: () => void;
+      const moveGate = new Promise<void>(r => { resolveMoveGate = r; });
+      const executionLog: string[] = [];
+
+      let callIndex = 0;
+      const spy = vi.spyOn(registry as any, 'doPersistEntries').mockImplementation(async () => {
+        const call = ++callIndex;
+        if (call === 1) {
+          executionLog.push('move:persist-start');
+          await moveGate;
+          executionLog.push('move:persist-end');
+        } else {
+          executionLog.push('register:persist');
+        }
+      });
+
+      try {
+        const moveP = registry.move(1, 2);
+        // Drain microtasks so moveOp reaches the doPersistEntries await
+        await Promise.resolve();
+        await Promise.resolve();
+
+        executionLog.push('register:called');
+        const registerP = registry.register(3, -100, 'session-b');
+
+        resolveMoveGate();
+        await Promise.all([moveP, registerP]);
+
+        expect(executionLog).toEqual([
+          'move:persist-start',
+          'register:called',
+          'move:persist-end',
+          'register:persist',
+        ]);
+        // Both changes survive — register() was not clobbered by move()'s swap
+        expect(registry.resolve(1)).toBeUndefined();
+        expect(registry.resolve(2)?.sessionName).toBe('session-a');
+        expect(registry.resolve(3)?.sessionName).toBe('session-b');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('move() serializes against concurrent remove() — remove runs only after move completes', async () => {
+      await registry.register(1, -100, 'session-a');
+      await registry.register(3, -100, 'session-c');
+
+      let resolveMoveGate!: () => void;
+      const moveGate = new Promise<void>(r => { resolveMoveGate = r; });
+      const executionLog: string[] = [];
+
+      let callIndex = 0;
+      const spy = vi.spyOn(registry as any, 'doPersistEntries').mockImplementation(async () => {
+        const call = ++callIndex;
+        if (call === 1) {
+          executionLog.push('move:persist-start');
+          await moveGate;
+          executionLog.push('move:persist-end');
+        } else {
+          executionLog.push('remove:persist');
+        }
+      });
+
+      try {
+        const moveP = registry.move(1, 2);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        executionLog.push('remove:called');
+        const removeP = registry.remove(3);
+
+        resolveMoveGate();
+        await moveP;
+        const removed = await removeP;
+
+        expect(executionLog).toEqual([
+          'move:persist-start',
+          'remove:called',
+          'move:persist-end',
+          'remove:persist',
+        ]);
+        // Both changes survive — remove() was not lost due to move()'s swap
+        expect(registry.resolve(1)).toBeUndefined();
+        expect(registry.resolve(2)?.sessionName).toBe('session-a');
+        expect(registry.resolve(3)).toBeUndefined();
+        expect(removed).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('atomic swap: entries reference is replaced whole — readers see consistent state during and after move()', async () => {
+      await registry.register(1, -100, 'session-a');
+
+      let stateAtPersistTime: { has1: boolean; has2: boolean } | null = null;
+
+      const spy = vi.spyOn(registry as any, 'doPersistEntries').mockImplementation(async () => {
+        // Capture in-memory state at persist time — this.entries must still be the old map
+        stateAtPersistTime = {
+          has1: registry.resolve(1) !== undefined,
+          has2: registry.resolve(2) !== undefined,
+        };
+      });
+
+      try {
+        await registry.move(1, 2);
+
+        // During persist, the old map was still in effect (no partial mutation visible)
+        expect(stateAtPersistTime).toEqual({ has1: true, has2: false });
+        // After move(), the reference has been atomically swapped to the new map
+        expect(registry.resolve(1)).toBeUndefined();
+        expect(registry.resolve(2)?.sessionName).toBe('session-a');
+        // list() reflects both halves of the swap simultaneously — never a gap state
+        const entries = registry.list();
+        expect(entries).toHaveLength(1);
+        expect(entries[0].topicId).toBe(2);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
+  // ── findAllByName ────────────────────────────────────────────────────────────
+
+  describe('findAllByName', () => {
+    it('returns an empty array when no sessions match', async () => {
+      await registry.register(1, -100, 'alpha');
+      expect(registry.findAllByName('beta')).toEqual([]);
+    });
+
+    it('returns a single-element array for a unique name', async () => {
+      await registry.register(1, -100, 'alpha');
+      const results = registry.findAllByName('alpha');
+      expect(results).toHaveLength(1);
+      expect(results[0].topicId).toBe(1);
+    });
+
+    it('returns all entries for legacy duplicate names loaded from disk', async () => {
+      const data = {
+        version: 1,
+        entries: {
+          '1': { sessionName: 'dup', topicId: 1, chatId: -100, createdAt: '2024-01-01T00:00:00.000Z' },
+          '2': { sessionName: 'dup', topicId: 2, chatId: -100, createdAt: '2024-01-01T00:00:00.000Z' },
+        },
+      };
+      await fs.mkdir(path.dirname(storePath), { recursive: true });
+      await fs.writeFile(storePath, JSON.stringify(data), 'utf-8');
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await registry.load();
+        const results = registry.findAllByName('dup');
+        expect(results).toHaveLength(2);
+        const topicIds = results.map((e) => e.topicId).sort((a, b) => a - b);
+        expect(topicIds).toEqual([1, 2]);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('returns an empty array on a fresh registry with no entries', () => {
+      expect(registry.findAllByName('anything')).toEqual([]);
+    });
+  });
 });

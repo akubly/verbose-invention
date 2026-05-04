@@ -1,4 +1,4 @@
-# Carter — History
+﻿# Carter — History
 
 ## Core Context
 
@@ -6,219 +6,289 @@
 - **Role:** Bridge Dev
 - **Joined:** 2026-04-12T06:02:10.440Z
 
-## Project Background
+## Current Phase: Phase 5 — Telegram UX QoL (2026-05-01–2026-05-02)
+
+### What I've Delivered
+
+**Wave 1: MarkdownV2 Parse Mode Upgrade**
+- New module: `src/relay/markdownV2.ts`
+- Escape strategy: escape-only (no AST parsing)
+- Special chars escaped (18 + backslash): `_ * [ ] ( ) ~ ` > # + - = | { } . ! \`
+- Code region protection: only `\` and `` ` `` inside code spans/blocks
+- Relay integration: `safeEdit()` fallback chain (MarkdownV2 → plain text)
+- Per-session logging to avoid spam on persistent formatting issues
+- Test coverage: 22 new unit tests, all GREEN ✅
+
+**Wave 2: Message Splitting (Telegram 4096-char Limit)**
+- New module: `src/relay/messageSplitter.ts`
+- Function: `splitForTelegram(text, opts?)` with boundary preferences
+- Boundary order: `\n\n` > `\n` > whitespace > hard cut
+- Code block protection: never split mid-block, re-open/close fences on sub-chunks
+- Spanning block detection: explicit handling when block crosses chunk boundaries
+- Multi-chunk delivery: first chunk via `safeEdit()`, rest via `ctx.reply()` with 100ms delay
+- Two-pass numbering: `[n/total]\n` prefix only when total > 1
+- Footer overhead: reserved from last chunk budget
+- Test coverage: 21 new unit tests, all GREEN ✅
+
+### Key Design Patterns
+
+1. **Escape-only strategy** — No Markdown AST parsing; covers 95% of Copilot output
+2. **Mid-stream plain text** — Partial output with unclosed fences would fail MarkdownV2 parsing; only final edit uses V2
+3. **Boundary semantics** — Preserves reading units (paragraphs preferred, then lines, then words)
+4. **Code safety** — Balanced fences on every chunk, language tags preserved across splits
+5. **Footer integration** — Passed without `\n\n`; module adds separator internally
+6. **Rate limiting** — 100ms delay between chunk sends stays within Telegram's ~30 msg/s limit
+
+### Current Status
+
+- Wave 1 complete: MarkdownV2 escaping live and tested
+- Wave 2 complete: Message splitting live and tested
+- PR #5 review fixes complete (F-A, F-D, F-E + re-review F-D chained)
+- Total Phase 5: 263 tests pass, lint clean
+- Pushed to `user/aaron/phase5-telegram-ux`
+
+## Phase 5 PR #5 Cycle 3 Review Fix (2026-05-03)
+
+**G-B: Truncation marker not budgeted for footer/prefix (messageSplitter.ts:95)**
+- Root cause: `TRUNCATION_MARKER` was appended raw as the last chunk during maxChunks capping.
+  Footer (`\n\n` + footer text) and numbering prefix (`[N/N]\n`) were then layered on top.
+  For tight `maxLen` values, the final chunk could exceed the advertised limit.
+- **Fix:** Added `MIN_TRUNCATION_MARKER = '_(truncated)_'` constant. When applying the maxChunks
+  cap, compute `available = effectiveMax - markerPrefixLen - footerOverhead`. Select:
+  - Full marker if `available >= TRUNCATION_MARKER.length`
+  - Minimum marker if `available >= MIN_TRUNCATION_MARKER.length`
+  - Throw `Error("maxLen too small...")` if neither fits (defensive; requires absurdly small maxLen)
+- Prefix computed worst-case as `[${maxChunks}/${maxChunks}]\n`.length (only when numbering).
+- New tests (4): full marker fits with tight maxLen+footer+numbering; minimum marker fallback;
+  throw branch; final chunk length ≤ maxLen assertion.
+- Total: 267 tests pass (264 new passing vs 263 baseline + 4 new splitter tests), lint clean.
+- Commit: `d0f82f5` — pushed to `user/aaron/phase5-telegram-ux`.
 
-Reach is Aaron's personal mobile bridge for Copilot CLI. When he's away from his keyboard, he sends messages in a Telegram forum topic — each topic maps to a named Copilot CLI session running on his Windows machine. Sister project to Cairn (`akubly/stunning-adventure`). Halo-themed squad; I'm Carter — bridge layer owner.
 
-## What I've Built (Day 1)
 
-- **`src/relay/relay.ts`** — core relay logic: resolves topic→session entry, lazily creates/resumes SDK session, streams response back via throttled `editMessageText`, evicts idle sessions
-- **`src/sessions/registry.ts`** — durable `ISessionRegistry` with JSON persistence; `SessionRegistry` class; survives restarts
-- **`src/bot/index.ts`** — `createBot()` factory with optional chatId guard
-- **`src/bot/handlers.ts`** — `/new`, `/list`, `/remove`, catch-all text relay
-- **`src/idleMonitor.ts`** — per-topic idle timer
-- **`docs/bridge-design.md`** — detailed bridge layer design doc (read this first)
-- **`.squad/decisions/inbox/carter-bridge-design.md`** — decisions submitted for merge (Scribe should process)
+Chained issue caught in Copilot re-review of PR #5 F-D fix:
 
-## Key Decisions I Own
+**F-D (re-review): Stale `[n/total]` and missing footer on capped responses**
+- Root cause: the post-split cap in relay.ts sliced chunks AFTER `splitForTelegram` had
+  already composed `[n/26]` prefixes and appended the footer to the (now-dropped) last chunk.
+  Result: users saw `[1/26]…[24/26]` (stale totals) + a bare truncation marker (no footer).
+- **Fix:** Added `maxChunks?: number` to `SplitOptions` in `messageSplitter.ts`. When set,
+  the cap is applied inside `splitForTelegram` AFTER the two-pass split but BEFORE
+  numbering/footer composition: raw chunks are trimmed to `maxChunks-1` + truncation marker,
+  then numbered with `[n/maxChunks]` totals, then footer appended to the (truncation) last chunk.
+- Relay now passes `maxChunks: MAX_CHUNKS` directly; post-split slice/append removed.
+- New splitter tests: 6 covering `maxChunks` (no-op when under limit, exact count, marker,
+  consistent numbering, footer on marker, no footer on earlier chunks).
+- Decision appended: `.squad/decisions/inbox/carter-pr5-review-fixes.md`
 
-1. Lazy SDK session creation — first message triggers create/resume, not `/new`
-2. Streaming throttle at 800ms — balances Telegram's rate limits with responsiveness
-3. 30-min idle eviction — in-memory SDK sessions freed after 30 min inactivity; registry entry preserved
-4. `CopilotClient` interface boundary — relay never depends on `@github/copilot-sdk` directly
+## Phase 5 PR #5 Copilot Review Fixes (2026-05-03)
 
-## Blocking Dependency
+Three findings from Copilot review of PR #5, all addressed:
 
-**Noble Six must implement `CopilotClientImpl`.** My relay and handlers are wired to the `CopilotClient` interface in `src/types.ts`. The `StubCopilotClient` in `src/copilot/factory.ts` is a throw-all placeholder. Until Noble Six delivers a real implementation and wires it into `src/main.ts`, the daemon won't actually relay messages.
+**F-A: MarkdownV2 budget (relay.ts:20)**
+- `MARKDOWN_ESCAPE_RESERVE_BYTES = 1229` was insufficient: a 2867-char all-specials chunk
+  escapes to ~5734 chars, blowing Telegram's 4096 limit.
+- **Fix:** Replaced with `MARKDOWN_ESCAPE_EFFECTIVE_MAX = 2048` (= 4096 ÷ 2 worst-case ratio).
+- Renamed `reserveBytes` → `effectiveMaxLen` in `SplitOptions` for cleaner caller API.
+- Decision file: `.squad/decisions/inbox/carter-pr5-review-fixes.md`
 
-## Open Questions I Flagged
+**F-D: Chunk cap off-by-one (relay.ts:137)**
+- Old: `slice(0, MAX_CHUNKS)` + marker = 26 chunks total (1 over cap).
+- **Fix:** `slice(0, MAX_CHUNKS - 1)` + marker = exactly 25 chunks total.
 
-1. SDK stream return type — is it `AsyncIterable<CopilotChunk>`? Noble Six must verify.
-2. Session name validation — any SDK constraints? Should `/new` enforce regex?
-3. `REACH_CHAT_ID` env var — should the bot validate `chatId`? Recommend yes before shared deployment.
-4. Registry file path — Noble Six decides; I accept it as a constructor arg.
+**F-E: First-chunk failure leaves orphaned follow-ups (relay.ts:155)**
+- `safeEdit()` returned `void` and swallowed errors; loop continued sending chunks 2..N.
+- **Fix:** `safeEdit` returns `Promise<boolean>`; on `firstOk === false`, abort follow-up loop
+  and best-effort update placeholder with `_(failed to render reply — see logs)_`.
 
-## Learnings
+## Recent Learnings (Active)
 
-### 2026-04-12 — API Alignment with Jun's TDD Tests
+### 2026-05-01 — Phase 5 Wave 1: MarkdownV2 Upgrade
 
-Aligned the implementation to match Jun's TDD tests. The canonical API (now green at 26/26 tests):
+Replaced legacy `parse_mode: 'Markdown'` with `parse_mode: 'MarkdownV2'` in `safeEdit()`.
 
-**Core domain types** (`src/types.ts`):
-- `SessionEntry`: `{ sessionName, topicId, chatId, createdAt }` — no longer carries opaque SDK IDs or repo paths
-- Copilot SDK interfaces moved from `types.ts` to `src/copilot/factory.ts`
+**Implementation highlights:**
+- Walks text identifying code spans (`` `...` ``) and blocks (` ``` ... ``` `)
+- Escapes only backslash and backtick inside code
+- Escapes 18 MarkdownV2 special chars + backslash in plain-text regions
+- Unclosed fences handled defensively: treated as plain text and fully escaped
+- Per-session fallback logging (Set<string>) prevents spam
 
-**Factory pattern** (`src/copilot/factory.ts`):
-- `CopilotSessionFactory` with `resume(sessionName): Promise<CopilotSession | null>` and `create(sessionName): Promise<CopilotSession>`
-- Sessions identified by name, not opaque IDs
-- `CopilotSession.send()` yields strings directly, not `{ text: string }` chunks
+**Fallback chain:** MarkdownV2 → plain text (legacy Markdown removed)
 
-**Registry** (`src/sessions/registry.ts`):
-- `register(topicId, chatId, sessionName)` — takes 3 args, constructs `SessionEntry` internally
-- JSON persists with `topicId` field (not `telegramTopicId`)
-- Exports `SessionEntry` type for test imports
+**Test integration:** Carter's 22 base tests + Jun's 3 real-world Copilot output tests (code review, HUD footer, mixed identifiers)
 
-**Relay** (`src/relay/relay.ts`):
-- Uses `CopilotSessionFactory`, not `CopilotClient`
-- Calls `factory.resume(name) ?? factory.create(name)` on first message (lazy, name-based)
-- Stream chunks are strings, not objects
+### 2026-05-01 — Phase 5 Wave 2: Message Splitting
 
-**Handlers** (`src/bot/handlers.ts`):
-- `/new` registers name in registry only — no SDK call (lazy session creation deferred to first relay)
-- Gets `chatId` from `ctx.chat?.id`
+Implemented `splitForTelegram` in `src/relay/messageSplitter.ts` and wired multi-chunk delivery.
 
-**Bug fixed in tests**: JavaScript default parameters apply when `undefined` is explicitly passed. Test helper `makeMockCtx` now uses `null` (not `undefined`) to omit `message_thread_id`.
+**Core algorithm:**
+- `doSplit(text, maxLen, lastBudget)` — main splitting loop
+- `parseCodeBlocks(text)` — identifies all ` ```lang...``` ` ranges
+- `findBestSplit(text, maxBudget)` — applies boundary preference order
+- `splitCodeBlock(lang, innerLines, maxLen)` — packs lines with balanced fences
+- Two-pass numbering: split first, count total, prepend prefix only if total > 1
 
-### 2026-04-12 — Noble Six Delivers SDK Binding
+**Relay integration:**
+- Final edit: calls `splitForTelegram(body, { footer })`
+- First chunk: `safeEdit()` replaces placeholder
+- Subsequent chunks: `safeSend()` via `ctx.reply()` with `message_thread_id`
+- Delay: 100ms between sends (rate limit safety)
 
-Noble Six completed `src/copilot/impl.ts` + `src/main.ts`. The real SDK binding is now live:
+**Contract locked:** `splitForTelegram(text, opts?: SplitOptions): string[]`
 
-- **CopilotClientImpl** implements `CopilotSessionFactory` — wraps `@github/copilot-sdk` with singleton lifecycle
-- **CopilotSessionAdapter** bridges SDK event-emitter streaming to `AsyncIterable<string>` via async generator
-- **resume()** uses two-phase existence check (`getSessionMetadata()` → `resumeSession()`) to avoid masking connection errors
-- **create()** delegates to SDK `createSession()` using friendly session names as IDs
-- **main.ts** is the entry point — DI root with platform-aware registry path (`%APPDATA%\reach\registry.json` on Windows, `~/.config/reach/registry.json` on Unix), `REACH_MODEL` env var config, and graceful shutdown (SIGINT/SIGTERM)
+### 2026-05-02 — Phase 5 Complete (Team Update by Scribe)
 
-My relay code is unchanged — it continues to depend only on `CopilotSessionFactory` interface, with no knowledge of the SDK itself. TypeScript compiles clean. All 56 tests pass. Integration tests can now target the real adapter.
+Phase 5 complete. All decisions merged to `decisions.md`; inbox cleared. 235 tests pass, tsc clean, lint clean.
 
-<!-- Append learnings below -->
+**Carter's Wave 1 & 2 completion:**
+- MarkdownV2 escaping: 22 tests GREEN, integration solid
+- Message splitting: 21 tests GREEN, multi-chunk delivery seamless
+- Both features coordinate: V2 length affects split points; no relay logic breaks
 
-### 2026-04-12 — Code Review Fixes (Independent Author)
+**Team coordination:** MarkdownV2 (Wave 1) enables accurate split calculations for Wave 2. `/resume` (Kat) runs independent. All features tested and ready.
 
-Noble Six's impl was flagged by review panel. As independent author, applied six fixes:
+**Next:** Production deployment. Monitor MarkdownV2 edge cases; fallback in place. Future: `/model` command.
 
-1. **Race condition in `ensureStarted()`** — replaced `started` boolean with a startup promise. Two concurrent callers now share the same promise instead of both calling `sdk.start()`.
-2. **Stream timeout** — `bridge()` wait loop could block forever if SDK dies silently. Added 5-minute `Promise.race` timeout with proper cleanup (`clearTimeout` in both success path and `finally`).
-3. **Idempotent shutdown** — double Ctrl+C no longer races. Added `shuttingDown` guard flag.
-4. **Relay disposal on shutdown** — `registerHandlers()` now returns the `Relay` instance so `main.ts` can call `relay.dispose()` during shutdown, cancelling idle monitors.
-5. **TELEGRAM_CHAT_ID NaN guard** — `Number("garbage")` → NaN now caught with `Number.isFinite()` check and fatal exit.
-6. **resume() error discrimination** — no longer swallows all errors. Only "not found"/"does not exist" returns null; other errors propagate to relay's catch block for proper reporting.
+## Archive
 
-### 2026-04-14 — Phase 2 Integration: Kat's Chat ID & Help Changes
+Earlier work (before 2026-05-01) is archived in `history-archive.md` for reference.
 
-Kat (Bot Dev) made two P0/P1 changes affecting bot creation and handler flow:
+### 2026-05-02 — Phase 5 Review Triage (6-Persona Panel Fixes)
 
-1. **TELEGRAM_CHAT_ID now required** — `main.ts` fails immediately if unset. `createBot()` signature changed to require `allowedChatId: number` (no longer optional). The chat guard middleware is now unconditional, preventing accidental responses to unintended groups.
-2. **/help command added** — New handler in `src/bot/handlers.ts` replies with a list of available commands. Improves mobile discoverability (user can type `/help` to see what commands exist).
+Triage round from 6-persona panel review. Addressed 10 findings (ACCEPTED), escalated 1 (F7), rejected 0.
 
-**Impact on Relay:** None — relay code remains unchanged. Handlers API unchanged; new `/help` is additive. Only the bot factory signature changed (requires `allowedChatId` now).
+**F1 — Numbering prefix overflow (BLOCKING → FIXED)**
+Root cause: `splitForTelegram` added `[n/total]\n` AFTER splitting, meaning numbered chunks could exceed 4096.
+Fix: two-pass algorithm in `splitForTelegram`. Preliminary split determines if numbering is needed; if yes, re-split with `[total/total]\n` prefix length subtracted from `effectiveMax`. Converges in ≤3 iterations (digit-count changes only at 10/100/1000 chunks).
 
-**Test impact:** All 73 tests pass (56 original + Jun's 25 new tests, including 2 for `/help`).
+**F4 — Escape expansion overflows budget (IMPORTANT → FIXED)**
+Root cause: Splitter budgeted on raw text length; MarkdownV2 escaping adds ~5-10% (up to ~100% for degenerate text), pushing escaped chunks past 4096.
+Fix: Added `reserveBytes?: number` to `SplitOptions`. In relay, pass `MARKDOWN_ESCAPE_RESERVE_BYTES = 1229` (~30% of 4096). `effectiveMax = maxLen - reserveBytes` is used for all split boundaries.
 
-### 2026-04-14 — Service Installer Review Fixes (Independent Author)
+**F5 — Numbering not enabled (IMPORTANT → FIXED)**
+Simple: Added `numbering: true` to the `splitForTelegram` call in relay.ts. F1 fix was landed first.
 
-Noble Six's `src/service/install.ts` was flagged by persona review. As independent author (reviewer rejection protocol), applied 5 findings:
+**F6 — MarkdownV2 fallback over-catches (IMPORTANT → FIXED)**
+Added `isParseEntitiesError(err)` function. Only falls back to plain text when `err.message` contains `"can't parse entities"` or `"parse entities"`. Network/429/permission errors now rethrow to the outer handler.
 
-1. **F1 BLOCKING — workingDirectory + env vars** — `workingDirectory` resolved to `dist/` but `.env` lives at project root. Fixed to `path.resolve(__dirname, '..', '..')`. Added `.env` preflight warning. Forwarded `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and `REACH_MODEL` in the service env array.
-2. **F3 IMPORTANT — Local System privilege** — Changed service logon account to NetworkService (hardcoded in `createService()`) for better security isolation.
-3. **F4 IMPORTANT — Handlers don't exit** — Added `process.exit(0)` in `start`, `uninstall`, `alreadyinstalled`, and `alreadyuninstalled` handlers. Changed `alreadyinstalled` from exit 1 to exit 0 (idempotent success).
-4. **F6 MINOR — @ts-ignore** — Replaced with `@ts-expect-error TS7016` on the import line. Removed redundant second suppression.
-5. **F7 MINOR — return type** — Changed `createService()` return type from `typeof Service.prototype` to `any`.
+**F7 — Layering violation (IMPORTANT → ESCALATED)**
+relay.ts imports from `../bot/prompt.js` and `../sessions/registry.js`. Escalated to coordinator — may be intentional design (dynamic import for prompt, interface boundary for registry). Not touched.
 
-**Verification:** TypeScript compiles clean. All 81 tests pass.
+**F8 — safeEdit/safeSend duplication (IMPORTANT → FIXED)**
+Extracted `private async withMarkdownFallback(sessionLabel, tryMd, fallback)` helper. Both `safeEdit` and `safeSend` are now thin wrappers calling it. The helper owns the try/catch and `md2WarnedSessions` gate.
 
-### 2026-04-14 — Phase 3: Per-Session Model Override (Registry + Relay)
+**F9 — Chunk failure log omits index (IMPORTANT → FIXED)**
+`safeSend` now returns `Promise<boolean>` (success/failure). Loop tracks `failedChunks` count. Each `safeSend` call receives `chunkNumber` and `totalChunks`. Log: `[relay] reply failed (topic=42, chunk=2/3)`. Summary warn at end: `[relay] N of M chunks failed — response may be truncated for topic X`.
 
-Updated registry and relay to support per-session model overrides:
+**F10 — Unbounded accumulated stream (IMPORTANT → FIXED)**
+Added `MAX_ACCUMULATED_BYTES = 100_000` cap in stream loop with truncation message. Added `MAX_CHUNKS = 25` post-split cap; excess chunks replaced with `_(response truncated — too many chunks)_`.
 
-**Registry changes** (`src/sessions/registry.ts`):
-- `ISessionRegistry.register()` signature extended with `model?: string` parameter
-- `SessionRegistry.register()` now accepts `model` and includes it in the `SessionEntry` only when specified using conditional spread: `...(model !== undefined && { model })`
-- Backward compatible — existing registry files without `model` fields load correctly
+**F11 — Overlong code line in splitCodeBlock (IMPORTANT → FIXED)**
+Added `lineCapacity = maxLen - overhead` guard. Lines exceeding capacity are hard-cut into `Math.ceil(line.length / lineCapacity)` segments via `Array.from`. Each segment then goes through normal group-packing logic.
 
-**Relay changes** (`src/relay/relay.ts`):
-- Factory calls updated to pass `entry.model` as second parameter: `factory.resume(entry.sessionName, entry.model)` and `factory.create(entry.sessionName, entry.model)`
-- When `entry.model` is `undefined` (no per-session override), the factory falls back to the global `REACH_MODEL` env var internally
+---
 
-**Test updates** (`tests/relay/relay.test.ts`):
-- Updated two test expectations to include the new `model` parameter (`undefined` in those cases)
+## PR #5 Cycle 4 — 2026-05-03
 
-**Pattern:** Optional field inclusion strategy — using conditional spread to avoid writing `undefined` to JSON. Keeps registry files clean and backward compatible.
+### H-C Finding: advancePast() drops separator newline after code blocks (FIXED)
 
-**Verification:** TypeScript compiles clean. All relay and registry tests pass (37 tests). Handler tests fail (expected — Kat needs to update `/new` command parser).
+**Bug:** `advancePast()` consumed the `\n` immediately following a closing ` ``` ` fence. When a code block was followed by normal text, that separator newline was eaten, causing the next chunk to start with the text directly stuck to the closing fence with no blank line — breaking Markdown paragraph structure.
 
-### 2026-04-14 — Phase 3 Wave 2: HUD Footer + Crash Recovery
+**Root cause:** The original implementation was `blockEnd < text.length && text[blockEnd] === '\n' ? blockEnd + 1 : blockEnd` — it explicitly skipped one character past the fence if it was a newline.
 
-Phase 3 Wave 2 changes to `relay.ts`:
+**Fix:** Simplified `advancePast()` to `return blockEnd` — advance exactly to `block.end` (past the ` ``` `) and leave all subsequent whitespace/newlines for the normal paragraph splitter to handle.
 
-**1. Added `globalModel` constructor parameter:**
-- Relay now accepts a third parameter `globalModel: string` in the constructor
-- Used for fallback when `entry.model` is undefined in the HUD footer
+**Test added:** Regression test verifies `'some text\n\n\`\`\`js\nconst x = 1;\n\`\`\`\nmore text'` preserves the newline between the fence and `more text`.
 
-**2. HUD Footer:**
-- Final message edit now includes a compact footer: `\n\n📎 {sessionName} · {model}`
-- Model shown is `entry.model ?? this.globalModel` (per-session override or global default)
-- Footer applies to both normal responses and empty responses
+**Results:** 268 tests pass (267 prior + 1 new), tsc clean, lint clean. Commit `1c3261e`.
 
-**3. Crash Recovery:**
-- Enhanced error handler in `relay()` to detect SDK crashes vs timeouts
-- On non-timeout errors, calls `factory.resetForRestart()` if available (optional method)
-- Timeout detection: checks if error message includes "Stream timeout"
-- Logs "SDK error detected — factory marked for restart" when restart is triggered
 
-**Test updates** (`tests/relay/relay.test.ts`):
-- Updated all 16 Relay constructor calls to include third parameter `'test-model'`
-- Updated two test expectations to verify footer is appended correctly
+**F12 — Code-block detector mis-pairs fences (MINOR → FIXED)**
+Added odd-fence count check at end of `escapeMarkdownV2`. If `(result.match(/```/g) ?? []).length % 2 !== 0`, return `escapePlain(text)` immediately.
 
-**Coordination with team:**
-- Noble Six: adding `resetForRestart?(): void` to `CopilotSessionFactory` interface
-- Kat: updating `HandlerOptions` and `registerHandlers()` to pass `globalModel` from main
+**F13 — needsEscaping JSDoc (MINOR → FIXED)**
+Added `/** Utility for callers that want to skip escaping overhead on clean text. Currently used in tests only. */` above the export.
 
-**Verification:** All 16 relay tests pass. TypeScript compilation blocked by expected missing `globalModel` parameter in `main.ts` (Noble Six's file) — this is expected until the full wave integrates.
+**Test results:** 245 passed | 4 skipped. tsc clean. lint clean.
 
-### 2026-04-25 — Phase 4 Wave 1: ESLint Setup + getReachDataDir() Extraction
+**Key design choices:**
+- F1: Used iterative (≤3 passes) rather than worst-case (8-char flat reserve) — exact prefix per actual chunk count, avoids wasting budget.
+- F4: Chose option (b) — `reserveBytes` headroom — over option (a) split-after-escape. Reason: option (a) requires coupling the splitter to escape format (avoiding mid-escape splits), whereas option (b) is a simple parameter. 30% headroom (1229 bytes) handles even pathological all-special-char inputs up to ~2867 chars raw.
+- F6: Chose message-based detection (`includes("can't parse entities")`) rather than importing GrammY's `GrammyError` class, avoiding a new type dependency in the relay.
+- F10: DoS guards are sized conservatively: 100KB stream cap, 25 chunk cap. These are invisible to normal usage (typical Copilot responses are 1-10KB).
 
-Completed two P0/P1 tasks for code quality and DRY:
 
-**1. ESLint Configuration (P0)**
+## F7 Refactor: Port injection for relay layer (session N+1)
 
-Created `.eslintrc.json` for TypeScript linting:
-- Parser: `@typescript-eslint/parser` with `tsconfig.json` project reference
-- Extends: `eslint:recommended` + `@typescript-eslint/recommended`
-- Ignores: `dist/`, `node_modules/`
-- Fixed 8 violations across codebase:
-  - `src/bot/handlers.ts`: Removed unnecessary escape in regex (`\-` → `-`)
-  - `src/copilot/factory.ts`: Added `@typescript-eslint/no-unused-vars` suppressions for stub method params
-  - `src/copilot/impl.ts`: Fixed `prefer-const` false positive with eslint-disable for `thisPromise` pattern
-  - `src/main.ts`: Changed `as any` to `as PermissionPolicy` for type-safe validation
-  - `src/service/install.ts`: Added `@typescript-eslint/no-explicit-any` suppression for event handler signature
+**Task:** Aaron directed: introduce port interfaces so elay.ts has zero imports from ../bot/ or ../sessions/.
 
-**2. DRY Refactor: getReachDataDir() (P1)**
+**Approach:** 
+- Created src/relay/ports.ts with three exported types: ResolvedSession (minimal session shape), SessionLookup (esolve() only), PermissionPrompter (prompt method).
+- Rewrote Relay constructor from (registry: ISessionRegistry, factory, model, bot?: Bot, permissionPolicy?: PermissionPolicy) to (sessionLookup: SessionLookup, factory, model, permissionPrompter?: PermissionPrompter).
+- SessionEntry is NOT imported by ports.ts or relay.ts — ResolvedSession defines only the two fields relay actually uses (sessionName, model).
+- Removed const PERMISSION_PROMPT_MODULE = '../bot/prompt.js' and the dynamic import. handlers.ts now statically imports promptUserForPermission and wraps it in a PermissionPrompter closure at the composition root.
+- handlers.ts creates a SessionLookup adapter over ISessionRegistry (which satisfies the shape structurally).
+- PermissionPolicy removed from relay imports entirely — presence of permissionPrompter determines interactive-mode behavior.
 
-Extracted duplicated platform path logic from `config.ts` and `main.ts`:
-- Added `getReachDataDir()` to `src/config/config.ts` — returns `%APPDATA%\reach` (Windows) or `~/.config/reach` (Unix)
-- Refactored `getConfigPath()` to call `getReachDataDir()` + `config.json`
-- Refactored `getRegistryPath()` in `main.ts` to import and use `getReachDataDir()` + `registry.json`
-- Removed unused `os` import from `main.ts`
-- Added unit test in `tests/config/config.test.ts` verifying platform-aware path resolution
+**Test updates:**
+- makeStubRegistry in relay tests simplified to { resolve: vi.fn(...) } typed as SessionLookup.
+- "interactiveDestructive wiring" describe block renamed to "permission prompter wiring"; "bot wiring missing" test replaced with "proceeds without prompting" test; "chat context missing" test updated to use injected prompter.
+- Integration test updated in parallel.
 
-**Verification:**
-- ESLint: Zero violations (`npm run lint` passes)
-- Tests: 138/144 pass (new test included; 6 pre-existing integration test failures unrelated to this work)
-- TypeScript: Compiles clean (`npx tsc --noEmit`)
+**Verification:** 	sc --noEmit PASS, itest run 245 passed | 4 skipped, lint PASS (0 warnings).
 
-**Pattern:** Centralized platform-aware path resolution reduces duplication and simplifies future changes (e.g., adding a third file would use the same base dir).
+**Key lessons:**
+- The PermissionPolicy concept belongs at the composition root, not in the relay. The relay should not know about policy names — it just receives a prompter or it doesn't.
+- Static import in handlers.ts vs dynamic import in relay.ts: dynamic import was originally used to avoid loading bot modules in non-interactive contexts. After injection, the static import in handlers.ts is fine — handlers already lives in the bot layer.
+- ResolvedSession vs re-exporting SessionEntry: define only what the relay needs. This insulates relay from future additions to SessionEntry (like chatId, createdAt).
 
-### 2026-05-01 — Topic-Scoped Permission Prompt Injection in Relay
+---
 
-Updated `src/relay/relay.ts` to support Aaron's Option C permission architecture without breaking the existing 3-arg constructor/tests:
+## Phase 5 Persona Review Resolution (2026-05-02)
 
-- `Relay` constructor now accepts optional `bot` and `permissionPolicy` args after `globalModel`
-- On first create/resume only, relay builds a per-session permission callback when `permissionPolicy === 'interactiveDestructive'` and a bot is available
-- The callback is bound to the active Telegram `chatId` + `topicId`, so destructive tool prompts route back into the same forum topic as the active session
-- Non-interactive policies preserve existing behavior: relay still calls `factory.resume(name, model)` / `factory.create(name, model)` with no extra arg when no callback is needed
+**Persona Panel Results:**
+- correctness: 2 findings (F1 technical correctness, F2 numbering logic) → ACCEPT
+- skeptic: 3 findings (F4 escape tradeoff, F6 error detection, F7 layering) → ACCEPT F4/F6, ESCALATE F7
+- craft: 4 findings (F8 duplication, F9 logging, F11 hard-cut, F13 JSDoc) → ACCEPT
+- compliance: 2 findings (F5 numbering flag, F10 stream guard) → ACCEPT
+- security: 2 findings (DoS surface analysis + caps) → ACCEPT
+- architect: F7 critical escalation (relay→bot/sessions imports)
 
-**Verification:** `npm run lint`, `npx tsc --noEmit`, and `npx vitest run tests/relay/` all pass in the current tree.
+**Carter Triage Disposition (11 findings):**
+- F1: ACCEPT + implement iterative prefix reservation
+- F4: ACCEPT + headroom reserve (30% = 1229 bytes)
+- F5: ACCEPT + enable numbering flag
+- F6: ACCEPT + implement isParseEntitiesError guard
+- F7: ESCALATE → introduced ports.ts (SessionLookup, PermissionPrompter)
+- F8: ACCEPT + extract withMarkdownFallback helper
+- F9: ACCEPT + track chunk failures by index
+- F10: ACCEPT + 100KB cap + 25-chunk DoS guard
+- F11: ACCEPT + lineCapacity hard-cut
+- F12: ACCEPT + odd-fence defensive check
+- F13: ACCEPT + JSDoc on needsEscaping
 
-### 2026-05-01 — Phase 4 Wave 2: Relay Permission Callback Integration
+**F7 Resolution:** ports.ts abstraction eliminates all cross-layer imports. relay.ts now has zero imports from ../bot/ or ../sessions/. Composition root (handlers.ts) manages port injection.
 
-Completed relay integration for interactiveDestructive mode using Option C (relay injects topic-aware callback).
+**Verification:** 245 tests pass, tsc clean, lint clean.
 
-**Changes:**
-- Relay now accepts optional `bot` and `permissionPolicy` params (backward-compatible — all existing tests pass)
-- When creating/resuming a session with `permissionPolicy === 'interactiveDestructive'`, relay builds a per-session permission callback bound to the active `chatId` + `topicId`
-- Callback routing sends destructive tool prompts back into the same forum topic where the user is interacting (provides context)
-- Session creation fails with clear error if callback is required but bot is missing (fail-fast wiring validation)
+---
 
-**Test:** All 16 relay tests pass. No test changes needed — existing constructor calls remain valid (optional params default to undefined).
+## PR #5 Cycle 5 — 2026-05-03
 
+### I-B: rekeySession() destination timer not cancelled (FIXED)
+
+**Bug:** `rekeySession(fromTopicId, toTopicId)` only cancelled the source-side idle timer. If `toTopicId` still had a stale cached session and armed timer (e.g. from before a `/remove` that hadn't yet been idle-evicted), that old timer would eventually fire and evict the freshly-moved session, silently losing in-memory state.
+
+**Sequence that broke:**
+1. Session relayed to topic 99 → cache + idle timer armed for 99.
+2. `/remove` removes registry binding but in-memory cache and timer remain (idle eviction hasn't fired yet).
+3. `/resume foo` from topic 99 (now empty) — `registry.move()` succeeds.
+4. `rekeySession(oldTopic, 99)` installs the moved session at topic 99 but leaves the stale timer alive.
+5. Old timer fires 300 s later → evicts `activeSessions[99]` — the moved session — silently.
+
+**Fix (`relay.ts:282–290`):** Before installing the moved session at `toTopicId`, check if `activeSessions` already has an entry there. If so: `idleMonitor.cancel(toTopicId)` and `activeSessions.delete(toTopicId)`. Then proceed with the existing source-side logic (pop from `fromTopicId`, cancel its timer, set at `toTopicId`).
+
+**New test:** Pre-warms cache for both source and destination topics (arming a stale timer for `NEW_TOPIC`), calls `rekeySession(OLD, NEW)`, advances fake timers 400 000 ms past the original 300 000 ms TTL, then asserts `factory.resume` was NOT called again — proving the moved session survived.
+
+**Results:** 275 tests pass (274 prior + 1 new), tsc clean, lint clean. Commit `92ab201`. Pushed to `user/aaron/phase5-telegram-ux`.

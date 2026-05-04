@@ -413,6 +413,132 @@ describe('SessionRegistry', () => {
       expect(registry.resolve(1)?.sessionName).toBe('session-a');
       expect(registry.resolve(2)?.sessionName).toBe('session-b');
     });
+
+    // ── concurrency serialization ───────────────────────────────────────────
+
+    it('move() serializes against concurrent register() — register runs only after move completes', async () => {
+      await registry.register(1, -100, 'session-a');
+
+      let resolveMoveGate!: () => void;
+      const moveGate = new Promise<void>(r => { resolveMoveGate = r; });
+      const executionLog: string[] = [];
+
+      let callIndex = 0;
+      const spy = vi.spyOn(registry as any, 'doPersistEntries').mockImplementation(async () => {
+        const call = ++callIndex;
+        if (call === 1) {
+          executionLog.push('move:persist-start');
+          await moveGate;
+          executionLog.push('move:persist-end');
+        } else {
+          executionLog.push('register:persist');
+        }
+      });
+
+      try {
+        const moveP = registry.move(1, 2);
+        // Drain microtasks so moveOp reaches the doPersistEntries await
+        await Promise.resolve();
+        await Promise.resolve();
+
+        executionLog.push('register:called');
+        const registerP = registry.register(3, -100, 'session-b');
+
+        resolveMoveGate();
+        await Promise.all([moveP, registerP]);
+
+        expect(executionLog).toEqual([
+          'move:persist-start',
+          'register:called',
+          'move:persist-end',
+          'register:persist',
+        ]);
+        // Both changes survive — register() was not clobbered by move()'s swap
+        expect(registry.resolve(1)).toBeUndefined();
+        expect(registry.resolve(2)?.sessionName).toBe('session-a');
+        expect(registry.resolve(3)?.sessionName).toBe('session-b');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('move() serializes against concurrent remove() — remove runs only after move completes', async () => {
+      await registry.register(1, -100, 'session-a');
+      await registry.register(3, -100, 'session-c');
+
+      let resolveMoveGate!: () => void;
+      const moveGate = new Promise<void>(r => { resolveMoveGate = r; });
+      const executionLog: string[] = [];
+
+      let callIndex = 0;
+      const spy = vi.spyOn(registry as any, 'doPersistEntries').mockImplementation(async () => {
+        const call = ++callIndex;
+        if (call === 1) {
+          executionLog.push('move:persist-start');
+          await moveGate;
+          executionLog.push('move:persist-end');
+        } else {
+          executionLog.push('remove:persist');
+        }
+      });
+
+      try {
+        const moveP = registry.move(1, 2);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        executionLog.push('remove:called');
+        const removeP = registry.remove(3);
+
+        resolveMoveGate();
+        await moveP;
+        const removed = await removeP;
+
+        expect(executionLog).toEqual([
+          'move:persist-start',
+          'remove:called',
+          'move:persist-end',
+          'remove:persist',
+        ]);
+        // Both changes survive — remove() was not lost due to move()'s swap
+        expect(registry.resolve(1)).toBeUndefined();
+        expect(registry.resolve(2)?.sessionName).toBe('session-a');
+        expect(registry.resolve(3)).toBeUndefined();
+        expect(removed).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('atomic swap: entries reference is replaced whole — readers see consistent state during and after move()', async () => {
+      await registry.register(1, -100, 'session-a');
+
+      let stateAtPersistTime: { has1: boolean; has2: boolean } | null = null;
+
+      const spy = vi.spyOn(registry as any, 'doPersistEntries').mockImplementation(async () => {
+        // Capture in-memory state at persist time — this.entries must still be the old map
+        stateAtPersistTime = {
+          has1: registry.resolve(1) !== undefined,
+          has2: registry.resolve(2) !== undefined,
+        };
+      });
+
+      try {
+        await registry.move(1, 2);
+
+        // During persist, the old map was still in effect (no partial mutation visible)
+        expect(stateAtPersistTime).toEqual({ has1: true, has2: false });
+        // After move(), the reference has been atomically swapped to the new map
+        expect(registry.resolve(1)).toBeUndefined();
+        expect(registry.resolve(2)?.sessionName).toBe('session-a');
+        // list() reflects both halves of the swap simultaneously — never a gap state
+        const entries = registry.list();
+        expect(entries).toHaveLength(1);
+        expect(entries[0].topicId).toBe(2);
+      } finally {
+        spy.mockRestore();
+      }
+    });
   });
 
   // ── findAllByName ────────────────────────────────────────────────────────────

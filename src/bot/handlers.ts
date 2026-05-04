@@ -173,8 +173,8 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
       return;
     }
 
-    const found = registry.findByName(name);
-    if (!found) {
+    const matches = registry.findAllByName(name);
+    if (matches.length === 0) {
       const allNames = registry.list().map((e) => e.sessionName);
       const close = allNames.filter((n) => n.includes(name) || name.includes(n)).slice(0, 3);
       const hint = close.length > 0
@@ -183,6 +183,18 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
       await ctx.reply(`❌ No session named "${name}" found.${hint}`, { message_thread_id: topicId });
       return;
     }
+
+    // F-B: refuse when legacy duplicate names exist — cannot safely pick one
+    if (matches.length > 1) {
+      const lines = matches.map((e) => `  • topic #${e.topicId} (chatId ${e.chatId})`).join('\n');
+      await ctx.reply(
+        `⚠️ Multiple sessions named "${name}" exist (legacy duplicates):\n${lines}\nCannot disambiguate — please rename one with /rename or /remove the unwanted entry.`,
+        { message_thread_id: topicId },
+      );
+      return;
+    }
+
+    const found = matches[0]!;
 
     if (found.topicId === topicId) {
       await ctx.reply(`✅ Session "${name}" is already bound to this topic.`, { message_thread_id: topicId });
@@ -212,8 +224,16 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
         { message_thread_id: topicId },
       );
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await ctx.reply(`❌ Failed to resume session "${name}": ${msg}`, { message_thread_id: topicId });
+      if (err instanceof Error && err.message.includes('already bound to')) {
+        // F-C: destination was bound by a concurrent operation after our pre-check
+        await ctx.reply(
+          `⚠️ Cannot resume "${name}": topic ${topicId} was just linked to another session. Use /remove first.`,
+          { message_thread_id: topicId },
+        );
+      } else {
+        const msg = err instanceof Error ? err.message : String(err);
+        await ctx.reply(`❌ Failed to resume session "${name}": ${msg}`, { message_thread_id: topicId });
+      }
     }
   });
 

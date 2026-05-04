@@ -362,5 +362,73 @@ describe('SessionRegistry', () => {
       expect(registry.resolve(1)?.sessionName).toBe('session-e');
       expect(registry.resolve(2)).toBeUndefined();
     });
+
+    // F-C: destination-unbound check inside move() ──────────────────────────
+
+    it('throws when the destination topicId is already bound', async () => {
+      await registry.register(1, -100, 'session-a');
+      await registry.register(2, -100, 'session-b');
+      await expect(registry.move(1, 2, 'session-a', -100)).rejects.toThrow(
+        /already bound to|[Dd]estination/,
+      );
+    });
+
+    it('error message from move() names the conflicting session', async () => {
+      await registry.register(1, -100, 'session-a');
+      await registry.register(2, -100, 'session-b');
+      await expect(registry.move(1, 2, 'session-a', -100)).rejects.toThrow(/session-b/);
+    });
+
+    it('leaves both entries intact when destination is already bound (no mutation)', async () => {
+      await registry.register(1, -100, 'session-a');
+      await registry.register(2, -100, 'session-b');
+      await expect(registry.move(1, 2, 'session-a', -100)).rejects.toThrow();
+
+      expect(registry.resolve(1)?.sessionName).toBe('session-a');
+      expect(registry.resolve(2)?.sessionName).toBe('session-b');
+    });
+  });
+
+  // ── findAllByName ────────────────────────────────────────────────────────────
+
+  describe('findAllByName', () => {
+    it('returns an empty array when no sessions match', async () => {
+      await registry.register(1, -100, 'alpha');
+      expect(registry.findAllByName('beta')).toEqual([]);
+    });
+
+    it('returns a single-element array for a unique name', async () => {
+      await registry.register(1, -100, 'alpha');
+      const results = registry.findAllByName('alpha');
+      expect(results).toHaveLength(1);
+      expect(results[0].topicId).toBe(1);
+    });
+
+    it('returns all entries for legacy duplicate names loaded from disk', async () => {
+      const data = {
+        version: 1,
+        entries: {
+          '1': { sessionName: 'dup', topicId: 1, chatId: -100, createdAt: '2024-01-01T00:00:00.000Z' },
+          '2': { sessionName: 'dup', topicId: 2, chatId: -100, createdAt: '2024-01-01T00:00:00.000Z' },
+        },
+      };
+      await fs.mkdir(path.dirname(storePath), { recursive: true });
+      await fs.writeFile(storePath, JSON.stringify(data), 'utf-8');
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await registry.load();
+        const results = registry.findAllByName('dup');
+        expect(results).toHaveLength(2);
+        const topicIds = results.map((e) => e.topicId).sort((a, b) => a - b);
+        expect(topicIds).toEqual([1, 2]);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('returns an empty array on a fresh registry with no entries', () => {
+      expect(registry.findAllByName('anything')).toEqual([]);
+    });
   });
 });

@@ -30,7 +30,7 @@ function makeMockBot() {
  * The stub implements the same scanning logic as the planned implementation:
  * linear search over entries by sessionName.
  */
-function makeResumeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry & { findByName: ReturnType<typeof vi.fn>; move: ReturnType<typeof vi.fn> } {
+function makeResumeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry & { findByName: ReturnType<typeof vi.fn>; findAllByName: ReturnType<typeof vi.fn>; move: ReturnType<typeof vi.fn> } {
   const map = new Map(entries.map((e) => [e.topicId, e]));
   const nameMap = new Map(entries.map((e) => [e.sessionName, e]));
 
@@ -59,6 +59,7 @@ function makeResumeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry 
     }),
     load: vi.fn(),
     findByName: vi.fn((name: string) => nameMap.get(name)),
+    findAllByName: vi.fn((name: string) => Array.from(map.values()).filter((e) => e.sessionName === name)),
     move: vi.fn(async (fromTopicId: number, toTopicId: number, sessionName: string, chatId: number, model?: string) => {
       const old = map.get(fromTopicId);
       if (old) {
@@ -75,7 +76,7 @@ function makeResumeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry 
         nameMap.set(sessionName, newEntry);
       }
     }),
-  } as unknown as ISessionRegistry & { findByName: ReturnType<typeof vi.fn>; move: ReturnType<typeof vi.fn> };
+  } as unknown as ISessionRegistry & { findByName: ReturnType<typeof vi.fn>; findAllByName: ReturnType<typeof vi.fn>; move: ReturnType<typeof vi.fn> };
 
   return registry;
 }
@@ -366,7 +367,7 @@ describe('/resume command', () => {
     expect(registry.register).not.toHaveBeenCalled();
   });
 
-  // ── /help includes /resume ─────────────────────────────────────────────────
+  // /help includes /resume ─────────────────────────────────────────────────
 
   it('/help text includes /resume', async () => {
     const { bot, commandHandlers } = makeMockBot();
@@ -380,5 +381,71 @@ describe('/resume command', () => {
 
     const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
     expect(replyText).toContain('/resume');
+  });
+
+  // ── F-B: legacy duplicate names ───────────────────────────────────────────
+
+  it('refuses with disambiguation list when legacy duplicates share the same name', async () => {
+    const dup1: SessionEntry = { sessionName: 'my-session', topicId: 42, chatId: -100, createdAt: '2026-01-01T00:00:00.000Z' };
+    const dup2: SessionEntry = { sessionName: 'my-session', topicId: 99, chatId: -100, createdAt: '2026-01-01T00:00:00.000Z' };
+
+    const { bot, commandHandlers } = makeMockBot();
+    const registry = makeResumeStubRegistry([dup1, dup2]);
+    const factory = makeMockFactory();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+
+    const handler = commandHandlers.get('resume')!;
+    // ctx.message.message_thread_id = 10, distinct from both 42 and 99
+    const ctx = makeMockCtx({ match: 'my-session' });
+    await handler(ctx);
+
+    expect(registry.move).not.toHaveBeenCalled();
+    expect(registry.register).not.toHaveBeenCalled();
+
+    const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(replyText).toMatch(/[Mm]ultiple|duplicate/i);
+    expect(replyText).toContain('my-session');
+    expect(replyText).toContain('42');
+    expect(replyText).toContain('99');
+  });
+
+  it('mentions /rename and /remove in the legacy-duplicates refusal', async () => {
+    const dup1: SessionEntry = { sessionName: 'my-session', topicId: 42, chatId: -100, createdAt: '2026-01-01T00:00:00.000Z' };
+    const dup2: SessionEntry = { sessionName: 'my-session', topicId: 99, chatId: -100, createdAt: '2026-01-01T00:00:00.000Z' };
+
+    const { bot, commandHandlers } = makeMockBot();
+    const registry = makeResumeStubRegistry([dup1, dup2]);
+    const factory = makeMockFactory();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+
+    const handler = commandHandlers.get('resume')!;
+    const ctx = makeMockCtx({ match: 'my-session' });
+    await handler(ctx);
+
+    const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(replyText).toMatch(/\/rename|\/remove/);
+  });
+
+  // ── F-C: move() destination-bound error surfaced cleanly ─────────────────
+
+  it('surfaces the move() destination-bound error with a clean ⚠️ message, not a generic failure', async () => {
+    const { bot, commandHandlers } = makeMockBot();
+    const registry = makeResumeStubRegistry([REMOTE_ENTRY]);
+    // Simulate a concurrent bind that slips past our UX pre-check
+    registry.move.mockRejectedValueOnce(
+      new Error('Destination topic 10 is already bound to "other-session"'),
+    );
+    const factory = makeMockFactory();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+
+    const handler = commandHandlers.get('resume')!;
+    // resolve(10) returns undefined → pre-check passes; move() then throws
+    const ctx = makeMockCtx({ match: 'my-session' });
+    await handler(ctx);
+
+    const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(replyText).not.toMatch(/[Ff]ailed to resume/);
+    expect(replyText).toMatch(/already|linked|bound/i);
+    expect(replyText).toMatch(/[Rr]emove|\/remove/);
   });
 });

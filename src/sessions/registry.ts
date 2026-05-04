@@ -14,11 +14,15 @@ export interface ISessionRegistry {
   register(topicId: number, chatId: number, sessionName: string, model?: string): Promise<void>;
   resolve(telegramTopicId: number): SessionEntry | undefined;
   findByName(sessionName: string): SessionEntry | undefined;
+  /** Returns every entry whose sessionName matches — may be >1 when legacy duplicates exist on disk. */
+  findAllByName(sessionName: string): SessionEntry[];
   list(): SessionEntry[];
   remove(telegramTopicId: number): Promise<boolean>;
   /**
    * Atomically re-binds a named session from one topic to another.
-   * Mutates both Map entries in memory then calls persist() exactly once.
+   * Verifies that toTopicId is unbound before any mutation, then mutates both
+   * Map entries in memory and calls persist() exactly once.
+   * Throws if toTopicId is already bound (TOCTOU-safe).
    * If persist() throws, the in-memory state is rolled back.
    */
   move(fromTopicId: number, toTopicId: number, sessionName: string, chatId: number, model?: string): Promise<void>;
@@ -120,6 +124,14 @@ export class SessionRegistry implements ISessionRegistry {
     return undefined;
   }
 
+  findAllByName(sessionName: string): SessionEntry[] {
+    const result: SessionEntry[] = [];
+    for (const entry of this.entries.values()) {
+      if (entry.sessionName === sessionName) result.push(entry);
+    }
+    return result;
+  }
+
   list(): SessionEntry[] {
     return Array.from(this.entries.values());
   }
@@ -137,6 +149,13 @@ export class SessionRegistry implements ISessionRegistry {
     const oldEntry = this.entries.get(fromTopicId);
     if (!oldEntry) {
       throw new Error(`No session found for topic ${fromTopicId}`);
+    }
+    // F-C: atomic destination-unbound check — eliminates TOCTOU window where a
+    // concurrent /new or /resume could bind the destination between the caller's
+    // pre-check and this mutation.
+    const destEntry = this.entries.get(toTopicId);
+    if (destEntry) {
+      throw new Error(`Destination topic ${toTopicId} is already bound to "${destEntry.sessionName}"`);
     }
     const newEntry: SessionEntry = {
       sessionName,

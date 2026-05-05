@@ -207,7 +207,38 @@ Added `/** Utility for callers that want to skip escaping overhead on clean text
 - **Role:** Bridge Dev
 - **Joined:** 2026-04-12T06:02:10.440Z
 
-## Current Phase: Phase 5 — Telegram UX QoL (2026-05-01–2026-05-02)
+## Executive Summary
+
+**Phases Completed:** 1–5  
+**Current Status:** Phase 5 complete. PR #5 merged (commit d1f7f64). Ready for production dogfooding.
+
+**Key Achievements:**
+1. Phase 5 Wave 1: MarkdownV2 escaping (22 tests, escape-only strategy, code protection)
+2. Phase 5 Wave 2: Message splitting (21 tests, Telegram 4096-char limit, code block re-fence)
+3. Phase 5 Review Fixes: 11 findings addressed (F1–F13), 1 escalated (F7 → ports.ts abstraction)
+4. Phase 5 PR #5 Copilot Review: F-A (MarkdownV2 budget), F-D (maxChunks fix), F-E (first-chunk failure handling)
+5. Idle session eviction fix: pre-warm cache, atomic move, stale timer detection
+6. Package.json entry point fix: `dist/index.js` → `dist/main.js` (commit d1f7f64)
+
+**Test Coverage:** 278 passing, 4 intentional placeholder stubs  
+**Code Quality:** tsc clean, lint clean
+
+---
+
+# Current Phase: Phase 5 — Telegram UX QoL (2026-05-01–2026-05-04)
+
+## Latest Work (2026-05-04)
+
+**Task:** Fix package.json entry point.  
+**Issue:** Build outputs to `dist/main.js` but entry point pointed to `dist/index.js`.  
+**Fix:** Updated entry point to `dist/main.js`.  
+**Commit:** d1f7f64 to main branch.  
+**Impact:** Resolves require/import failures in downstream consumers.  
+**Status:** ✅ Complete.
+
+---
+
+## Earlier Sessions (Archived for Reference)
 
 ### What I've Delivered
 
@@ -497,3 +528,18 @@ Added `/** Utility for callers that want to skip escaping overhead on clean text
 **New test:** Pre-warms cache for both source and destination topics (arming a stale timer for `NEW_TOPIC`), calls `rekeySession(OLD, NEW)`, advances fake timers 400 000 ms past the original 300 000 ms TTL, then asserts `factory.resume` was NOT called again — proving the moved session survived.
 
 **Results:** 275 tests pass (274 prior + 1 new), tsc clean, lint clean. Commit `92ab201`. Pushed to `user/aaron/phase5-telegram-ux`.
+
+
+# Session: 2026-05-04 — Package.json Entry Point Fix
+
+**Context:** Noble Six assessed dogfood readiness (verdict: ship it). Entry point in package.json pointed to dist/index.js but build outputs to dist/main.js.
+
+**Fix:** Changed entry point to dist/main.js.
+
+**Commit:** d1f7f64 to main branch.
+
+**Impact:** Aligns package.json with actual build output; fixes require/import failures in downstream consumers.
+
+**Tests:** Verified build output file exists at dist/main.js.
+
+**Status:** ✅ Complete.

@@ -94,6 +94,43 @@ Phase 5 complete. All decisions merged to `decisions.md`; inbox cleared. 235 tes
 
 **Next phase:** Ready for production. Phase 5 UX improvements provide foundation for future features.
 
+## Learnings
+
+### 2026-05-04 — Dogfood Readiness Assessment
+
+**Assessed by:** Noble Six  
+**Trigger:** Aaron asked "What's left, or are we ready to dogfood?"
+
+**Verdict: Ship it.** Reach is feature-complete and ready for personal use today.
+
+**Evidence:**
+- 278 tests pass (15 test files), 4 are intentional placeholder stubs — not gaps
+- Clean tsc + ESLint
+- Full command surface functional: /new, /list, /remove, /resume, /help, /pair
+- Windows Service install with auto-restart
+- Message splitting + MarkdownV2 + /resume all live in Phase 5
+
+**Only gaps found (none blocking):**
+1. No `/status`/`/ping` command — can't verify liveness from Telegram. Carter task, post-dogfood Week 1.
+2. Phase 4 Wave 3 (operator runbook, logging polish) was never scoped. Real use will drive what actually matters.
+
+**Architecture note:** Port injection (F7 from Carter's Phase 5 review) was applied — `relay.ts` has zero direct deps on `bot/` or `sessions/`. Layering is clean.
+
+**Recommendation filed:** `.squad/decisions/inbox/noble six-dogfood-readiness.md`
+
+---
+
 ## Archive
 
 Earlier work (before 2026-05-01) is archived in `history-archive.md` for reference.
+
+---
+
+## Phase 6 Planning (Post-Dogfood)
+
+**Noble Six's role:** Monitor dogfood feedback during Week 1–2. Convene team for Phase 6 scope definition based on real-world usage patterns.
+
+**Watch areas:**
+- MarkdownV2 fallback frequency (log: `[relay] MarkdownV2 rejected`)
+- Session eviction timing (5-min default; may need tuning)
+- Service stability (crash rate in Event Viewer)

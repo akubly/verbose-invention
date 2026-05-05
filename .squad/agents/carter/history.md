@@ -304,6 +304,10 @@ Three findings from Copilot review of PR #5, all addressed:
 
 ## Recent Learnings (Active)
 
+### 2026-05-04 — Entrypoint alignment
+
+Aligned `package.json` runtime entrypoints with the compiled TypeScript output: `src/main.ts` emits `dist/main.js`, so `main` and `npm start` must target `dist/main.js` rather than `dist/index.js`.
+
 ### 2026-05-01 — Phase 5 Wave 1: MarkdownV2 Upgrade
 
 Replaced legacy `parse_mode: 'Markdown'` with `parse_mode: 'MarkdownV2'` in `safeEdit()`.

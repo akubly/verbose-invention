@@ -3,10 +3,10 @@
   "version": "0.1.0",
   "description": "Telegram ↔ GitHub Copilot CLI session bridge (personal Windows daemon)",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/main.js",
   "scripts": {
     "build": "tsc --project tsconfig.json",
-    "start": "node --enable-source-maps dist/index.js",
+    "start": "node --enable-source-maps dist/main.js",
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts --max-warnings 0",

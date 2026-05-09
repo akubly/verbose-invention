@@ -81,6 +81,20 @@ Phase 5 testing complete. All decisions merged to `decisions.md`; inbox cleared.
 
 **Next phase:** Ready for production. Monitor test suite as features stabilize.
 
+## Phase 6 Roadmap
+
+**Jun's scope (Phase 6 — Session 0 Control Plane + Data Plane Topics):**
+1. Integration tests (Days 3–5):
+   - Mode transitions: desktop ↔ AFK ↔ data-plane
+   - Attach/detach cycles: CLI session discovery, topic creation, cleanup on death
+   - Graceful degradation: failure paths when discovery unavailable, CLI session dies mid-conversation
+   - State machine coverage: all transitions tested
+2. Test-first approach (Days 1–2):
+   - Write test skeletons for proposed interfaces (discovery, session0 router, attach/detach)
+   - Lock contracts before implementation
+
+**Design:** Test state machine + failure paths. MVP Week 1.
+
 ## Archive
 
 Earlier learnings (before 2026-05-01) are archived in `history-archive.md` for reference.

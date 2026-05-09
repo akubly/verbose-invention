@@ -1,103 +1,104 @@
-# Carter — History
+# Carter — History (Summarized 2026-05-08)
 
-## Core Context
+## Identity & Role
 
-- **Project:** Reach — a TypeScript daemon bridging Telegram to GitHub Copilot CLI sessions on a personal Windows machine via named session registry and bidirectional streaming.
-- **Role:** Bridge Dev
-- **Joined:** 2026-04-12T06:02:10.440Z
+- **Agent:** Carter (Bridge Dev, Sonnet 4.6)
+- **Project:** Reach — TypeScript daemon bridging Telegram to GitHub Copilot CLI
+- **Domain:** SDK relay, streaming, MarkdownV2 formatting, message splitting
+- **Joined:** 2026-04-12
 
-## Current Phase: Phase 5 — Telegram UX QoL (2026-05-01–2026-05-02)
+## Phases Completed: 1–5
 
-### What I've Delivered
+**Current Status:** Phase 5 complete. Production-ready. Ready for Phase 6 implementation.
 
-**Wave 1: MarkdownV2 Parse Mode Upgrade**
-- New module: `src/relay/markdownV2.ts`
-- Escape strategy: escape-only (no AST parsing)
-- Special chars escaped (18 + backslash): `_ * [ ] ( ) ~ ` > # + - = | { } . ! \`
-- Code region protection: only `\` and `` ` `` inside code spans/blocks
+---
+
+## Key Accomplishments (Phases 1–5)
+
+### Phase 5 Wave 1: MarkdownV2 Escaping
+- Module: `src/relay/markdownV2.ts` (escape-only strategy, no AST parsing)
+- Special chars: 18 + backslash; only `\` and `` ` `` inside code
+- Code region protection: spans and blocks preserved
 - Relay integration: `safeEdit()` fallback chain (MarkdownV2 → plain text)
-- Per-session logging to avoid spam on persistent formatting issues
 - Test coverage: 22 new unit tests, all GREEN ✅
+- Per-session logging prevents spam on persistent format issues
 
-**Wave 2: Message Splitting (Telegram 4096-char Limit)**
-- New module: `src/relay/messageSplitter.ts`
-- Function: `splitForTelegram(text, opts?)` with boundary preferences
-- Boundary order: `\n\n` > `\n` > whitespace > hard cut
-- Code block protection: never split mid-block, re-open/close fences on sub-chunks
-- Spanning block detection: explicit handling when block crosses chunk boundaries
-- Multi-chunk delivery: first chunk via `safeEdit()`, rest via `ctx.reply()` with 100ms delay
-- Two-pass numbering: `[n/total]\n` prefix only when total > 1
-- Footer overhead: reserved from last chunk budget
+### Phase 5 Wave 2: Message Splitting (Telegram 4096-char limit)
+- Module: `src/relay/messageSplitter.ts`
+- Algorithm: boundary preferences (`\n\n` > `\n` > whitespace > hard cut)
+- Code block protection: never split mid-block, re-fence on sub-chunks
+- Multi-chunk delivery: first via `safeEdit()`, rest via `ctx.reply()` (100ms delay)
+- Two-pass numbering: `[n/total]\n` only when total > 1
+- Footer overhead reserved from last chunk budget
 - Test coverage: 21 new unit tests, all GREEN ✅
 
-### Key Design Patterns
+### Phase 5 Persona Review Fixes
+- **F1 (BLOCKING):** Two-pass numbering to handle prefix overflow
+- **F4 (IMPORTANT):** Added `effectiveMaxLen` reserve for MarkdownV2 expansion (~30%)
+- **F5 (IMPORTANT):** Enabled numbering flag in relay call
+- **F6 (IMPORTANT):** `isParseEntitiesError()` guard for fallback logic
+- **F7 (ESCALATED):** Introduced `src/relay/ports.ts` abstraction (SessionLookup, PermissionPrompter)
+- **F8 (IMPORTANT):** Extracted `withMarkdownFallback()` helper (removed safeEdit/safeSend duplication)
+- **F9 (IMPORTANT):** `safeSend` returns `Promise<boolean>`, chunk failure tracking by index
+- **F10 (IMPORTANT):** 100KB stream cap + 25-chunk DoS guard
+- **F11 (IMPORTANT):** Hard-cut for overlong code lines
+- **F12 (MINOR):** Odd-fence defensive check in escaper
+- **F13 (MINOR):** JSDoc on `needsEscaping` export
 
-1. **Escape-only strategy** — No Markdown AST parsing; covers 95% of Copilot output
-2. **Mid-stream plain text** — Partial output with unclosed fences would fail MarkdownV2 parsing; only final edit uses V2
-3. **Boundary semantics** — Preserves reading units (paragraphs preferred, then lines, then words)
-4. **Code safety** — Balanced fences on every chunk, language tags preserved across splits
-5. **Footer integration** — Passed without `\n\n`; module adds separator internally
-6. **Rate limiting** — 100ms delay between chunk sends stays within Telegram's ~30 msg/s limit
+### Phase 5 PR #5 Review Fixes
+- **F-A:** Renamed `reserveBytes` → `effectiveMaxLen` for cleaner API (MARKDOWN_ESCAPE_EFFECTIVE_MAX = 2048)
+- **F-D:** Fixed chunk cap via `maxChunks` option in splitter (not post-split slice)
+- **F-E:** `safeEdit` returns boolean; abort follow-ups on first-chunk failure, best-effort error placeholder
 
-### Current Status
+### Port Injection (F7 Resolution)
+- Created `src/relay/ports.ts` with SessionLookup (resolve), PermissionPrompter (prompt) ports
+- Relay now has zero imports from `../bot/` or `../sessions/`
+- Composition root (handlers.ts) manages port injection
+- ResolvedSession minimal shape prevents relay coupling to SessionEntry evolution
 
-- Wave 1 complete: MarkdownV2 escaping live and tested
-- Wave 2 complete: Message splitting live and tested
-- Total Phase 5: 235 tests pass, tsc clean, lint clean
-- Ready for production deployment
+### Package.json Fix
+- Aligned entry point: `dist/main.js` (matches TypeScript output from `src/main.ts`)
 
-## Recent Learnings (Active)
+---
 
-### 2026-05-01 — Phase 5 Wave 1: MarkdownV2 Upgrade
+## Current State
 
-Replaced legacy `parse_mode: 'Markdown'` with `parse_mode: 'MarkdownV2'` in `safeEdit()`.
+- **Files:** `src/relay/relay.ts`, `src/relay/markdownV2.ts`, `src/relay/messageSplitter.ts`, `src/relay/ports.ts`
+- **Test coverage:** 278 tests pass (4 intentional placeholder stubs)
+- **Code quality:** tsc clean, lint clean
+- **Status:** Production-ready. No open relay issues.
 
-**Implementation highlights:**
-- Walks text identifying code spans (`` `...` ``) and blocks (` ``` ... ``` `)
-- Escapes only backslash and backtick inside code
-- Escapes 18 MarkdownV2 special chars + backslash in plain-text regions
-- Unclosed fences handled defensively: treated as plain text and fully escaped
-- Per-session fallback logging (Set<string>) prevents spam
+---
 
-**Fallback chain:** MarkdownV2 → plain text (legacy Markdown removed)
+## Phase 6 Roadmap
 
-**Test integration:** Carter's 22 base tests + Jun's 3 real-world Copilot output tests (code review, HUD footer, mixed identifiers)
+**Carter's scope (Phase 6 — Session 0 Control Plane + Data Plane Topics):**
+1. **Spike (Days 1–2):** Determine CLI session discovery mechanism (SDK API vs breadcrumb fallback) + attach semantics (shared output vs handoff vs exclusive)
+2. **Refactor (Days 3–5):** 
+   - Build `src/discovery/cliDiscovery.ts` (wraps chosen discovery mechanism)
+   - Refactor relay for I/O piping to attached CLI sessions (not SDK session creation)
+   - Build `src/control/session0.ts` command router (mode state machine, routes `/afk`, `/back`, `/list`, `/attach`, `/new`, `/kill`)
+   - Update `src/relay/relay.ts` for attached session semantics
 
-### 2026-05-01 — Phase 5 Wave 2: Message Splitting
+**Key design:** Session 0 in General topic (command-only). Data-plane topics created on-demand for attached CLI processes. 1:1 mapping: topic ↔ CLI process. MVP Week 1 (assumes SDK friendly path).
 
-Implemented `splitForTelegram` in `src/relay/messageSplitter.ts` and wired multi-chunk delivery.
+---
 
-**Core algorithm:**
-- `doSplit(text, maxLen, lastBudget)` — main splitting loop
-- `parseCodeBlocks(text)` — identifies all ` ```lang...``` ` ranges
-- `findBestSplit(text, maxBudget)` — applies boundary preference order
-- `splitCodeBlock(lang, innerLines, maxLen)` — packs lines with balanced fences
-- Two-pass numbering: split first, count total, prepend prefix only if total > 1
+## Key Design Patterns & Learnings
 
-**Relay integration:**
-- Final edit: calls `splitForTelegram(body, { footer })`
-- First chunk: `safeEdit()` replaces placeholder
-- Subsequent chunks: `safeSend()` via `ctx.reply()` with `message_thread_id`
-- Delay: 100ms between sends (rate limit safety)
+1. **Escape-only strategy** — No Markdown AST parsing; covers 95% of Copilot output with simple regex walks
+2. **Mid-stream fallback** — Partial output with unclosed fences fails V2 parsing; only final edit uses V2
+3. **Boundary semantics** — Preserves reading units (paragraphs > lines > words)
+4. **Code safety** — Balanced fences on every chunk; language tags preserved
+5. **Rate limiting** — 100ms delay between chunk sends; safe within Telegram ~30 msg/s
+6. **Port injection** — Eliminates cross-layer coupling; relay is a pure function of ports
+7. **Reserve budget** — MarkdownV2 expansion is ~30% worst-case; reserve upfront, not post-escape
 
-**Contract locked:** `splitForTelegram(text, opts?: SplitOptions): string[]`
-
-### 2026-05-02 — Phase 5 Complete (Team Update by Scribe)
-
-Phase 5 complete. All decisions merged to `decisions.md`; inbox cleared. 235 tests pass, tsc clean, lint clean.
-
-**Carter's Wave 1 & 2 completion:**
-- MarkdownV2 escaping: 22 tests GREEN, integration solid
-- Message splitting: 21 tests GREEN, multi-chunk delivery seamless
-- Both features coordinate: V2 length affects split points; no relay logic breaks
-
-**Team coordination:** MarkdownV2 (Wave 1) enables accurate split calculations for Wave 2. `/resume` (Kat) runs independent. All features tested and ready.
-
-**Next:** Production deployment. Monitor MarkdownV2 edge cases; fallback in place. Future: `/model` command.
+---
 
 ## Archive
 
-Earlier work (before 2026-05-01) is archived in `history-archive.md` for reference.
+Earlier work (Phases 1–4) archived in `history-archive.md`.
 
 ### 2026-05-02 — Phase 5 Review Triage (6-Persona Panel Fixes)
 

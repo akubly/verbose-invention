@@ -63,12 +63,29 @@
 - **Active commands:** `/new`, `/list`, `/remove`, `/resume`, catch-all relay
 - **Constraints:** Layering clean (no relay imports in bot); atomic operations verified
 
-## Phase 6+ Roadmap
+## Phase 6 Roadmap
+
+**Kat's scope (Phase 6 — Session 0 Control Plane + Data Plane Topics):**
+1. Bot routing refactor (Days 3–5):
+   - Split routing: General topic → `session0.ts`; forum topics → data-plane relay
+   - Enforce mode gates: desktop mode rejects everything except `/afk`
+   - Topic lifecycle: create on `/attach`, auto-archive on `/back` or CLI session death
+   - Implement commands: `/afk`, `/back`, `/attach <session>`, `/kill` wired through mode gates
+2. Registry semantics shift: **attach to existing CLI session**, not create Reach-owned SDK session
+   - Drop name-uniqueness enforcement (CLI names authoritative)
+   - Track lifecycle state (`attached` / `detached`)
+   - Entry shape: `topicId → cliSessionId`
+
+**Design:** Session 0 in General topic (permanent, command-only). Data-plane topics for attached CLI processes. Mode state machine (desktop ↔ AFK). MVP Week 1.
+
+---
+
+## Phase 6+ Roadmap (Future)
 
 - HUD footer with repo/branch/model metadata
 - Two-tier permissions (auto-approve safe, prompt destructive)
 - Session export to Markdown
-- MarkdownV2 parse_mode handling (Carter owns relay escaping)
+- Conversational Session 0 (Phase 7)
 
 ## Learnings
 

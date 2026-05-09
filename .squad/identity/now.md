@@ -1,27 +1,27 @@
 ---
-updated_at: 2026-05-01T04:31:08Z
-focus_area: Phase 4 — Hardening and Polish
+updated_at: 2026-05-09T07:06:43Z
+focus_area: Phase 6 — Session 0 control plane (DESIGN LOCKED, awaiting spike)
 active_issues: []
 ---
 
 # What We're Focused On
 
-**Phase 4: Hardening and Polish**
+**Phase 6: Session 0 Control Plane + Data Plane Topics**
 
-Phase 3 PR merged. Reach is feature-complete for personal use. Phase 4 focuses on reliability, code quality, and maintainability.
+Phases 1–5 shipped. Aaron dogfooded Reach successfully on 2026-05-04 (paired, daemon running as Windows Service `reach.exe`). During dogfooding he hit the cwd/branch limitation (Reach is bound to one repo) and that triggered the Phase 6 design conversation.
 
-**Wave 1 (completed ✓):**
-- ESLint setup (P0) — Carter ✅
-- Extract shared `getReachDataDir()` (P1) — Carter ✅
+**Locked model** (see `.squad/decisions.md` → Phase 6 v2 proposal):
+- Reach is a remote i/o channel for an existing CLI process — NOT a session creator, NOT a git-aware broker.
+- Session 0 = General topic. Always present. Desktop mode (silent, only `/afk` works) ↔ AFK mode (full control surface).
+- Data-plane topics = 1:1 with a CLI process, created on-demand from session 0 during AFK, auto-archive on `/back` or session death.
+- Cold-start fix: phone-side `/afk` works if Aaron forgets at the desktop.
 
-**Wave 2 (completed ✓):**
-- `interactiveDestructive` permission mode (P2) — Noble Six + Kat ✅
-- Integration tests (P1) — Jun ✅
+**Next step:** Carter spike (1–2 days) on the SDK question — can Reach discover and bidirectionally attach to externally-running CLI sessions? This gates the MVP. **Aaron has NOT yet kicked this off.** First action of next session: confirm Aaron wants the spike, then dispatch Carter.
 
-**Wave 3 (pending):**
-- Additional hardening items (logging, error recovery, operator runbook) — TBD
-
-**Status:** Phase 4 Wave 2 complete. 162 tests passing, 4 integration tests skipped. Ready for Phase 4 PR merge or additional wave.
+**Open shorter-term polish items** (from dogfooding, not blocking Phase 6):
+1. `src/service/install.ts` — broken `serviceaccount` block (`OFFICE-DESKTOP\LocalSystem` causes `LookupAccountName failed: 1332`). Hand-fixed Aaron's local install; needs proper fix in code.
+2. `src/service/install.ts` — missing-vars warning should check `config.json` before warning about `TELEGRAM_CHAT_ID`.
+3. `/status` or `/ping` command (Noble Six's week-1 nice-to-have).
 
 **Scoping:** `.squad/decisions.md`
 

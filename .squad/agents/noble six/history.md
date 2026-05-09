@@ -134,3 +134,53 @@ Earlier work (before 2026-05-01) is archived in `history-archive.md` for referen
 - MarkdownV2 fallback frequency (log: `[relay] MarkdownV2 rejected`)
 - Session eviction timing (5-min default; may need tuning)
 - Service stability (crash rate in Event Viewer)
+
+### 2026-05-04 — Phase 6 Requirements & Proposal
+
+**Trigger:** Aaron's dogfooding revealed cwd/branch-binding limitation. He proposed /afk /back commands. I analyzed his actual session data (30 days) to derive real requirements.
+
+**Requirements identified from session data:**
+1. Multi-repo routing (15 repos in active rotation, not 1)
+2. Branch safety (concurrent sessions on same repo, different branches)
+3. Resume-primary mode (sessions live 13–37 hours, some 16 days; resume is the norm)
+4. Idle-then-mobile (40+ turn-pairs with >2hr gaps in 14 days)
+5. Concurrent sessions (2–4 simultaneous sessions across repos)
+6. Desktop remains primary (Telegram is the remote terminal, not the birthplace)
+
+**Recommended approach: Option C — Hybrid Broker + /afk overlay.**
+- Reach discovers existing desktop CLI sessions and exposes them as Telegram topics
+- Topics are durable viewports into sessions, not session factories
+- /afk is optional UX sugar, not load-bearing architecture
+- Desktop activity auto-reclaims relay (no explicit /back required)
+
+**Trade-off accepted:** Building session discovery before confirming SDK supports listing sessions. Fallback (breadcrumb files) is cheap and architecture-identical.
+
+**Trade-off rejected:** IPC-to-CLI approach (Option A). Requires modifying software we don't own; breaks when CLI crashes.
+
+**MVP scope:** Registry gains per-session cwd/branch, new discovery module, /attach command, factory accepts per-session cwd. No /afk in MVP.
+
+**Proposal filed:** `.squad/decisions/inbox/noble six-phase6-proposal.md`
+
+### 2026-05-09 — Phase 6 Spike Complete (Carter)
+
+**Spike status:** Days 1–2 complete. Q1 SOLVED ✅. Q2 BLOCKED ⚠️.
+
+**Technical outcomes:**
+- **Q1 Discovery:** SDK `client.listSessions()` API is real, works today, returns all sessions from shared disk store. HIGH confidence.
+- **Q2 Attach:** Blocked on port breadcrumb gap. True bidirectional attach requires CLI in `--ui-server` mode; no mechanism writes port to disk today.
+
+**Three attach paths evaluated:**
+- **Path A (config-based):** Aaron sets `REACH_CLI_SERVER_URL` in config + launches CLI with matching `--ui-server --port`. Simplest for MVP. Requires Aaron coordination.
+- **Path B (breadcrumb wrapper):** Wrapper script writes port to `~/.copilot/reach-server.json`. Cleaner long-term; needs adoption.
+- **Path C (PID → port lookup):** Automatic; Windows-only + fragile (relies on lock file presence + TCP scan).
+
+**Carter's recommendation:** MVP ships `/list` + `/new` only (drop `/attach`). Attach-to-live deferred as Phase 6 stretch item with Path A (config-based) if needed.
+
+**Aaron's decision gate:** Which scope for Phase 6 MVP?
+1. **Option 1:** Drop `/attach` to live sessions (cleanest MVP)
+2. **Option 2:** Ship `/attach` with Path A (config-based port)
+3. **Option 3:** Ship `/attach` with Path C (PID → port auto-discovery, Windows-only)
+
+**Next:** Kat, Jun, Noble Six await Aaron's scope decision before implementation begins.
+
+---

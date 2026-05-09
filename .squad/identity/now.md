@@ -1,27 +1,37 @@
 ---
-updated_at: 2026-05-09T07:06:43Z
-focus_area: Phase 6 — Session 0 control plane (DESIGN LOCKED, awaiting spike)
-active_issues: []
+updated_at: 2026-05-09T00:17:25Z
+focus_area: Phase 6 — Spike complete, Aaron scope decision gate on /attach
+active_issues: [Aaron decision point — Q2 attach scope]
 ---
 
 # What We're Focused On
 
 **Phase 6: Session 0 Control Plane + Data Plane Topics**
 
-Phases 1–5 shipped. Aaron dogfooded Reach successfully on 2026-05-04 (paired, daemon running as Windows Service `reach.exe`). During dogfooding he hit the cwd/branch limitation (Reach is bound to one repo) and that triggered the Phase 6 design conversation.
+Phases 1–5 shipped. Aaron dogfooded Reach successfully on 2026-05-04. Phase 6 design locked (see `.squad/decisions.md` → Phase 6 v2 proposal).
 
-**Locked model** (see `.squad/decisions.md` → Phase 6 v2 proposal):
-- Reach is a remote i/o channel for an existing CLI process — NOT a session creator, NOT a git-aware broker.
-- Session 0 = General topic. Always present. Desktop mode (silent, only `/afk` works) ↔ AFK mode (full control surface).
-- Data-plane topics = 1:1 with a CLI process, created on-demand from session 0 during AFK, auto-archive on `/back` or session death.
-- Cold-start fix: phone-side `/afk` works if Aaron forgets at the desktop.
+**Spike complete (Carter, Days 1–2):**
+- **Q1 SOLVED ✅** — Discovery via SDK `client.listSessions()` API works today. No breadcrumbs needed. HIGH confidence.
+- **Q2 BLOCKED ⚠️** — True bidirectional attach blocked on port discovery gap (no port breadcrumb file written by CLI in `--ui-server` mode).
 
-**Next step:** Carter spike (1–2 days) on the SDK question — can Reach discover and bidirectionally attach to externally-running CLI sessions? This gates the MVP. **Aaron has NOT yet kicked this off.** First action of next session: confirm Aaron wants the spike, then dispatch Carter.
+**Aaron's decision gate (REQUIRED BEFORE IMPLEMENTATION):**
+
+Choose which option for Phase 6 MVP:
+
+1. **Drop `/attach` to live sessions** — Ship `/list` + `/new` only (cleanest MVP)
+2. **Ship `/attach` with config-based port** — Aaron sets `REACH_CLI_SERVER_URL` in config; launches CLI with matching `--ui-server --port`
+3. **Ship `/attach` with PID → port auto-discovery** — Windows-only, fragile, no config needed
+
+**Carter's recommendation:** Option 1 for MVP (robust foundation), Option 2 as Phase 6 stretch item.
+
+**Next:** Aaron decides. Then Kat/Jun implement days 3–5.
+
+**Spike details:** `.squad/orchestration-log/2026-05-09T00-17-25Z-carter.md` and `.squad/log/2026-05-09T00-17-25Z-phase6-spike.md`
 
 **Open shorter-term polish items** (from dogfooding, not blocking Phase 6):
-1. `src/service/install.ts` — broken `serviceaccount` block (`OFFICE-DESKTOP\LocalSystem` causes `LookupAccountName failed: 1332`). Hand-fixed Aaron's local install; needs proper fix in code.
-2. `src/service/install.ts` — missing-vars warning should check `config.json` before warning about `TELEGRAM_CHAT_ID`.
-3. `/status` or `/ping` command (Noble Six's week-1 nice-to-have).
+1. `src/service/install.ts` — broken `serviceaccount` block (`OFFICE-DESKTOP\LocalSystem` causes `LookupAccountName failed: 1332`)
+2. `src/service/install.ts` — missing-vars warning should check `config.json` before warning about `TELEGRAM_CHAT_ID`
+3. `/status` or `/ping` command (Noble Six's week-1 nice-to-have)
 
 **Scoping:** `.squad/decisions.md`
 

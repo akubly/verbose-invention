@@ -95,6 +95,22 @@ Phase 5 testing complete. All decisions merged to `decisions.md`; inbox cleared.
 
 **Design:** Test state machine + failure paths. MVP Week 1.
 
+### 2026-05-09 — Phase 6 Spike Complete (Carter)
+
+**Spike status:** Days 1–2 complete. Q1 SOLVED. Q2 BLOCKED awaiting Aaron decision.
+
+**Outcomes affecting Jun:**
+- **Q1 Discovery:** SDK `client.listSessions()` API works. No breadcrumbs needed. Contract: `sdk.listSessions(filter?) → SessionMetadata[]`
+- **Q2 Attach:** Blocked on port discovery gap. If MVP ships `/attach`, needs special config + CLI coordination. If MVP drops `/attach`, simpler state machine (no bidirectional attach case).
+- **Recommendation:** MVP ships `/list` + `/new` only; test attach/detach as Phase 6 stretch item.
+
+**Impact on Jun's integration tests:**
+- If MVP drops `/attach`: test suite focuses on mode transitions (desktop ↔ AFK), `/new` happy path, CLI discovery contract
+- If MVP ships `/attach` with config: add config validation tests, port fallback tests, CLI discovery with `--ui-server` availability check
+- Graceful degradation tests (discovery unavailable, CLI death) are the same
+
+**Aaron's decision point:** Which scope for Phase 6 MVP? (1) Drop `/attach`, or (2) Ship with config-based port?
+
 ## Archive
 
 Earlier learnings (before 2026-05-01) are archived in `history-archive.md` for reference.

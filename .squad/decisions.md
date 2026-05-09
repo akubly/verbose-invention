@@ -1,5 +1,150 @@
 # Decisions Archive
 
+**Last updated:** 2026-05-09
+
+---
+# Carter — Phase 6 Spike Report
+
+**Date:** 2026-05-09  
+**Author:** Carter  
+**Status:** READY FOR REVIEW  
+**Addresses:** Phase 6 locked design (decisions.md 2026-05-08), sections 4 and 5
+
+---
+
+## TL;DR
+
+- **Q1 Discovery:** Use the SDK API (`listSessions()`). It works today, enumerates all sessions from the shared disk store, no user changes required. **Confidence: HIGH.**
+- **Q2 Attach:** Blocked by a port-discovery gap. True bidirectional attach to a live desktop session requires the desktop CLI to run in `--ui-server` TCP mode — but no mechanism writes the port to disk. **Aaron needs to make a call here** (see Decision Point below).
+- **MVP path:** `/list` via SDK API works. `/new` (Reach-owned subprocess) is fully bidirectional today. `/attach` to a running desktop session is the gap.
+
+---
+
+## Q1 — Discovery: How does Reach see live desktop CLI sessions?
+
+**Answer: SDK API.** The SDK exposes `client.listSessions(filter?)` which returns `SessionMetadata[]`. This reads from the shared session store on disk (`~/.copilot/session-state/`). Reach's own SDK client — already running stdio-mode — can call this and get all sessions created by any CLI instance on the machine.
+
+**What `listSessions()` returns:**
+- `sessionId` — UUID, stable across restarts
+- `startTime`, `modifiedTime` — for recency sorting
+- `summary` — optional, user-visible description
+- `isRemote` — distinguishes cloud sessions from local ones
+- `context.cwd`, `context.gitRoot`, `context.repository`, `context.branch` — filtering hooks
+
+**Filter support:** `SessionListFilter` lets Reach narrow by `cwd`, `gitRoot`, `repository`, or `branch`. The `/list` command can surface sessions filtered to the current repo.
+
+**Live vs dead sessions:** `listSessions()` returns all sessions on disk — active and stale. The session workspace directory (`~/.copilot/session-state/{id}/`) contains an `inuse.{PID}.lock` file when a session is actively open in a CLI process. Reading this lock file lets Reach tag sessions as currently live vs historical. This is a filesystem read — no extra SDK surface needed.
+
+**Verdict:** SDK API is the mechanism. No breadcrumbs needed for discovery. No IPC. Confidence HIGH based on inspecting the SDK's public `.d.ts` types and reading the actual `client.js` implementation.
+
+---
+
+## Q2 — Attach Semantics: What happens to the desktop TUI?
+
+**Short answer: Shared output is technically possible — but blocked on port discovery.**
+
+### What the SDK supports
+
+The SDK has two operating modes:
+
+| Mode | How | Attach semantics |
+|------|-----|-----------------|
+| **Stdio (default)** | Reach spawns its own CLI subprocess | Cannot attach to desktop — two separate processes on same session data. Creates conflict. |
+| **TUI+server (`--ui-server`)** | Desktop CLI exposes TCP port; Reach connects via `cliUrl` | Shared: both desktop and Telegram see all output. `setForegroundSessionId()` lets Reach shift TUI focus. |
+
+The `cliUrl` constructor option (`new CopilotClient({ cliUrl: "localhost:PORT" })`) is purpose-built for this. The `getForegroundSessionId()` / `setForegroundSessionId()` APIs let Reach know what the user is looking at in the TUI and redirect focus if needed. All session events flow to all connected clients — **shared output** is the natural semantic in `--ui-server` mode.
+
+### The blocker
+
+The desktop CLI must be started with `--ui-server`. No breadcrumb file is written to disk by the CLI when this mode is active. The SDK only discovers the port by parsing the CLI's stdout at spawn time (`listening on port (\d+)` pattern) — not usable for a process Reach didn't spawn.
+
+**No port file exists today.** There is no `~/.copilot/server.json` or equivalent convention. The shared session state directory (`~/.copilot/session-state/`) contains `workspace.yaml` (cwd, branch, repo) and `inuse.{PID}.lock` (active PID) — but not port info.
+
+### Three paths forward
+
+| Path | Works today? | User effort | Semantics |
+|------|-------------|-------------|-----------|
+| **A: Config-based port** | Yes, after config wire | Aaron sets `REACH_CLI_SERVER_URL=localhost:PORT` in config.json; launches CLI with `--ui-server --port PORT` | Shared output |
+| **B: Port breadcrumb convention** | After a wrapper script | A thin launch script writes `~/.copilot/reach-server.json` with `{ port, pid }`; Reach polls it | Shared output |
+| **C: PID → port lookup** | Yes | None — reads `inuse.{PID}.lock`, queries `Get-NetTCPConnection` for that PID | Shared output (if found) |
+
+Path A is the simplest for Phase 6 MVP: wire a new config key, document that Aaron starts the CLI with the matching `--ui-server --port` flag. Fragile on port mismatches but deterministic.
+
+Path B is cleaner long-term but needs a wrapper that Aaron would have to adopt.
+
+Path C is automatic but relies on `inuse.{PID}.lock` being present (requires an active infinite-session workspace, not guaranteed for all sessions) and `Get-NetTCPConnection` is Windows-only.
+
+---
+
+## Decision Point — Aaron's Call
+
+**Choose one:**
+
+1. **"Phase 6 MVP drops `/attach` to live sessions; only `/new` and `/list` ship."**
+   → Cleanest MVP. `/list` enumerates sessions. `/new` spawns a fresh CLI subprocess owned by Reach (fully bidirectional). Users can't "pick up" a session they're running at the desktop and redirect it to phone — they create a new phone-side session instead. No port discovery needed.
+
+2. **"Phase 6 MVP ships `/attach` with Path A (config-based port)."**
+   → Wire `REACH_CLI_SERVER_URL` to `config.json`. User must start the desktop CLI with `--ui-server --port <same port>`. Reach connects via `cliUrl`. Shared output semantics. Requires Aaron to change how he launches the CLI at the desktop.
+
+3. **"Phase 6 MVP ships `/attach` with Path C (PID → port auto-discovery)."**
+   → Windows-only, fragile (relies on lock file presence + TCP table scan). Works without user config changes. Medium confidence.
+
+**My recommendation: Option 1 for MVP, option 2 as a Phase 6 stretch item.** The `/list` + `/new` surface already satisfies Aaron's stated use case (he overwhelmingly resumes existing sessions). If `/attach` to a live desktop session matters, the config-based approach is a one-day add-on that Aaron can try after the core control plane ships.
+
+---
+
+## Fallback Plan
+
+If SDK attach turns out to be broken (protocol mismatch, `--ui-server` not available in Aaron's CLI build):
+
+1. **`/list`**: Fall back to reading `workspace.yaml` files directly from `~/.copilot/session-state/*/workspace.yaml`. Parse `id`, `cwd`, `repository`, `branch`, `updated_at` without any SDK call. Cross-reference `inuse.{PID}.lock` for live status.
+2. **`/attach`**: Fall back to `/new` only. No true live attach. Document this in the bot's help text.
+3. **Breadcrumb read**: If Aaron wants to experiment with port discovery, `~/.copilot/reach-server.json` is the convention to define. Reach would poll it on `/afk`.
+
+---
+
+## Concrete Next-Step File Changes (Days 3–5)
+
+| File | Change |
+|------|--------|
+| `src/discovery/cliDiscovery.ts` | New. Calls `sdk.listSessions()`, cross-references `inuse.{PID}.lock` files to tag live vs stale. Returns `CliSession[]` with `{ sessionId, name, cwd, branch, isLive, pid? }`. |
+| `src/control/session0.ts` | New. Owns mode state machine (desktop ↔ AFK). Routes `/afk`, `/back`, `/list`, `/attach`, `/new`, `/kill`. Calls `cliDiscovery` for `/list` and `/attach`. |
+| `src/copilot/impl.ts` | Add `listSessions()` wrapper on `CopilotClientImpl`. Exposes `sdk.listSessions(filter?)` through `CopilotSessionFactory` interface. |
+| `src/copilot/factory.ts` | Add `listSessions(filter?)` method to `CopilotSessionFactory` interface so the stub and impl stay aligned. |
+| `src/sessions/registry.ts` | Semantics shift: track `{ topicId, cliSessionId, attachedAt, mode: 'live' \| 'resumed' }` rather than Reach-owned session names. Drop name-uniqueness enforcement. |
+| `src/relay/relay.ts` | For `/new` path: same as today (Reach spawns subprocess). For `/attach` path (if option 2 chosen): swap `sdk` construction to use `cliUrl` from config. |
+| `src/bot/handlers.ts` | Split routing: General topic → `session0.ts`; forum topics → data-plane relay. Desktop-mode gate rejects everything except `/afk`. |
+| `config.json` schema | Add optional `REACH_CLI_SERVER_URL` key for Path A (option 2) attach. Add `REACH_MODE_DEFAULT` (`desktop` \| `afk`). |
+
+---
+
+## Open Risks
+
+| Risk | Severity | Notes |
+|------|----------|-------|
+| **No `--ui-server` in Aaron's CLI build** | HIGH | If the bundled `@github/copilot` version doesn't support `--ui-server`, Path A/B/C all fail. Need to verify: `gh copilot --help \| grep ui-server`. |
+| **Lock file reliability** | MEDIUM | `inuse.{PID}.lock` is written by the infinite-sessions feature. Sessions without infinite sessions enabled won't have it. Live detection would miss those sessions. |
+| **Two-process conflict on resumeSession()** | HIGH | If Aaron `/attach`es to a session still open in the desktop CLI using Reach's own SDK process (not `cliUrl`), both processes write to the same session state. File corruption risk. `cliDiscovery.ts` must warn or block if `isLive=true` and we're in stdio mode. |
+| **Windows-only Path C** | MEDIUM | `Get-NetTCPConnection` is PowerShell/Windows. Not portable if Reach ever runs on Linux. |
+| **TUI mode assumption** | LOW | `setForegroundSessionId` / `getForegroundSessionId` only work in `--ui-server` mode. In stdio mode, these RPCs will error. `cliDiscovery.ts` must guard against this. |
+
+---
+
+## Confidence Summary
+
+| Item | Confidence | Evidence |
+|------|-----------|---------|
+| `listSessions()` works for discovery | HIGH | Inspected `client.d.ts` types, `client.js` impl, README. API is real and documented. |
+| Shared session store on disk | HIGH | `~/.copilot/session-state/` exists on Aaron's machine with UUID subdirs. `workspace.yaml` confirms cwd/branch/repo metadata. |
+| `inuse.{PID}.lock` = active session signal | MEDIUM | Lock file present on machine. Semantics inferred from name — not confirmed by docs, but obvious. |
+| `--ui-server` mode exists | MEDIUM | Documented in SDK README and `.d.ts` JSDoc. Not confirmed that Aaron's installed CLI version supports it. |
+| Shared output semantics via `cliUrl` | MEDIUM | Follows from SDK architecture (single server process, multiple clients). Inferred — not tested end-to-end. |
+| Port breadcrumb exists anywhere | LOW → NONE | No `server.json` or port file found anywhere in `~/.copilot/`. No SDK-written breadcrumb. |
+
+---
+
+# Decisions Archive
+
 **Last updated:** 2026-05-08
 
 ---

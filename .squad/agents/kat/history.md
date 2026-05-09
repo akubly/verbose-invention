@@ -78,6 +78,22 @@
 
 **Design:** Session 0 in General topic (permanent, command-only). Data-plane topics for attached CLI processes. Mode state machine (desktop ↔ AFK). MVP Week 1.
 
+### 2026-05-09 — Phase 6 Spike Complete (Carter)
+
+**Spike status:** Days 1–2 complete. Q1 SOLVED. Q2 BLOCKED awaiting Aaron decision.
+
+**Outcomes affecting Kat:**
+- **Q1 Discovery:** SDK `client.listSessions()` works today (HIGH confidence). No breadcrumbs needed.
+- **Q2 Attach:** Blocked on port discovery. True bidirectional attach requires CLI in `--ui-server` mode + port written to disk (gap found: no port file exists today).
+- **Recommendation:** MVP ships `/list` + `/new` only; `/attach` deferred as Phase 6 stretch item (or ship with config-based workaround).
+
+**Impact on Kat's implementation (session0.ts routing):**
+- If MVP drops `/attach`: implement `/afk`, `/back`, `/new`, `/list` only (no `/attach` handler)
+- If MVP ships `/attach` with config: `/attach` routes to relay with `cliUrl` from config (relay changes required, not bot)
+- Mode state machine (desktop ↔ AFK) unchanged; `/attach` becomes optional endpoint
+
+**Aaron's decision point:** Which scope for Phase 6 MVP? (1) Drop `/attach`, or (2) Ship with config-based port?
+
 ---
 
 ## Phase 6+ Roadmap (Future)

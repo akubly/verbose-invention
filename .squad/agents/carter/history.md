@@ -107,6 +107,30 @@ See `history-archive.md` for full Phases 1–5 documentation.
 
 ---
 
+## Phase 6 Follow-Up: CLI Extension Bridge (2026-05-09)
+
+**Aaron's question:** Can a CLI extension replace `--ui-server` mode for session bridging?
+
+**Answer: Yes.** `@github/copilot-sdk@0.2.2` ships a real, documented extension API at `@github/copilot-sdk/extension`. `joinSession()` connects the extension (a forked child process) to the current foreground CLI session via JSON-RPC over stdio.
+
+**Key findings:**
+- Extensions load from `.github/extensions/<name>/extension.mjs` (project) or `<copilot_config_dir>/extensions/<name>/extension.mjs` (user, all repos). Windows user path: `%APPDATA%\GitHub Copilot\User\extensions\`.
+- Lifecycle = per foreground session (reloaded on `/clear`, stopped on CLI exit)
+- `session.send()` injects user messages; `session.on()` observes all events including streaming deltas
+- Full Node.js network access — extension can open named pipe / loopback HTTP to Reach daemon
+- `SESSION_ID` env var available in extension process — authoritative session identity
+
+**Impact on Phase 6 plan:**
+- The port-discovery gap (Q2 BLOCKED) is now fully circumvented by the extension bridge
+- Option B (extension bridge) enables true bidirectional `/attach` — ~2 days add-on to Option A
+- `reach install` can write the extension to the user extensions dir automatically — zero ongoing friction
+- Decision still at Aaron: Option A (clean MVP, no attach) or Option B (attach via extension)
+- File plan delta: + `extension.mjs`, + `src/discovery/extensionBridge.ts`, + `src/bot/commands/attach.ts`
+
+**What does NOT change:** `/list` (via `listSessions()`) and `/new` (Reach-owned subprocess) are unaffected. Extension bridge only adds the `/attach` path.
+
+---
+
 ## Key Design Patterns & Learnings
 
 1. **SDK introspection methodology** — Version, types, README, implementation, actual filesystem state

@@ -114,3 +114,31 @@ Phase 5 testing complete. All decisions merged to `decisions.md`; inbox cleared.
 ## Archive
 
 Earlier learnings (before 2026-05-01) are archived in `history-archive.md` for reference.
+
+---
+
+### 2026-05-09 — Phase 6 Spike Follow-Up (Extension API Viability)
+
+**Spike status:** COMPLETE. Extension API confirmed viable for session bridging.
+
+**Key findings from Carter:**
+- **Extension API CONFIRMED:** `@github/copilot-sdk@0.2.2` exports `joinSession()`, `session.send()`, `session.on()`. Production-ready.
+- **Port-discovery gap eliminated:** Extension runs as forked child with JSON-RPC/stdio to CLI. No `--ui-server` port file needed.
+- **Attach bridge:** Bidirectional `/attach` to live desktop sessions possible via extension bridge (named pipe/loopback socket to daemon).
+- **Setup:** Single install to user extensions dir; automatable in `reach install`.
+- **Effort:** ~2 days on top of MVP.
+
+**NEW DECISION for Aaron:**
+- **Option A (Original MVP):** `/list` + `/new` only. 
+- **Option B (Extended MVP):** `/list` + `/new` + `/attach` via extension bridge.
+
+**Impact on Jun's Phase 6 integration tests:**
+- **Option A:** Test scope: mode transitions (desktop ↔ AFK), `/new` happy path, CLI discovery contract, graceful degradation.
+- **Option B:** Add extension registration tests, named pipe communication tests, `/attach` inject/stream cycle tests, reconnection handling.
+
+**State machine contracts:** Same in both options (desktop ↔ AFK transitions independent of `/attach`).
+
+**Recommendation:** Option A for MVP (cleaner test scope); Option B as first post-MVP feature.
+
+---
+

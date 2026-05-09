@@ -645,3 +645,173 @@ input. `/new` (spawn a fresh CLI subprocess) becomes the only bidirectional path
 
 
 
+
+---
+
+# Carter — CLI Extension Bridge Follow-Up
+
+**Date:** 2026-05-09  
+**Author:** Carter  
+**Status:** READY FOR REVIEW  
+**Addresses:** Aaron's question — can a Copilot CLI extension replace `--ui-server` for session bridging?
+
+---
+
+## Short Answer
+
+**Yes. The extension surface exists, is real, is in `@github/copilot-sdk@0.2.2`, and solves the port-discovery gap cleanly.** If Aaron wants `/attach`, this is the path. If `/attach` is out of scope for MVP, stick with the original spike recommendation (Option 1).
+
+---
+
+## What I Found
+
+### 1. The Extension API Is Real
+
+`@github/copilot-sdk@0.2.2` ships a documented, fully-typed extension entry point:
+
+```ts
+import { joinSession } from "@github/copilot-sdk/extension";
+const session = await joinSession({ tools: [...], hooks: {...} });
+```
+
+Exported from the package's `./extension` subpath (declared in `package.json#exports`). The `.d.ts` and implementation are both present in the installed package. The docs (`node_modules/@github/copilot-sdk/docs/`) cover architecture, examples, and a full authoring guide.
+
+### 2. How Extensions Work
+
+```
+┌───────────────────┐  JSON-RPC/stdio  ┌──────────────────────┐
+│  Copilot CLI TUI  │ ◄──────────────► │  Extension process   │
+│  (parent)         │                  │  (forked child)      │
+│  • Forks ext      │                  │  • calls joinSession │
+│  • routes tools   │                  │  • registers tools   │
+│  • manages lcycle │                  │  • listens to events │
+└───────────────────┘                  └──────────────────────┘
+```
+
+The extension is a **forked child process** — not a plugin loaded into the CLI's Node.js heap, but a separate process communicating over JSON-RPC via stdio to the CLI. `joinSession()` reads `SESSION_ID` from the env (set by CLI at fork time) and calls `client.resumeSession(sessionId, ...)` using `{ isChildProcess: true }`, which connects to the CLI parent via stdio.
+
+### 3. What an Extension Can See and Do
+
+| Capability | Available | Notes |
+|-----------|-----------|-------|
+| Read live session events | ✅ | `session.on("assistant.message", ...)`, `session.on("user.message", ...)`, `session.on("assistant.streaming_delta", ...)`, `session.on("session.idle", ...)`, all event types |
+| Inject user input | ✅ | `session.send({ prompt: "..." })` — creates a new user turn, visible in TUI |
+| Register slash commands | ✅ | via `tools` array |
+| Async background code | ✅ | Extension is a regular Node.js process; long-lived awaits, timers, setInterval all work |
+| Network / open sockets | ✅ | Full Node.js net access: `fetch()`, `net.createServer()`, named pipes, TCP |
+| Hook user prompt | ✅ | `onUserPromptSubmitted` can read and modify every user message before the agent sees it |
+| Hook tool execution | ✅ | `onPreToolUse`, `onPostToolUse` |
+| Session lifecycle | ✅ | `onSessionStart` (fires on startup, resume, new), `onSessionEnd` |
+| `sessionId` at runtime | ✅ | `process.env.SESSION_ID` set by CLI, and `invocation.sessionId` in handlers |
+| `session.workspacePath` | ✅ | Path to `~/.copilot/session-state/<id>/` workspace |
+| `console.log()` | ❌ | stdout is reserved for JSON-RPC; use `session.log()` instead |
+
+### 4. Lifecycle
+
+- **Discovery**: On CLI startup, scans `.github/extensions/` (git root, project-scoped) and `<copilot_config_dir>/extensions/` (user-scoped, all repos). Looks for `extension.mjs` inside each subdirectory.
+- **Load timing**: Extensions load when the CLI starts AND each time `/clear` fires or the foreground session changes. Each reload forks a fresh extension process.
+- **Lifecycle = foreground session lifecycle**: One extension process per foreground session. Daemon gets a fresh registration event on each session start; deregistration when the process terminates.
+- **Shutdown**: CLI exit → SIGTERM → 5 second grace → SIGKILL. Extension connection to daemon drops; daemon marks session dead.
+- **Entry point filename**: `extension.mjs` (`.mjs` only; `.cjs`/`.js` are in the source list but the scaffold tool always generates `.mjs`).
+
+### 5. Discovery Shape With Extensions
+
+Today (spike recommendation): daemon polls `listSessions()` + cross-references `inuse.{PID}.lock` files to determine live sessions.
+
+With extension bridge:
+
+```
+CLI starts → extension forks
+  → extension calls joinSession()
+  → extension POSTs to Reach daemon named pipe / loopback HTTP:
+      { sessionId, pid: process.pid, cwd: process.cwd() }
+  → daemon adds session to live map
+  → on extension SIGTERM: daemon removes from live map
+```
+
+This is **authoritative** live-session inventory — no lock file polling. The daemon knows in real time which sessions are alive and can bind the `sessionId` to a `pid` and `cwd` without disk reads.
+
+### 6. Attach Shape With Extensions
+
+```
+Telegram /attach <session>
+  → daemon looks up extension connection for sessionId
+  → daemon sends "inject" over named pipe to extension
+  → extension calls session.send({ prompt: "..." })
+  → TUI shows user turn; CLI starts processing
+  → extension streams events: session.on("assistant.streaming_delta", ...)
+  → extension forwards deltas to daemon via same named pipe / HTTP
+  → daemon → Relay → Telegram
+```
+
+No `--ui-server`, no port discovery, no port file. The extension is already in the CLI process's stdio tree. It receives and sends via the JSON-RPC session it holds from `joinSession()`. The daemon communicates with the extension via a named pipe or loopback socket that the extension opens at startup.
+
+**Key caveat on UX**: `session.send()` inserts a message as a new user turn. The desktop TUI will show the Telegram-injected message as if the user typed it. That's visible and slightly awkward but functionally correct. This is identical to how the Copilot SDK's own test harness injects messages.
+
+### 7. Extension Activation — User Friction
+
+| Scope | Path | Who sets it up | Coverage |
+|-------|------|----------------|----------|
+| Project | `D:\git\verbose-invention\.github\extensions\reach\extension.mjs` | Aaron or Reach installer (once per repo) | Only sessions opened in this repo |
+| User | `%APPDATA%\GitHub Copilot\User\extensions\reach\extension.mjs` | Aaron (once per machine) | ALL CLI sessions, any repo |
+
+The user-scoped location covers everything — no per-repo setup. Reach's install flow (`src/service/install.ts`) could write the extension file to the user extensions dir as part of service installation. This would make it completely ambient after `reach install`.
+
+### 8. SDK Version Bound
+
+The `./extension` export is present in `@github/copilot-sdk@0.2.2` (the version Reach has). The `joinSession()` function, the typed hooks, the `session.send()` and `session.on()` APIs — all present and typed in the installed package. No upgrade needed.
+
+---
+
+## Side-by-Side Comparison
+
+| | **Option A — Original Spike** | **Option B — Extension Bridge** |
+|--|-------------------------------|--------------------------------|
+| **Delivers** | `/list` + `/new`; no attach to desktop sessions | `/list` + `/new` + `/attach` to live desktop sessions |
+| **Port discovery** | N/A (new sessions only) | N/A (extension sidestepped it entirely) |
+| **User setup** | None | Install `reach` extension to user extensions dir once (automated in `reach install`) |
+| **Discovery accuracy** | `listSessions()` + lock file cross-ref | Extension registers on startup — authoritative live map, no polling |
+| **Attach semantics** | Not available | Bidirectional: inject via `session.send()`, receive via `session.on()` |
+| **TUI impact** | None | Injected messages appear as user turns in TUI (visible to desktop user) |
+| **Reload behavior** | N/A | Extension restarts on `/clear` — brief gap in daemon registration (reconnects in <1s) |
+| **Effort (incremental)** | 0 | ~2 days on top of Option A |
+| **Risk** | LOW | MEDIUM — new file plane, named pipe/HTTP channel, extension load failure handling |
+| **File plan delta** | No new files for bridge | + `extension.mjs`, + `src/discovery/extensionBridge.ts`, + `src/bot/commands/attach.ts` |
+
+**Effort breakdown for Option B add-on:**
+- `extension.mjs` (register + stream events via named pipe): ~4 hours
+- `extensionBridge.ts` (named pipe server in daemon, session map): ~4 hours  
+- `/attach` Telegram command + relay wiring: ~4 hours
+- Integration test + error handling (reconnect, timeout): ~4 hours
+- Total add-on: **~2 days**
+
+---
+
+## My Recommendation
+
+**If Aaron wants `/attach`: use Option B (extension bridge). The blocker is gone.**
+
+The `--ui-server` port-discovery gap was the only thing standing between Reach and true bidirectional attach to a live desktop session. The extension surface solves it from the inside — no port files, no polling, no user changes to how they launch the CLI. The only setup cost is writing `extension.mjs` to the user extensions directory, which `reach install` can do automatically.
+
+**If Aaron is happy with `/list` + `/new` for MVP**: stick with Option A. It's 2 fewer days, lower risk, and the UX works fine for creating phone-side sessions.
+
+**Decision gate for Aaron:**
+
+1. **"Option A: MVP ships `/list` + `/new` only."** → No change from spike recommendation. Cleanest MVP. Extension bridge deferred.
+
+2. **"Option B: MVP ships `/list` + `/new` + `/attach` via extension bridge."** → ~2 day add-on. Full bidirectional attach to desktop sessions. Extension installed as part of `reach install`. 
+
+My call if Aaron doesn't specify: **Option A for MVP, Option B as first post-MVP feature.** The extension approach is solid but adds implementation surface. Better to ship the core control plane cleanly first, then add the bridge as a tight follow-on.
+
+---
+
+## Risks (Option B)
+
+| Risk | Severity | Mitigation |
+|------|----------|------------|
+| Extension fails to load (syntax error, crash) | MEDIUM | Daemon falls back to listSessions() polling; `/attach` degrades to "session not reachable" |
+| Extension reconnection gap on `/clear` | LOW | Daemon tolerates brief deregistration; marks session as "reconnecting" for <2s |
+| Named pipe access on Windows | LOW | Named pipes fully supported on Windows (`\\.\pipe\reach-<sessionId>`); tested pattern |
+| TUI shows injected messages as user turns | LOW | Acceptable — matches how SDK test harness works; could prefix messages with "[Telegram]" |
+| User extensions dir path varies by machine | LOW | Discoverable via `copilot settings` or `APPDATA` env; write once in `reach install` |
+| Tool name collision with other extensions | LOW | Reach extension uses unique namespaced tool names (`reach_*`) |

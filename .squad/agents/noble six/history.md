@@ -183,4 +183,33 @@ Earlier work (before 2026-05-01) is archived in `history-archive.md` for referen
 
 **Next:** Kat, Jun, Noble Six await Aaron's scope decision before implementation begins.
 
+### 2026-05-09 — Phase 6 Spike Follow-Up (Extension API Viability)
+
+**Spike status:** COMPLETE. New discovery: extension API viability confirmed.
+
+**Carter's findings:**
+- **Extension API CONFIRMED:** `@github/copilot-sdk@0.2.2` exports `joinSession()`, `session.send()`, `session.on()`. Production-ready.
+- **Architecture:** Extension runs as forked Node child of CLI with full network access via JSON-RPC/stdio. No `--ui-server` port-discovery gap.
+- **Capability:** Can inject prompts, stream events, register slash commands, async background work, full network access.
+- **Attach bridge:** Bidirectional `/attach` to live desktop sessions becomes possible with extension bridge (extension opens named pipe/loopback socket to daemon).
+- **Setup:** Single install to user extensions dir; can be automated in `reach install`.
+- **Effort:** ~2 days on top of Option 1 (MVP).
+
+**NEW OPTION B for Aaron's decision:**
+- **Option A (Original MVP):** `/list` + `/new` only. Clean MVP. No extension bridge.
+- **Option B (Extended MVP):** `/list` + `/new` + `/attach` via extension bridge. Full bidirectional attach. ~2 day add-on.
+
+**Phase 6 plan likely shifts toward extension-based architecture if Aaron chooses Option B.** Design enables true session bridging without polling or breadcrumb fragility.
+
+**Decision gate for Aaron:** Option A (MVP, defer extension work), or Option B (extended MVP with `/attach` via extension)?
+
+**Recommendation:** Option A for MVP, Option B as first post-MVP feature. Cleaner separation; extension approach is solid but adds implementation surface.
+
+**Files produced:** 
+- Decision merged to `.squad/decisions.md`
+- Orchestration log: `.squad/orchestration-log/2026-05-09T07-40-08Z-carter.md`
+- Session log: `.squad/log/2026-05-09T07-40-08Z-cli-extension-bridge.md`
+- New skill: `.squad/skills/sdk-extension-introspection/SKILL.md` (for future extension work)
+- Updated `.squad/agents/carter/history.md`
+
 ---

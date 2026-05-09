@@ -96,6 +96,32 @@
 
 ---
 
+### 2026-05-09 — Phase 6 Spike Follow-Up (Extension API Viability)
+
+**Spike status:** COMPLETE. Extension API confirmed viable for session bridging.
+
+**Key findings from Carter:**
+- **Extension API CONFIRMED:** `@github/copilot-sdk@0.2.2` exports `joinSession()`, `session.send()`, `session.on()`. Production-ready.
+- **Port-discovery gap eliminated:** Extension runs as forked child with JSON-RPC/stdio to CLI. No `--ui-server` port file needed.
+- **Attach bridge:** Bidirectional `/attach` to live desktop sessions possible via extension bridge (named pipe/loopback socket to daemon).
+- **Setup:** Single install to user extensions dir; automatable in `reach install`.
+- **Effort:** ~2 days on top of MVP.
+
+**NEW DECISION for Aaron:**
+- **Option A (Original MVP):** `/list` + `/new` only. 
+- **Option B (Extended MVP):** `/list` + `/new` + `/attach` via extension bridge.
+
+**Impact on Kat's Phase 6 implementation:**
+- **Option A:** Skip `/attach` handler; focus on `/afk`, `/back`, `/new`, `/list`, mode state machine.
+- **Option B:** `/attach` handler wires to extension-based relay (relay changes, not bot layer). Same mode state machine.
+
+**Session 0 routing unchanged.** Mode state machine (desktop ↔ AFK) independent of `/attach` availability. Extension approach is cleaner architecture than config-based port workaround.
+
+**Recommendation:** Option A for MVP (cleaner scope); Option B as first post-MVP feature.
+
+---
+
+
 ## Phase 6+ Roadmap (Future)
 
 - HUD footer with repo/branch/model metadata

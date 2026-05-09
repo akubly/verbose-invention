@@ -1,7 +1,7 @@
 ---
-updated_at: 2026-05-09T00:17:25Z
-focus_area: Phase 6 — Spike complete, Aaron scope decision gate on /attach
-active_issues: [Aaron decision point — Q2 attach scope]
+updated_at: 2026-05-09T07:40:08Z
+focus_area: Phase 6 — Spike complete, extension bridge viable, Aaron scope decision
+active_issues: [Aaron decision point — Option A (drop /attach) vs Option B (extension bridge /attach)]
 ---
 
 # What We're Focused On
@@ -10,23 +10,35 @@ active_issues: [Aaron decision point — Q2 attach scope]
 
 Phases 1–5 shipped. Aaron dogfooded Reach successfully on 2026-05-04. Phase 6 design locked (see `.squad/decisions.md` → Phase 6 v2 proposal).
 
-**Spike complete (Carter, Days 1–2):**
+**Spike complete (Carter, Days 1–2 + follow-up):**
 - **Q1 SOLVED ✅** — Discovery via SDK `client.listSessions()` API works today. No breadcrumbs needed. HIGH confidence.
-- **Q2 BLOCKED ⚠️** — True bidirectional attach blocked on port discovery gap (no port breadcrumb file written by CLI in `--ui-server` mode).
+- **Q2 RESOLVED ✅** — Extension API surface viable. Copilot CLI extension bridge eliminates port-discovery gap entirely. `@github/copilot-sdk@0.2.2` exports `joinSession()`, `session.send()`, `session.on()`. Extension runs as forked child with JSON-RPC/stdio to CLI. NO port file needed. Bidirectional `/attach` becomes clean and authoritative.
+
+**NEW: Extension-Based Bridge Viable**
+
+- **How:** Extension registers on CLI startup, opens named pipe/loopback socket to daemon, streams events, accepts injected prompts.
+- **Setup:** Write `extension.mjs` to user extensions dir; automatable in `reach install`.
+- **Effort:** ~2 days on top of MVP.
+- **Tradeoff:** Reach gains per-user CLI extension install footprint (in addition to daemon).
 
 **Aaron's decision gate (REQUIRED BEFORE IMPLEMENTATION):**
 
 Choose which option for Phase 6 MVP:
 
-1. **Drop `/attach` to live sessions** — Ship `/list` + `/new` only (cleanest MVP)
-2. **Ship `/attach` with config-based port** — Aaron sets `REACH_CLI_SERVER_URL` in config; launches CLI with matching `--ui-server --port`
-3. **Ship `/attach` with PID → port auto-discovery** — Windows-only, fragile, no config needed
+1. **Option A (Original MVP)** — Ship `/list` + `/new` only (cleanest MVP, low risk)
+2. **Option B (Extended MVP via Extension Bridge)** — Ship `/list` + `/new` + `/attach` to live sessions via extension bridge (full bidirectional, ~2 day add-on, medium risk)
 
-**Carter's recommendation:** Option 1 for MVP (robust foundation), Option 2 as Phase 6 stretch item.
+**Carter's recommendation:** Option A for MVP (robust foundation, 1-day faster), Option B as first post-MVP feature (extension approach is solid).
 
-**Next:** Aaron decides. Then Kat/Jun implement days 3–5.
+**Next:** Aaron decides scope. Then Noble Six, Kat, Jun implement days 3–5 based on Aaron's choice.
 
-**Spike details:** `.squad/orchestration-log/2026-05-09T00-17-25Z-carter.md` and `.squad/log/2026-05-09T00-17-25Z-phase6-spike.md`
+**Phase 6 plan likely shifts toward extension-based architecture if Aaron chooses Option B.** Design is cleaner than port-file polling; enables true session bridging.
+
+**Spike details:** 
+- Decision merged to `.squad/decisions.md` (carter-cli-extension-bridge)
+- Orchestration: `.squad/orchestration-log/2026-05-09T07-40-08Z-carter.md`
+- Session: `.squad/log/2026-05-09T07-40-08Z-cli-extension-bridge.md`
+- New skill (for future work): `.squad/skills/sdk-extension-introspection/SKILL.md`
 
 **Open shorter-term polish items** (from dogfooding, not blocking Phase 6):
 1. `src/service/install.ts` — broken `serviceaccount` block (`OFFICE-DESKTOP\LocalSystem` causes `LookupAccountName failed: 1332`)

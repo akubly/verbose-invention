@@ -131,6 +131,28 @@ See `history-archive.md` for full Phases 1–5 documentation.
 
 ---
 
+## Phase 6 Extension-Bridge Adoption (2026-05-19)
+
+**Context:** Aaron requested architectural revision of Phase 6 post-spike results. Team sync held 2026-05-19.
+
+**Outcome: ADOPTED.** Noble Six's revised Phase 6 proposal locked in extension-bridge as the Phase 6 MVP architecture, **not** as a stretch item. This resolves the Q2 attach-scope gate.
+
+**What this means for Carter:**
+- **Primary deliverable (Days 1–5):** Build `extensionBridge.ts` (named pipe server + session map), `extension.mjs` (CLI extension), and wire inject/stream protocol.
+- **Secondary:** Refactor `relay.ts` to support bridge-attached relay path alongside existing SDK-session path.
+- **Named pipe contract:** JSON-Lines encoding with method-based framing (hello, session.registered, inject, error, ping/pong). Single pipe: `\\.\pipe\reach-bridge`.
+- **Division of labor:** Carter owns bridge plumbing; Kat builds `session0.ts` command surface + `/attach` handler; Jun writes contract + integration tests.
+- **Sequencing:** Days 1–2 Carter builds core bridge + `extension.mjs`; Jun writes test doubles (`FakeDaemon`, `FakeExtensionClient`). Days 3–4 relay refactor. Day 5 integration.
+
+**Blockers to resolve before implementation:**
+1. Named pipe security model (pipe DACL for cross-integrity-level access)
+2. Extension reconnect spec (does `extension.mjs` reconnect after daemon restart?)
+3. Heartbeat requirement (ping/pong in protocol or rely on pipe teardown?)
+
+**Risk focus:** EC-08 (extension crashes CLI when daemon absent) identified as highest-risk edge case. Extension MUST fail silent with `session.log()` error, not unhandled rejection.
+
+---
+
 ## Key Design Patterns & Learnings
 
 1. **SDK introspection methodology** — Version, types, README, implementation, actual filesystem state

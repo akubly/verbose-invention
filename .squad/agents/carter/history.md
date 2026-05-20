@@ -184,6 +184,55 @@ See `.squad/decisions.md` for full ADR documentation and orchestration log.
 
 ---
 
+## Phase 6 Day 1: Bridge Implementation (2026-05-19)
+
+**Deliverables shipped:**
+
+1. **`src/bridge/extensionBridge.ts`** — Named-pipe server (daemon side).
+   - Listens on `\\.\pipe\reach-bridge` (ADR-3 single pipe).
+   - JSON-Lines protocol, 64 KB frame limit.
+   - Map<sessionId, InternalConnection> for all registered sessions.
+   - Full heartbeat: `ping` every 30 s, 5 s pong window, 15 s grace (ADR-7).
+   - Fast-path disconnect via pipe `close` event (<1 s).
+   - Typed event subscription via `BridgeEmitter` interface (composition, not extends).
+   - Public API: `start()`, `stop()`, `getSession()`, `sendCommand()`, `on()`, `off()`.
+   - `tsc --noEmit` ✅, `npm run lint` ✅.
+
+2. **`extension.mjs`** — CLI extension skeleton (repo root; deployed by `reach install`).
+   - Calls `joinSession()` from `@github/copilot-sdk/extension` (uses `SESSION_ID` env var).
+   - Connects to daemon pipe, sends `register` on connect.
+   - Exponential backoff reconnect: base 1 s, multiplier 2×, ceiling 300 s (ADR-6).
+   - Ping/pong heartbeat — extension side (ADR-7).
+   - `session.command` handler: stubs full relay; injects `session.send()` on SDK session.
+   - `session.event` wiring: stubbed, awaiting relay refactor (Days 3–4).
+   - Fail-silent per ADR-4: all errors caught and logged via `session.log()`.
+
+3. **`.squad/decisions/inbox/carter-pipe-protocol.md`** — Canonical message schema for Jun.
+
+**Learnings:**
+
+- **TypeScript `no-unsafe-declaration-merging`:** The standard `declare interface Foo` + `class Foo extends EventEmitter` pattern triggers this eslint rule. Composition (`private _emitter = new EventEmitter()`) with typed method overloads is cleaner and lint-safe. Use this pattern for all future typed event emitters in this codebase.
+- **Overload implementation signature must use `any[]`:** TypeScript requires the implementation signature of `on()` overloads to use `(...args: any[]) => void` (not `unknown[]`) to be compatible with specific listener signatures. This is standard; suppress with targeted eslint-disable.
+- **`extension.mjs` is a source artifact, not a deployment artifact:** It lives at repo root and is copied to the user extensions dir by `reach install`. This keeps the extension discoverable in the repo while matching the SDK's lifecycle contract.
+
+---
+
+---
+
+## Phase 6 Day 1: Protocol Reconciliation — ADR-8 Canonical Schema (2026-05-19)
+
+**Team Update:**
+
+Contract drift detected in parallel implementation (Carter vs. Jun). Noble Six reconciled via ADR-8:
+- **Decision:** Adopt Jun's streaming protocol as canonical (`inject`/`stream`/`requestId`/`chunk`/`done`)
+- **Rationale:** Streaming UX preservation (Phase 5 Telegram edit feature), request correlation, terminology consistency
+- **Impact on Carter:** Day 2 migration required (~8 changes: rename message types, add `sessionId` to heartbeat, replace single-shot response with streaming)
+- **Status:** ADR-8 locked in `decisions.md`. Day 2 migration task assigned.
+
+See orchestration logs for full technical details.
+
+---
+
 ## Archive
 
 Full Phases 1–5 documentation in `history-archive.md`.

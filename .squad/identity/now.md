@@ -1,43 +1,57 @@
 ---
-updated_at: 2026-05-19T22:13:42Z
-focus_area: Phase 6 FULLY LOCKED — 7 ADRs finalized. Option B (extension bridge) confirmed. Daemon single-user, exponential backoff, heartbeat ping/pong+teardown. Day 1 tasks assigned to Carter, Kat, Jun — all can start in parallel.
-active_issues: [Implementation kickoff Day 1 — Carter (named-pipe server), Kat (install.ts refactor), Jun (test doubles)]
+updated_at: 2026-05-19T22:37:10Z
+focus_area: Phase 6 Day 1 COMPLETE — 7 ADRs locked + ADR-8 (Canonical Protocol) issued. Protocol drift reconciled. Day 2 migration tasks assigned.
+active_issues: [Day 2 — Carter protocol migration (~8 changes), Jun addition (1 type), then full test suite. Days 3–4 relay integration.]
 ---
 
 # What We're Focused On
 
-**Phase 6: Session 0 Control Plane + Extension-Bridge Data Plane — LOCKED FOR IMPLEMENTATION**
+**Phase 6: Session 0 Control Plane + Extension-Bridge Data Plane — DAY 1 COMPLETE, ADR-8 LOCKED**
 
-Phases 1–5 shipped. Aaron dogfooding Reach. Phase 6 architecture **FULLY LOCKED** as of 2026-05-19T22:13:42Z.
+Phases 1–5 shipped. Aaron dogfooding Reach. **Phase 6 Day 1 implementation kickoff complete.** All three agents shipped code, all 296 tests green. Protocol reconciliation via ADR-8.
 
-## Architecture — LOCKED
+## Phase 6 Day 1 Summary
 
-**ADRs 1–7 Finalized:**
-1. ✅ **ADR-1:** Copilot CLI Extension API for session attach (no port discovery, push-based registration)
+**Code Delivered:**
+- ✅ **Carter:** `src/bridge/extensionBridge.ts` (pipe server), `extension.mjs` (skeleton), all tests green
+- ✅ **Jun:** `tests/helpers/FakeDaemon.ts`, `tests/helpers/FakeExtensionClient.ts`, 15-test smoke suite green
+- ✅ **Kat:** `src/service/install.ts` refactored (user-account install per ADR-5), all tests green
+- ✅ **Noble Six:** ADR-8 issued (canonical pipe protocol reconciliation)
+
+**Protocol Event:**
+Carter and Jun converged on different wire protocols (both valid per ADR-3). ADR-8 resolves via systematic comparison:
+- **Decision:** Adopt Jun's streaming schema (`inject`/`stream`/`requestId`/`chunk`/`done`) as canonical
+- **Rationale:** Streaming UX (Phase 5 Telegram edit feature), request correlation, terminology consistency
+- **Migration:** Carter Day 2 (~8 changes), Jun Day 2 (1 addition), both pass full 296-test suite
+
+**Test Status:** 296 passed, 4 skipped, 0 failed ✅
+
+## Architecture — LOCKED + ADR-8
+
+**ADRs 1–7 + 8 Finalized:**
+1. ✅ **ADR-1:** Copilot CLI Extension API for session attach
 2. ✅ **ADR-2:** Push-based discovery with `listSessions()` fallback
 3. ✅ **ADR-3:** Single named pipe `\\.\pipe\reach-bridge`, JSON-Lines, multiplexed by sessionId
-4. ✅ **ADR-4:** Extension crash = session unreachable (no auto-recovery; user restarts CLI)
-5. ✅ **ADR-5:** Daemon runs as logged-in user, NOT LocalSystem (fixes `LookupAccountName` bug)
-6. ✅ **ADR-6:** Extension reconnect policy = exponential backoff (base 1s, ceiling 300s, never give up)
-7. ✅ **ADR-7:** Heartbeat = ping/pong (30s interval) + pipe-teardown detection (<1s typical, ≤50s worst-case)
+4. ✅ **ADR-4:** Extension crash = session unreachable (no auto-recovery)
+5. ✅ **ADR-5:** Daemon runs as logged-in user (not LocalSystem)
+6. ✅ **ADR-6:** Extension reconnect = exponential backoff
+7. ✅ **ADR-7:** Heartbeat = ping/pong + pipe-teardown detection
+8. ✅ **ADR-8:** Canonical Pipe Wire Protocol (streaming, request correlation, self-describing messages)
 
-**Implementation gates closed:**
-- ✅ Phase 6 scope = LOCKED (Option B with extension bridge)
-- ✅ All 3 of Jun's hard blockers answered (pipe security, reconnect spec, heartbeat)
-- ✅ Noble Six ADRs 1–7 finalized and in canonical ledger (`.squad/decisions.md`)
+## Day 2 Plan
 
-## Day 1 Task Assignments (Parallel)
+| Agent | Task | Duration | Dependency |
+|-------|------|----------|-----------|
+| **Carter** | Migrate `extensionBridge.ts` + `extension.mjs` to ADR-8 schema (~8 changes) | ~2 hours | ADR-8 (locked) |
+| **Jun** | Add `session.event` type to message union (forward compatibility) | ~15 minutes | ADR-8 (locked) |
+| **Verification** | Full 296-test suite + tsc/lint clean | ~10 minutes | Both migrations complete |
 
-| Owner | Deliverable | Start | Dependencies |
-|-------|-------------|-------|---|
-| **Carter** | `src/bridge/extensionBridge.ts` (pipe server) + `extension.mjs` skeleton | Now | None |
-| **Kat** | `src/service/install.ts` refactor (user-account service) | Now | None |
-| **Jun** | `test/helpers/FakeDaemon.ts` + `test/helpers/FakeExtensionClient.ts` | Now | None |
+**No blocking issues.** Migration is mechanical (rename and restructure).
 
-All three tasks have no hard data dependencies and can begin immediately in parallel.
+## Latest Artifacts
 
-**Latest artifacts:**
-- Decisions: `.squad/decisions.md` (Phase 6 architecture locked with 7 ADRs)
-- Orchestration: `.squad/orchestration-log/2026-05-19T2213-phase6-adr-lock.md`
-- Session log: `.squad/log/2026-05-19T2213-phase6-adr-lock.md`
+- **Decisions:** `.squad/decisions.md` (Phase 6 ADRs 1–8, all merged from inbox)
+- **Orchestration:** `.squad/orchestration-log/2026-05-19T2237-phase6-day1-{carter,jun,kat,noble-six}.md`
+- **Session log:** `.squad/log/2026-05-19T2237-phase6-day1-kickoff.md`
+- **Agent updates:** Each agent's `history.md` updated with Day 1 recap and ADR-8 note
 

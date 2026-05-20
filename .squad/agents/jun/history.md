@@ -175,3 +175,48 @@ Earlier learnings (before 2026-05-01) are archived in `history-archive.md` for r
 - **Deterministic testing:** ADRs specify exact backoff timings, ping intervals, and grace periods. Jun can now write contract tests for reconnection edge cases without guessing.
 
 See `.squad/decisions.md` for full ADRs and implementation sequencing.
+
+---
+
+### 2026-05-19 — Phase 6 Day 1: Test Doubles Built and Verified
+
+**Event:** Completed Day 1 deliverable — `FakeDaemon` and `FakeExtensionClient` test doubles.
+
+**Deliverables:**
+- `tests/helpers/FakeDaemon.ts` — In-process daemon stand-in. Pure in-memory PassThrough stream transport (no actual named pipe). Accepts multiple client connections, parses JSON-Lines, tracks all inbound messages, drives ADR-7 heartbeat (`startHeartbeat()` / `stopHeartbeat()`), models fast-path pipe teardown (`disconnectSession()`). Full assertion API: `messagesFrom()`, `messagesOfType()`, `isRegistered()`, `isUnreachable()`.
+- `tests/helpers/FakeExtensionClient.ts` — In-process extension stand-in. Connects to `FakeDaemon` via `connect(daemon)`, sends `hello` / `pong` / `stream` / `stream.error` messages, auto-responds to pings (disableable via `setPingAutoRespond(false)` for dead-extension tests). Full assertion API: `sent`, `received`, `sentOfType()`, `receivedOfType()`.
+- `tests/helpers/fakePipe.smoke.test.ts` — 15-test smoke suite exercising both doubles against each other. All 15 passing ✅.
+
+**Key implementation note — synchronous transport race:**
+PassThrough streams deliver data synchronously. In `_sendHeartbeat()`, the pong-deadline `setTimeout` handle **must** be registered in `pendingPings` *before* calling `_writeTo()`. If registered after, the auto-pong arrives (synchronously, within the same call stack as the push) and tries to `clearTimeout` an entry that doesn't exist yet — the orphaned timer then fires and incorrectly marks the session unreachable. Fixed by reordering: `pendingPings.set(pingId, pongDeadline)` → `_writeTo(record, ping)`.
+
+**Key implementation note — fake timer scope:**
+`vi.useFakeTimers()` fakes `setImmediate` by default, which blocks readline's internal 'line' event scheduling. Tests must use `vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })` to keep `setImmediate` real while still controlling heartbeat/backoff timing.
+
+**Coordination output:**
+- `.squad/decisions/inbox/jun-test-doubles-contract.md` — Full message schema for Carter to confirm alignment with `extensionBridge.ts` / `extension.mjs`.
+
+**Verification:**
+- `npx vitest run` → 296 passed, 4 skipped, 0 failed ✅
+- `npx tsc --noEmit` → clean ✅
+- `carter-pipe-protocol.md` not present at build time; TODOs left at top of both doubles files.
+
+### 2026-05-19 — Phase 6 Day 1: Protocol Reconciliation — ADR-8 Canonical Schema
+
+**Event:** Noble Six reconciled protocol drift between Carter (extensionBridge.ts) and Jun (FakeDaemon).
+
+**What happened:**
+Both implementations were correct interpretations of ADR-3 (framing locked; message shapes not specified). Jun's test doubles converged on a streaming protocol (`inject`/`stream`/`requestId`/`chunk`/`done`) while Carter designed a single-shot protocol (`session.command`/`session.command-result`).
+
+**ADR-8 Decision:**
+Adopt Jun's streaming schema as canonical because:
+1. **Streaming UX:** Phase 5 built real-time Telegram placeholder editing (800ms intervals). Buffering the entire response (Carter's design) destroys this.
+2. **Request correlation:** Jun's `requestId` field is critical for correlating response chunks to the original message injection.
+3. **Terminology:** Jun's `hello` aligns with ADR-2/ADR-6; `session.registered` namespacing improves clarity in multiplexed protocol.
+
+**Impact on Jun:**
+Day 2 migration = 1 addition: add `session.event` to `InboundMessage` union (forward compatibility). Already passing default handler (unknown types are logged). No behavior change.
+
+**Status:** ADR-8 locked in `decisions.md`. Day 2 changes trivial. Full 296-test suite will remain green post-Carter migration.
+
+See orchestration logs for full technical details and Carter's migration tasks.

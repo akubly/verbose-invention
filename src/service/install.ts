@@ -8,12 +8,17 @@
  *   node dist/service/install.js uninstall
  *
  * Requires administrative privileges.
+ * The service runs as the currently logged-in Windows user (ADR-5).
+ * Install prompts for your Windows account password once; it is passed
+ * directly to the Windows Service Control Manager and not stored by Reach.
  */
 
 // @ts-expect-error TS7016 - node-windows lacks TypeScript types
 import { Service } from 'node-windows';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
+import * as readline from 'readline';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -50,6 +55,16 @@ function parseEnvFile(filePath: string): Map<string, string> {
   return vars;
 }
 
+/** The Windows user account the service will run under (ADR-5). */
+export interface ServiceAccount {
+  /** Windows username (e.g. 'AaronSmith'). */
+  username: string;
+  /** NetBIOS domain or machine name (e.g. 'MYCOMPANY' or 'DESKTOP-ABC123'). */
+  domain: string;
+  /** Windows account password — required by SCM for non-system user accounts. */
+  password: string;
+}
+
 /** Minimal type for the object returned by node-windows Service constructor. */
 export interface ServiceInstance {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -62,35 +77,89 @@ export interface ServiceInstance {
 export interface CreateServiceOptions {
   /** Specific env vars to embed in the service config (e.g., vars missing from .env but available in process.env). */
   envOverrides?: Array<{ name: string; value: string }>;
+  /**
+   * The Windows account to run the service under.
+   * When omitted (uninstall path), no logOnAs block is written to the service config.
+   */
+  account?: ServiceAccount;
 }
 
 export function createService(options: CreateServiceOptions = {}): ServiceInstance {
   const scriptPath = getScriptPath();
   const workingDirectory = getProjectRoot();
-  const { envOverrides = [] } = options;
+  const { envOverrides = [], account } = options;
 
   const env: Array<{ name: string; value: string }> = [
     { name: 'NODE_ENV', value: 'production' },
     ...envOverrides,
   ];
 
-  const svc = new Service({
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const config: Record<string, any> = {
     name: 'Reach',
     description: 'Telegram ↔ GitHub Copilot CLI session bridge',
     script: scriptPath,
     nodeOptions: ['--enable-source-maps'],
-    workingDirectory: workingDirectory,
+    workingDirectory,
     env,
-    logOnAs: { domain: 'NT AUTHORITY', account: 'NetworkService' },
-    allowServiceLogon: true,
-  });
+  };
 
-  return svc as ServiceInstance;
+  if (account) {
+    config.logOnAs = {
+      domain: account.domain,
+      account: account.username,
+      password: account.password,
+    };
+    config.allowServiceLogon = true;
+  }
+
+  return new Service(config) as ServiceInstance;
 }
 
-export function install(): void {
+/**
+ * Resolves the current logged-in Windows user using Node's built-in os module.
+ * Does not spawn external processes or call LookupAccountName.
+ */
+export function resolveCurrentUser(): { username: string; domain: string } {
+  const username = os.userInfo().username;
+  const domain = process.env['USERDOMAIN'] ?? process.env['COMPUTERNAME'] ?? '.';
+  return { username, domain };
+}
+
+/**
+ * Prompts for a password on stdin with character echoing suppressed.
+ * The password is never written to disk by Reach — it is passed directly
+ * to the Windows Service Control Manager at install time.
+ */
+export async function promptPassword(prompt: string): Promise<string> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout,
+    });
+
+    // Suppress echoing of typed characters while still writing the prompt.
+    let promptWritten = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (rl as any)._writeToOutput = (str: string) => {
+      if (!promptWritten) {
+        process.stdout.write(str);
+        promptWritten = true;
+      }
+      // Swallow subsequent writes (echoed keystrokes).
+    };
+
+    rl.question(prompt, (answer) => {
+      rl.close();
+      process.stdout.write('\n');
+      resolve(answer);
+    });
+  });
+}
+
+export async function install(): Promise<void> {
   const scriptPath = getScriptPath();
-  
+
   if (!fs.existsSync(scriptPath)) {
     console.error(`[reach] ERROR: Script not found at ${scriptPath}`);
     console.error('[reach] HINT: Run "npm run build" first to compile the project.');
@@ -165,7 +234,23 @@ export function install(): void {
     }
   }
 
-  const svc = createService({ envOverrides });
+  // --- Resolve current user and prompt for password (ADR-5) ---
+  const { username, domain } = resolveCurrentUser();
+  const accountDisplay = `${domain}\\${username}`;
+  console.log(`[reach] Service will run as: ${accountDisplay}`);
+  console.log('[reach] Windows requires your password to register a service under your account.');
+  console.log('[reach] Your password is passed directly to the Windows Service Control Manager');
+  console.log('[reach] and is not stored by Reach.');
+
+  const password = await promptPassword(`[reach] Password for ${accountDisplay}: `);
+
+  if (!password) {
+    console.error('[reach] ERROR: Service install requires your Windows password to run as your account.');
+    process.exit(1);
+  }
+
+  const account: ServiceAccount = { username, domain, password };
+  const svc = createService({ envOverrides, account });
 
   svc.on('install', () => {
     console.log('[reach] Service installed successfully.');
@@ -175,7 +260,7 @@ export function install(): void {
 
   svc.on('start', () => {
     console.log('[reach] Service started.');
-    console.log('[reach] The Reach daemon is now running as a Windows Service.');
+    console.log(`[reach] The Reach daemon is now running as a Windows Service under ${accountDisplay}.`);
     console.log('[reach] You can manage it via Services (services.msc) or:');
     console.log('[reach]   NET START Reach');
     console.log('[reach]   NET STOP Reach');
@@ -237,7 +322,7 @@ export function uninstall(): void {
   svc.uninstall();
 }
 
-export function main(): void {
+export async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const command = args[0];
 
@@ -247,7 +332,7 @@ export function main(): void {
   }
 
   if (command === 'install') {
-    install();
+    await install();
   } else if (command === 'uninstall') {
     uninstall();
   }
@@ -257,5 +342,8 @@ export function main(): void {
 const isDirectRun = process.argv[1] &&
   (process.argv[1].endsWith('install.js') || process.argv[1].endsWith('install.ts'));
 if (isDirectRun) {
-  main();
+  main().catch((err: unknown) => {
+    console.error('[reach] Fatal error:', err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
 }

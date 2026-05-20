@@ -152,7 +152,26 @@ Completed impact assessment for Carter's extension-bridge architecture. Key find
 
 ---
 
-### 2026-05-19 — Phase 6 Architecture LOCKED
+### 2026-05-19 — Phase 6 Day 1: install.ts Refactored to User-Account Service (ADR-5)
+
+**Task:** Refactor `src/service/install.ts` to install the Reach daemon as the logged-in user, not NetworkService/LocalSystem.
+
+**Implementation:**
+
+- Added `ServiceAccount` interface (`username`, `domain`, `password`).
+- `createService()` now accepts optional `account?: ServiceAccount`. When provided, sets `logOnAs` in the node-windows config with `{ domain, account, password }` and `allowServiceLogon: true`. When omitted (uninstall path), no `logOnAs` is written.
+- Added `resolveCurrentUser()`: uses `os.userInfo().username` + `process.env.USERDOMAIN`. Never calls `LookupAccountName`.
+- Added `promptPassword()`: readline-based with `_writeToOutput` override to suppress echo.
+- `install()` is now `async` — resolves user, prompts password, passes `ServiceAccount` to `createService()`.
+- `main()` is now `async`, wraps top-level call in `.catch()`.
+- README Windows Service section updated to reflect user-account logon and one-time password prompt.
+
+**Trade-off:** `node-windows` requires a real Windows password for user accounts (SCM API constraint). Password-less path via Scheduled Task was rejected — different restart semantics and would drop node-windows. ADR-5 pre-accepted this cost.
+
+**Tests:** All 22 install tests pass. Full suite: 296 passed, 4 skipped. tsc and lint clean.
+
+**Decisions:** `kat-service-host.md` dropped to inbox. Carter (pipe server) notified that the named pipe will now be created in user-session context — no protocol changes needed.
+
 
 **Event:** All architectural blockers resolved per Aaron's directive. Phase 6 architecture finalized with seven ADRs (ADR-1 through ADR-7).
 
@@ -161,4 +180,21 @@ Completed impact assessment for Carter's extension-bridge architecture. Key find
 - **Day 1 task:** Refactor `src/service/install.ts` to prompt for user account + password, use `whoami /upn` primary or `wmic` fallback
 - **Implementation order:** Can start immediately with no blocking data dependencies. Same start time as Carter (named pipe server) and Jun (test doubles)
 
+
 See `.squad/decisions.md` for full ADRs and implementation sequencing.
+
+---
+
+### 2026-05-19 — Phase 6 Day 1: Team Sync — ADR-8 Protocol Reconciliation
+
+**Event:** Phase 6 Day 1 parallel tasks completed. Noble Six reconciled protocol drift between Carter and Jun via ADR-8.
+
+**What happened:**
+Carter and Jun designed independently and converged on different message protocols (both valid per ADR-3). ADR-8 resolves this by adopting Jun's streaming schema as canonical.
+
+**Impact on Kat:**
+No changes to `install.ts`. The refactored install.ts (user-account service) is orthogonal to the pipe protocol work and already complete. Kat is now available for Days 2–4 relay integration support if needed.
+
+**Status:** Kat's Day 1 deliverable is complete and verified. No regressions. Ready for Phase 6 continued.
+
+See orchestration logs and `decisions.md` for full ADR-8 technical details.

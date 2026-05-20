@@ -3,158 +3,10 @@
 **Last updated:** 2026-05-09
 
 ---
-# Carter — Phase 6 Spike Report
-
-**Date:** 2026-05-09  
-**Author:** Carter  
-**Status:** READY FOR REVIEW  
-**Addresses:** Phase 6 locked design (decisions.md 2026-05-08), sections 4 and 5
-
----
-
-## TL;DR
-
-- **Q1 Discovery:** Use the SDK API (`listSessions()`). It works today, enumerates all sessions from the shared disk store, no user changes required. **Confidence: HIGH.**
-- **Q2 Attach:** Blocked by a port-discovery gap. True bidirectional attach to a live desktop session requires the desktop CLI to run in `--ui-server` TCP mode — but no mechanism writes the port to disk. **Aaron needs to make a call here** (see Decision Point below).
-- **MVP path:** `/list` via SDK API works. `/new` (Reach-owned subprocess) is fully bidirectional today. `/attach` to a running desktop session is the gap.
-
----
-
-## Q1 — Discovery: How does Reach see live desktop CLI sessions?
-
-**Answer: SDK API.** The SDK exposes `client.listSessions(filter?)` which returns `SessionMetadata[]`. This reads from the shared session store on disk (`~/.copilot/session-state/`). Reach's own SDK client — already running stdio-mode — can call this and get all sessions created by any CLI instance on the machine.
-
-**What `listSessions()` returns:**
-- `sessionId` — UUID, stable across restarts
-- `startTime`, `modifiedTime` — for recency sorting
-- `summary` — optional, user-visible description
-- `isRemote` — distinguishes cloud sessions from local ones
-- `context.cwd`, `context.gitRoot`, `context.repository`, `context.branch` — filtering hooks
-
-**Filter support:** `SessionListFilter` lets Reach narrow by `cwd`, `gitRoot`, `repository`, or `branch`. The `/list` command can surface sessions filtered to the current repo.
-
-**Live vs dead sessions:** `listSessions()` returns all sessions on disk — active and stale. The session workspace directory (`~/.copilot/session-state/{id}/`) contains an `inuse.{PID}.lock` file when a session is actively open in a CLI process. Reading this lock file lets Reach tag sessions as currently live vs historical. This is a filesystem read — no extra SDK surface needed.
-
-**Verdict:** SDK API is the mechanism. No breadcrumbs needed for discovery. No IPC. Confidence HIGH based on inspecting the SDK's public `.d.ts` types and reading the actual `client.js` implementation.
-
----
-
-## Q2 — Attach Semantics: What happens to the desktop TUI?
-
-**Short answer: Shared output is technically possible — but blocked on port discovery.**
-
-### What the SDK supports
-
-The SDK has two operating modes:
-
-| Mode | How | Attach semantics |
-|------|-----|-----------------|
-| **Stdio (default)** | Reach spawns its own CLI subprocess | Cannot attach to desktop — two separate processes on same session data. Creates conflict. |
-| **TUI+server (`--ui-server`)** | Desktop CLI exposes TCP port; Reach connects via `cliUrl` | Shared: both desktop and Telegram see all output. `setForegroundSessionId()` lets Reach shift TUI focus. |
-
-The `cliUrl` constructor option (`new CopilotClient({ cliUrl: "localhost:PORT" })`) is purpose-built for this. The `getForegroundSessionId()` / `setForegroundSessionId()` APIs let Reach know what the user is looking at in the TUI and redirect focus if needed. All session events flow to all connected clients — **shared output** is the natural semantic in `--ui-server` mode.
-
-### The blocker
-
-The desktop CLI must be started with `--ui-server`. No breadcrumb file is written to disk by the CLI when this mode is active. The SDK only discovers the port by parsing the CLI's stdout at spawn time (`listening on port (\d+)` pattern) — not usable for a process Reach didn't spawn.
-
-**No port file exists today.** There is no `~/.copilot/server.json` or equivalent convention. The shared session state directory (`~/.copilot/session-state/`) contains `workspace.yaml` (cwd, branch, repo) and `inuse.{PID}.lock` (active PID) — but not port info.
-
-### Three paths forward
-
-| Path | Works today? | User effort | Semantics |
-|------|-------------|-------------|-----------|
-| **A: Config-based port** | Yes, after config wire | Aaron sets `REACH_CLI_SERVER_URL=localhost:PORT` in config.json; launches CLI with `--ui-server --port PORT` | Shared output |
-| **B: Port breadcrumb convention** | After a wrapper script | A thin launch script writes `~/.copilot/reach-server.json` with `{ port, pid }`; Reach polls it | Shared output |
-| **C: PID → port lookup** | Yes | None — reads `inuse.{PID}.lock`, queries `Get-NetTCPConnection` for that PID | Shared output (if found) |
-
-Path A is the simplest for Phase 6 MVP: wire a new config key, document that Aaron starts the CLI with the matching `--ui-server --port` flag. Fragile on port mismatches but deterministic.
-
-Path B is cleaner long-term but needs a wrapper that Aaron would have to adopt.
-
-Path C is automatic but relies on `inuse.{PID}.lock` being present (requires an active infinite-session workspace, not guaranteed for all sessions) and `Get-NetTCPConnection` is Windows-only.
-
----
-
-## Decision Point — Aaron's Call
-
-**Choose one:**
-
-1. **"Phase 6 MVP drops `/attach` to live sessions; only `/new` and `/list` ship."**
-   → Cleanest MVP. `/list` enumerates sessions. `/new` spawns a fresh CLI subprocess owned by Reach (fully bidirectional). Users can't "pick up" a session they're running at the desktop and redirect it to phone — they create a new phone-side session instead. No port discovery needed.
-
-2. **"Phase 6 MVP ships `/attach` with Path A (config-based port)."**
-   → Wire `REACH_CLI_SERVER_URL` to `config.json`. User must start the desktop CLI with `--ui-server --port <same port>`. Reach connects via `cliUrl`. Shared output semantics. Requires Aaron to change how he launches the CLI at the desktop.
-
-3. **"Phase 6 MVP ships `/attach` with Path C (PID → port auto-discovery)."**
-   → Windows-only, fragile (relies on lock file presence + TCP table scan). Works without user config changes. Medium confidence.
-
-**My recommendation: Option 1 for MVP, option 2 as a Phase 6 stretch item.** The `/list` + `/new` surface already satisfies Aaron's stated use case (he overwhelmingly resumes existing sessions). If `/attach` to a live desktop session matters, the config-based approach is a one-day add-on that Aaron can try after the core control plane ships.
-
----
-
-## Fallback Plan
-
-If SDK attach turns out to be broken (protocol mismatch, `--ui-server` not available in Aaron's CLI build):
-
-1. **`/list`**: Fall back to reading `workspace.yaml` files directly from `~/.copilot/session-state/*/workspace.yaml`. Parse `id`, `cwd`, `repository`, `branch`, `updated_at` without any SDK call. Cross-reference `inuse.{PID}.lock` for live status.
-2. **`/attach`**: Fall back to `/new` only. No true live attach. Document this in the bot's help text.
-3. **Breadcrumb read**: If Aaron wants to experiment with port discovery, `~/.copilot/reach-server.json` is the convention to define. Reach would poll it on `/afk`.
-
----
-
-## Concrete Next-Step File Changes (Days 3–5)
-
-| File | Change |
-|------|--------|
-| `src/discovery/cliDiscovery.ts` | New. Calls `sdk.listSessions()`, cross-references `inuse.{PID}.lock` files to tag live vs stale. Returns `CliSession[]` with `{ sessionId, name, cwd, branch, isLive, pid? }`. |
-| `src/control/session0.ts` | New. Owns mode state machine (desktop ↔ AFK). Routes `/afk`, `/back`, `/list`, `/attach`, `/new`, `/kill`. Calls `cliDiscovery` for `/list` and `/attach`. |
-| `src/copilot/impl.ts` | Add `listSessions()` wrapper on `CopilotClientImpl`. Exposes `sdk.listSessions(filter?)` through `CopilotSessionFactory` interface. |
-| `src/copilot/factory.ts` | Add `listSessions(filter?)` method to `CopilotSessionFactory` interface so the stub and impl stay aligned. |
-| `src/sessions/registry.ts` | Semantics shift: track `{ topicId, cliSessionId, attachedAt, mode: 'live' \| 'resumed' }` rather than Reach-owned session names. Drop name-uniqueness enforcement. |
-| `src/relay/relay.ts` | For `/new` path: same as today (Reach spawns subprocess). For `/attach` path (if option 2 chosen): swap `sdk` construction to use `cliUrl` from config. |
-| `src/bot/handlers.ts` | Split routing: General topic → `session0.ts`; forum topics → data-plane relay. Desktop-mode gate rejects everything except `/afk`. |
-| `config.json` schema | Add optional `REACH_CLI_SERVER_URL` key for Path A (option 2) attach. Add `REACH_MODE_DEFAULT` (`desktop` \| `afk`). |
-
----
-
-## Open Risks
-
-| Risk | Severity | Notes |
-|------|----------|-------|
-| **No `--ui-server` in Aaron's CLI build** | HIGH | If the bundled `@github/copilot` version doesn't support `--ui-server`, Path A/B/C all fail. Need to verify: `gh copilot --help \| grep ui-server`. |
-| **Lock file reliability** | MEDIUM | `inuse.{PID}.lock` is written by the infinite-sessions feature. Sessions without infinite sessions enabled won't have it. Live detection would miss those sessions. |
-| **Two-process conflict on resumeSession()** | HIGH | If Aaron `/attach`es to a session still open in the desktop CLI using Reach's own SDK process (not `cliUrl`), both processes write to the same session state. File corruption risk. `cliDiscovery.ts` must warn or block if `isLive=true` and we're in stdio mode. |
-| **Windows-only Path C** | MEDIUM | `Get-NetTCPConnection` is PowerShell/Windows. Not portable if Reach ever runs on Linux. |
-| **TUI mode assumption** | LOW | `setForegroundSessionId` / `getForegroundSessionId` only work in `--ui-server` mode. In stdio mode, these RPCs will error. `cliDiscovery.ts` must guard against this. |
-
----
-
-## Confidence Summary
-
-| Item | Confidence | Evidence |
-|------|-----------|---------|
-| `listSessions()` works for discovery | HIGH | Inspected `client.d.ts` types, `client.js` impl, README. API is real and documented. |
-| Shared session store on disk | HIGH | `~/.copilot/session-state/` exists on Aaron's machine with UUID subdirs. `workspace.yaml` confirms cwd/branch/repo metadata. |
-| `inuse.{PID}.lock` = active session signal | MEDIUM | Lock file present on machine. Semantics inferred from name — not confirmed by docs, but obvious. |
-| `--ui-server` mode exists | MEDIUM | Documented in SDK README and `.d.ts` JSDoc. Not confirmed that Aaron's installed CLI version supports it. |
-| Shared output semantics via `cliUrl` | MEDIUM | Follows from SDK architecture (single server process, multiple clients). Inferred — not tested end-to-end. |
-| Port breadcrumb exists anywhere | LOW → NONE | No `server.json` or port file found anywhere in `~/.copilot/`. No SDK-written breadcrumb. |
-
----
 
 # Decisions Archive
 
 **Last updated:** 2026-05-08
-
----
-
-# Carter — Phase 5 Review Fixes Decision Summary
-
-**Date:** 2026-05-02  
-**Author:** Carter (Bridge Dev)  
-**Scope:** relay.ts, markdownV2.ts, messageSplitter.ts  
-**Trigger:** 6-persona panel review of Phase 5 (MarkdownV2 escaping + message splitting)
 
 ---
 
@@ -198,34 +50,6 @@ eedsEscaping\ export lacks JSDoc | ACCEPT | JSDoc added |
 - ResolvedSession: { sessionName: string; model?: string }
 
 **Layering result:** grep -rE "from '\.\.(bot|sessions)" src/relay/ → zero hits.
-
----
-
-# Kat — Phase 5 Review Fixes Decision Summary
-
-**Date:** 2026-05-02  
-**Author:** Kat (Bot Dev)  
-
-## F2 — Name Uniqueness Strategy
-
-**Decision: Approach A — Enforce at registration.**
-
-Duplicate names rejected on new registration. Existing on-disk duplicates preserved with warning.
-
-## F3 — Atomic Move Primitive
-
-**Decision: Add move() to ISessionRegistry.**
-
-Single persist() call; rollback guarantee on failure.
-
----
-
-# Carter — PR #5 Copilot Review Fix Decisions
-
-**Date:** 2026-05-03  
-**Author:** Carter (Bridge Dev)  
-**Scope:** relay.ts, messageSplitter.ts  
-**Trigger:** Copilot review of PR #5 (Phase 5 Telegram UX QoL)
 
 ---
 
@@ -326,15 +150,6 @@ for the larger prefix always fit with the smaller one.
 
 ---
 
-# Kat — PR #5 Copilot Review Fixes Decision Summary (Copilot Review)
-
-**Date:** 2026-05-03
-**Author:** Kat (Bot Dev)
-**Scope:** `src/bot/handlers.ts`, `src/sessions/registry.ts`
-**Trigger:** Copilot code review on PR #5 — findings F-B and F-C
-
----
-
 ## Finding Disposition
 
 | ID  | Severity  | Title                                         | Decision | Notes                                            |
@@ -374,14 +189,6 @@ for the larger prefix always fit with the smaller one.
 **Alternatives considered:**
 - External mutex/lock: overkill for a single-process daemon; Map mutations are synchronous, so the check-then-mutate pattern within `move()` is safe for concurrent async callers on the same event loop.
 - Return an error code vs throw: throw is consistent with the rest of the registry's error surface.
-
----
-
-# Noble Six — Dogfood Readiness Verdict
-
-**Date:** 2026-05-04  
-**Author:** Noble Six (Lead/Architect)  
-**Context:** Phases 1–5 complete. PR #5 merged (commit de4a196). No open issues.
 
 ---
 
@@ -454,27 +261,6 @@ Reach is ready for personal dogfooding **today**. No blocking gaps.
 
 - **Carter:** Post-dogfood Week 1 — add `/status` command (Relay health check, session count, uptime). Small lift, high daily value.
 - **Noble Six:** Watch dogfood feedback; convene Phase 6 scope after 1–2 weeks of real use.
-
----
-
-# Noble Six — Phase 6 Proposal: Session Attach/Detach & Multi-Repo Support (v1)
-
-**Date:** 2026-05-04  
-**Author:** Noble Six (Lead/Architect)  
-**Status:** SUPERSEDED  
-**Superseded by:** See below — Phase 6: Session 0 Control Plane + Data Plane Topics (2026-05-08)
-
-*[v1 archived for traceability; see v2 LOCKED proposal for current Phase 6 design.]*
-
----
-
-# Noble Six — Phase 6: Session 0 Control Plane + Data Plane Topics
-
-**Date:** 2026-05-08  
-**Author:** Noble Six (Lead/Architect)  
-**Status:** LOCKED  
-**Supersedes:** `Phase 6 Proposal: Session Attach/Detach & Multi-Repo Support (v1)` (2026-05-04)  
-**Trigger:** Aaron + Coordinator iteration on the v1 broker model
 
 ---
 
@@ -648,170 +434,26 @@ input. `/new` (spawn a fresh CLI subprocess) becomes the only bidirectional path
 
 ---
 
-# Carter — CLI Extension Bridge Follow-Up
+## 2026-05-19T22:13:42-07:00: User directives — Phase 6 architectural locks
 
-**Date:** 2026-05-09  
-**Author:** Carter  
-**Status:** READY FOR REVIEW  
-**Addresses:** Aaron's question — can a Copilot CLI extension replace `--ui-server` for session bridging?
+### 2026-05-19T22:13:42-07:00: User directives — Phase 6 architectural locks
 
----
+**By:** Aaron (via Copilot)
 
-## Short Answer
+**What:**
+1. **Phase 6 scope = Option B (extension bridge).** Ship `/list` + `/new` + `/attach` via the CLI extension. Full bidirectional viewport into live desktop sessions. Adopt Noble Six's revised proposal as the LOCKED Phase 6 design.
+2. **Daemon service account = logged-in user, NOT LocalSystem.** A single Windows user's sessions are the only ones Reach should be able to attach. Cross-user attach is explicitly out of scope (and undesirable — you can't control another user's sessions). This resolves Jun's pipe-security blocker (EC-06) by eliminating the cross-integrity-level case entirely. The `src/service/install.ts` `serviceaccount` block must reflect this. The existing bug there (`OFFICE-DESKTOP\LocalSystem` causing `LookupAccountName failed: 1332`) gets superseded by this scope decision.
+3. **Extension reconnect policy = exponential backoff, ceiling 5 minutes.** When the daemon is unreachable (restart, crash, not running), `extension.mjs` retries with exponential backoff (e.g., 1s → 2s → 4s → 8s → … capped at 300s). Never gives up while the CLI session is alive. Logs each attempt to its log file. Resolves Jun's EC-02 spec gap.
+4. **Heartbeat = both ping/pong AND pipe-teardown detection (Jun's option c).** Daemon sends ping every 30s; extension responds with pong. Daemon also listens for pipe close events. EC-03 detection latency target: ≤5s via pipe teardown (fast path), ≤45s via missed-pong fallback (slow path). Both paths must mark the session "unreachable" the same way.
 
-**Yes. The extension surface exists, is real, is in `@github/copilot-sdk@0.2.2`, and solves the port-discovery gap cleanly.** If Aaron wants `/attach`, this is the path. If `/attach` is out of scope for MVP, stick with the original spike recommendation (Option 1).
+**Why:** User decision after the team's full review of Carter's extension-bridge spike + Noble Six's revised Phase 6 proposal + Kat's bot-side impact + Jun's test impact. Unblocks implementation kickoff.
 
----
+**Implementation gates closed:**
+- ✅ Noble Six's revised Phase 6 proposal moves from PROPOSED → LOCKED
+- ✅ All three of Jun's hard blockers (pipe security, reconnect spec, heartbeat) now answered
+- ⏳ Noble Six to finalize ADRs (1–4 from revised proposal + new ADRs for daemon account, reconnect policy, heartbeat protocol) before Carter starts coding
+- ⏳ Test doubles (`FakeDaemon`, `FakeExtensionClient`) needed Days 1–2 per Jun
 
-## What I Found
+**Scope reminder:** Single-user-per-host model is now an explicit Phase 6 constraint. Multi-user-on-same-host is a Phase 7+ consideration if it ever comes up.
 
-### 1. The Extension API Is Real
 
-`@github/copilot-sdk@0.2.2` ships a documented, fully-typed extension entry point:
-
-```ts
-import { joinSession } from "@github/copilot-sdk/extension";
-const session = await joinSession({ tools: [...], hooks: {...} });
-```
-
-Exported from the package's `./extension` subpath (declared in `package.json#exports`). The `.d.ts` and implementation are both present in the installed package. The docs (`node_modules/@github/copilot-sdk/docs/`) cover architecture, examples, and a full authoring guide.
-
-### 2. How Extensions Work
-
-```
-┌───────────────────┐  JSON-RPC/stdio  ┌──────────────────────┐
-│  Copilot CLI TUI  │ ◄──────────────► │  Extension process   │
-│  (parent)         │                  │  (forked child)      │
-│  • Forks ext      │                  │  • calls joinSession │
-│  • routes tools   │                  │  • registers tools   │
-│  • manages lcycle │                  │  • listens to events │
-└───────────────────┘                  └──────────────────────┘
-```
-
-The extension is a **forked child process** — not a plugin loaded into the CLI's Node.js heap, but a separate process communicating over JSON-RPC via stdio to the CLI. `joinSession()` reads `SESSION_ID` from the env (set by CLI at fork time) and calls `client.resumeSession(sessionId, ...)` using `{ isChildProcess: true }`, which connects to the CLI parent via stdio.
-
-### 3. What an Extension Can See and Do
-
-| Capability | Available | Notes |
-|-----------|-----------|-------|
-| Read live session events | ✅ | `session.on("assistant.message", ...)`, `session.on("user.message", ...)`, `session.on("assistant.streaming_delta", ...)`, `session.on("session.idle", ...)`, all event types |
-| Inject user input | ✅ | `session.send({ prompt: "..." })` — creates a new user turn, visible in TUI |
-| Register slash commands | ✅ | via `tools` array |
-| Async background code | ✅ | Extension is a regular Node.js process; long-lived awaits, timers, setInterval all work |
-| Network / open sockets | ✅ | Full Node.js net access: `fetch()`, `net.createServer()`, named pipes, TCP |
-| Hook user prompt | ✅ | `onUserPromptSubmitted` can read and modify every user message before the agent sees it |
-| Hook tool execution | ✅ | `onPreToolUse`, `onPostToolUse` |
-| Session lifecycle | ✅ | `onSessionStart` (fires on startup, resume, new), `onSessionEnd` |
-| `sessionId` at runtime | ✅ | `process.env.SESSION_ID` set by CLI, and `invocation.sessionId` in handlers |
-| `session.workspacePath` | ✅ | Path to `~/.copilot/session-state/<id>/` workspace |
-| `console.log()` | ❌ | stdout is reserved for JSON-RPC; use `session.log()` instead |
-
-### 4. Lifecycle
-
-- **Discovery**: On CLI startup, scans `.github/extensions/` (git root, project-scoped) and `<copilot_config_dir>/extensions/` (user-scoped, all repos). Looks for `extension.mjs` inside each subdirectory.
-- **Load timing**: Extensions load when the CLI starts AND each time `/clear` fires or the foreground session changes. Each reload forks a fresh extension process.
-- **Lifecycle = foreground session lifecycle**: One extension process per foreground session. Daemon gets a fresh registration event on each session start; deregistration when the process terminates.
-- **Shutdown**: CLI exit → SIGTERM → 5 second grace → SIGKILL. Extension connection to daemon drops; daemon marks session dead.
-- **Entry point filename**: `extension.mjs` (`.mjs` only; `.cjs`/`.js` are in the source list but the scaffold tool always generates `.mjs`).
-
-### 5. Discovery Shape With Extensions
-
-Today (spike recommendation): daemon polls `listSessions()` + cross-references `inuse.{PID}.lock` files to determine live sessions.
-
-With extension bridge:
-
-```
-CLI starts → extension forks
-  → extension calls joinSession()
-  → extension POSTs to Reach daemon named pipe / loopback HTTP:
-      { sessionId, pid: process.pid, cwd: process.cwd() }
-  → daemon adds session to live map
-  → on extension SIGTERM: daemon removes from live map
-```
-
-This is **authoritative** live-session inventory — no lock file polling. The daemon knows in real time which sessions are alive and can bind the `sessionId` to a `pid` and `cwd` without disk reads.
-
-### 6. Attach Shape With Extensions
-
-```
-Telegram /attach <session>
-  → daemon looks up extension connection for sessionId
-  → daemon sends "inject" over named pipe to extension
-  → extension calls session.send({ prompt: "..." })
-  → TUI shows user turn; CLI starts processing
-  → extension streams events: session.on("assistant.streaming_delta", ...)
-  → extension forwards deltas to daemon via same named pipe / HTTP
-  → daemon → Relay → Telegram
-```
-
-No `--ui-server`, no port discovery, no port file. The extension is already in the CLI process's stdio tree. It receives and sends via the JSON-RPC session it holds from `joinSession()`. The daemon communicates with the extension via a named pipe or loopback socket that the extension opens at startup.
-
-**Key caveat on UX**: `session.send()` inserts a message as a new user turn. The desktop TUI will show the Telegram-injected message as if the user typed it. That's visible and slightly awkward but functionally correct. This is identical to how the Copilot SDK's own test harness injects messages.
-
-### 7. Extension Activation — User Friction
-
-| Scope | Path | Who sets it up | Coverage |
-|-------|------|----------------|----------|
-| Project | `D:\git\verbose-invention\.github\extensions\reach\extension.mjs` | Aaron or Reach installer (once per repo) | Only sessions opened in this repo |
-| User | `%APPDATA%\GitHub Copilot\User\extensions\reach\extension.mjs` | Aaron (once per machine) | ALL CLI sessions, any repo |
-
-The user-scoped location covers everything — no per-repo setup. Reach's install flow (`src/service/install.ts`) could write the extension file to the user extensions dir as part of service installation. This would make it completely ambient after `reach install`.
-
-### 8. SDK Version Bound
-
-The `./extension` export is present in `@github/copilot-sdk@0.2.2` (the version Reach has). The `joinSession()` function, the typed hooks, the `session.send()` and `session.on()` APIs — all present and typed in the installed package. No upgrade needed.
-
----
-
-## Side-by-Side Comparison
-
-| | **Option A — Original Spike** | **Option B — Extension Bridge** |
-|--|-------------------------------|--------------------------------|
-| **Delivers** | `/list` + `/new`; no attach to desktop sessions | `/list` + `/new` + `/attach` to live desktop sessions |
-| **Port discovery** | N/A (new sessions only) | N/A (extension sidestepped it entirely) |
-| **User setup** | None | Install `reach` extension to user extensions dir once (automated in `reach install`) |
-| **Discovery accuracy** | `listSessions()` + lock file cross-ref | Extension registers on startup — authoritative live map, no polling |
-| **Attach semantics** | Not available | Bidirectional: inject via `session.send()`, receive via `session.on()` |
-| **TUI impact** | None | Injected messages appear as user turns in TUI (visible to desktop user) |
-| **Reload behavior** | N/A | Extension restarts on `/clear` — brief gap in daemon registration (reconnects in <1s) |
-| **Effort (incremental)** | 0 | ~2 days on top of Option A |
-| **Risk** | LOW | MEDIUM — new file plane, named pipe/HTTP channel, extension load failure handling |
-| **File plan delta** | No new files for bridge | + `extension.mjs`, + `src/discovery/extensionBridge.ts`, + `src/bot/commands/attach.ts` |
-
-**Effort breakdown for Option B add-on:**
-- `extension.mjs` (register + stream events via named pipe): ~4 hours
-- `extensionBridge.ts` (named pipe server in daemon, session map): ~4 hours  
-- `/attach` Telegram command + relay wiring: ~4 hours
-- Integration test + error handling (reconnect, timeout): ~4 hours
-- Total add-on: **~2 days**
-
----
-
-## My Recommendation
-
-**If Aaron wants `/attach`: use Option B (extension bridge). The blocker is gone.**
-
-The `--ui-server` port-discovery gap was the only thing standing between Reach and true bidirectional attach to a live desktop session. The extension surface solves it from the inside — no port files, no polling, no user changes to how they launch the CLI. The only setup cost is writing `extension.mjs` to the user extensions directory, which `reach install` can do automatically.
-
-**If Aaron is happy with `/list` + `/new` for MVP**: stick with Option A. It's 2 fewer days, lower risk, and the UX works fine for creating phone-side sessions.
-
-**Decision gate for Aaron:**
-
-1. **"Option A: MVP ships `/list` + `/new` only."** → No change from spike recommendation. Cleanest MVP. Extension bridge deferred.
-
-2. **"Option B: MVP ships `/list` + `/new` + `/attach` via extension bridge."** → ~2 day add-on. Full bidirectional attach to desktop sessions. Extension installed as part of `reach install`. 
-
-My call if Aaron doesn't specify: **Option A for MVP, Option B as first post-MVP feature.** The extension approach is solid but adds implementation surface. Better to ship the core control plane cleanly first, then add the bridge as a tight follow-on.
-
----
-
-## Risks (Option B)
-
-| Risk | Severity | Mitigation |
-|------|----------|------------|
-| Extension fails to load (syntax error, crash) | MEDIUM | Daemon falls back to listSessions() polling; `/attach` degrades to "session not reachable" |
-| Extension reconnection gap on `/clear` | LOW | Daemon tolerates brief deregistration; marks session as "reconnecting" for <2s |
-| Named pipe access on Windows | LOW | Named pipes fully supported on Windows (`\\.\pipe\reach-<sessionId>`); tested pattern |
-| TUI shows injected messages as user turns | LOW | Acceptable — matches how SDK test harness works; could prefix messages with "[Telegram]" |
-| User extensions dir path varies by machine | LOW | Discoverable via `copilot settings` or `APPDATA` env; write once in `reach install` |
-| Tool name collision with other extensions | LOW | Reach extension uses unique namespaced tool names (`reach_*`) |

@@ -142,3 +142,36 @@ Earlier learnings (before 2026-05-01) are archived in `history-archive.md` for r
 
 ---
 
+## Learnings
+
+### 2026-05-19 — Phase 6 Test Impact Assessment: Extension-Bridge Architecture
+
+**Trigger:** Aaron requested a full test-impact assessment after the extension-bridge architecture was proposed (Carter spike 2026-05-09). Original Phase 6 scope assumed one process boundary; extension-bridge introduces three.
+
+**Key findings:**
+
+- **Scope delta: +93%** (~6.75 days vs ~3.5 days original). Option A (no extension bridge) restores the original 3.5-day scope.
+- **New test surface:** Daemon-extension named pipe protocol is fully contract-testable (JSON schema). Daemon-side handlers are unit-testable with mock sockets. Extension-side unit tests need SDK stubs — verify stubs work before committing to estimates.
+- **CI-able boundary:** Daemon named pipe integration tests *can* run in CI on `windows-latest`. Full attach E2E (real CLI + SDK auth) cannot. This requires a new `windows-latest` CI matrix entry.
+- **Highest-risk edge case (EC-08):** Extension installed, daemon not running. If the extension throws an unhandled rejection on pipe connect failure, it impairs *every* CLI session on the machine. This must be caught before anything else.
+- **Three blockers for Noble Six before implementation can start:**
+  1. Named pipe security model (cross-integrity-level access: Admin CLI vs LocalSystem daemon)
+  2. Extension reconnect policy (does `extension.mjs` retry after daemon restart?)
+  3. Heartbeat/ping-pong required for reliable dead-extension detection (OS pipe teardown timing is unreliable on Windows after hard kill)
+- **Day 1–2 deliverables (regardless of Noble Six decisions):** `FakeDaemon` and `FakeExtensionClient` test doubles, plus the JSON-Lines contract schema. These unblock all other Phase 6 tests.
+
+**Decision drop:** `.squad/decisions/inbox/jun-phase6-test-impact.md`
+
+---
+
+### 2026-05-19 — Phase 6 Architecture LOCKED
+
+**Event:** All architectural blockers resolved per Aaron's directive. Phase 6 architecture finalized with seven ADRs (ADR-1 through ADR-7).
+
+**Key points for Jun:**
+- **ADR-6 + ADR-7:** Extension reconnect policy and heartbeat protocol now locked, enabling deterministic test specifications
+- **Day 1 task:** Build test doubles — `test/helpers/FakeDaemon.ts` (spawns random pipe, accepts connections, sends/receives messages) and `test/helpers/FakeExtensionClient.ts` (connects to pipe, sends hello, responds to ping, exposes message log)
+- **Implementation order:** Can start immediately with no blocking data dependencies. Same start time as Carter (named pipe server) and Kat (install.ts refactor)
+- **Deterministic testing:** ADRs specify exact backoff timings, ping intervals, and grace periods. Jun can now write contract tests for reconnection edge cases without guessing.
+
+See `.squad/decisions.md` for full ADRs and implementation sequencing.

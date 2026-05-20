@@ -134,3 +134,31 @@
 - Registry needs both atomic writes and post-load duplicate tolerance for backward compatibility
 - Single-purpose command semantics demand unique session names (no disambiguation prompts)
 - Move() primitive critical for session transfer UX (vs two-step remove+register race)
+- Extension-bridge gives a clean disconnect signal on CLI death (named pipe EOF/reset) — heartbeat not needed for normal exits, only for frozen/hung process detection
+- `/kill` needs a `source: 'spawned' | 'bridged'` registry field to route to SIGTERM (owned) vs. pipe-based shutdown (bridged)
+- Topic creation and relay bind must be sequenced: create topic only AFTER successful attach(), not before — avoids zombie topics on attach failure
+- Extension registers on every CLI startup including desktop mode; daemon's live-session map updates silently in background — mode gate in session0.ts must suppress all Telegram-facing output while in desktop mode
+
+### 2026-05-19 — Phase 6 Bot-Side Impact Assessment (Extension-Bridge)
+
+Completed impact assessment for Carter's extension-bridge architecture. Key findings:
+- `/list` simplifies (authoritative daemon live map replaces lock-file polling)
+- `/attach` is now actually implementable in Phase 6 (was blocked before extension-bridge)
+- `/kill` grows slightly: dual kill paths (owned PID vs. named pipe shutdown)
+- 4 new failure modes defined (F1: extension not installed, F2: stale session, F3: duplicate name disambiguation, F4: bridge connect failure)
+- Net effort: approximately equivalent to original Phase 6 scope, ~+0.5 day for error UX
+- Blocking: Aaron's Option A vs. Option B decision — everything sequences from that
+- Assessment dropped to: `.squad/decisions/inbox/kat-phase6-bot-impact.md`
+
+---
+
+### 2026-05-19 — Phase 6 Architecture LOCKED
+
+**Event:** All architectural blockers resolved per Aaron's directive. Phase 6 architecture finalized with seven ADRs (ADR-1 through ADR-7).
+
+**Key points for Kat:**
+- **ADR-5:** Daemon runs as logged-in user (not LocalSystem) — fixes the `LookupAccountName failed: 1332` bug in install.ts
+- **Day 1 task:** Refactor `src/service/install.ts` to prompt for user account + password, use `whoami /upn` primary or `wmic` fallback
+- **Implementation order:** Can start immediately with no blocking data dependencies. Same start time as Carter (named pipe server) and Jun (test doubles)
+
+See `.squad/decisions.md` for full ADRs and implementation sequencing.

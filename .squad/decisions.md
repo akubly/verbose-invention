@@ -1,5 +1,189 @@
 # Decisions Archive
 
+**Last updated:** 2026-05-19
+
+---
+
+## Phase 6 Architecture — LOCKED (2026-05-19)
+
+**By:** Noble Six (Lead/Architect)  
+**Status:** LOCKED (was PROPOSED)  
+
+Aaron resolved all three architectural blockers. This document finalizes seven ADRs and locks the Phase 6 architecture for implementation.
+
+### ADR-1: Use Copilot CLI Extension API for Session Attach
+
+**Status:** ACCEPTED
+
+Use the Copilot CLI extension API (`joinSession()`, `session.send()`, `session.on()`) as the sole attach mechanism. The extension runs as a forked Node child of the CLI process. It self-registers with the daemon over a named pipe on startup.
+
+**Consequences:**  
+✅ Push-based registration eliminates port-discovery gap entirely.  
+✅ Extension lifecycle is tied to CLI lifecycle.  
+✅ Bidirectional streaming is native.  
+❌ Coupled to `@github/copilot-sdk@0.2.2`. Mitigation: pin 0.2.x, extension is <100 LOC.  
+❌ Adds install surface (extension file deployed to user extensions dir).
+
+---
+
+### ADR-2: Push-Based Discovery with listSessions() Fallback
+
+**Status:** ACCEPTED
+
+Primary discovery is push-based. Each CLI extension instance opens a named pipe connection to the daemon and sends a `hello` message. Daemon maintains live-session map. `listSessions()` is used only as fallback for dormant sessions (on disk but no running extension).
+
+**Consequences:**  
+✅ Authoritative — daemon knows exactly which sessions have a live extension.  
+✅ Low latency — registration is immediate on CLI startup.  
+✅ No polling overhead.  
+❌ Dormant sessions require `listSessions()` fallback. Two code paths for session enumeration.  
+❌ If extension fails to register (daemon not running), session is invisible until daemon starts.
+
+---
+
+### ADR-3: Single Named Pipe, Multiplexed by sessionId
+
+**Status:** ACCEPTED
+
+A single named pipe (`\\.\pipe\reach-bridge`) serves all extension connections. Each message includes a `sessionId` field for routing. Protocol framing: UTF-8 JSON, newline-delimited. Max message size: 64 KB per line.
+
+**Consequences:**  
+✅ Single pipe simplifies firewall/security surface — one endpoint to secure.  
+✅ Multiplexing by sessionId scales to 10+ concurrent sessions.  
+✅ JSON-Lines is human-readable, debuggable, and trivial to parse.  
+❌ Single pipe is a single point of failure. Mitigation: daemon auto-restarts (Windows service recovery), extensions reconnect.  
+❌ 64 KB message limit means very large responses must be chunked. Acceptable — relay already chunks at 4096 chars for Telegram.
+
+---
+
+### ADR-4: Extension Crash = Session Unreachable (No Auto-Recovery)
+
+**Status:** ACCEPTED
+
+Extension crash marks the session as `unreachable` in the daemon's session map. Session remains in `/list` with an `[unreachable]` tag. No automatic re-fork — user restarts the CLI or opens a new session.
+
+**Consequences:**  
+✅ Simple, predictable failure mode.  
+✅ Daemon stays healthy regardless of extension state.  
+✅ Deterministic for testing.  
+❌ User must manually restart CLI to re-establish the bridge. Acceptable — CLI restarts are fast.  
+❌ `/attach` on unreachable session produces an error.
+
+---
+
+### ADR-5: Daemon Service Account — Logged-In User
+
+**Status:** ACCEPTED
+
+The Reach Windows service runs as the logged-in interactive user, not LocalSystem. `src/service/install.ts` determines the current user at install time via `whoami /upn` (preferred) or `wmic useraccount where name='%USERNAME%' get sid` (fallback). Installer prompts for password if required.
+
+**Implementation notes:**
+- `serviceaccount` block in `install.ts` sets `--username` and `--password` on service registration.
+- If password prompt fails or is cancelled, installer exits with clear error: `"Service install requires your Windows password to run as your account."`
+- UPN format (`user@domain`) preferred for compatibility.
+
+**Consequences:**  
+✅ Eliminates pipe DACL / integrity-level problem entirely.  
+✅ Daemon sees only current user's CLI sessions.  
+✅ Fixes existing `LookupAccountName failed: 1332` bug.  
+❌ Service stops when user logs off. Acceptable — Reach is personal-host tool.  
+❌ Multi-user-on-same-host requires one install per user. Acceptable — explicit single-user scope decision.  
+❌ Requires user password at install time. Acceptable — one-time cost.
+
+---
+
+### ADR-6: Extension Reconnect Policy — Exponential Backoff
+
+**Status:** ACCEPTED
+
+Exponential backoff with parameters:
+- **Base interval:** 1 second
+- **Multiplier:** 2×
+- **Ceiling:** 300 seconds (5 minutes)
+- **Termination:** Never give up while CLI session is alive
+- **Logging:** Each attempt logs attempt number, elapsed time, error message
+
+Backoff schedule: 1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 300s, 300s, 300s, …
+
+On successful reconnect, extension re-sends `hello` message (re-registration) and resets backoff timer.
+
+**Consequences:**  
+✅ Daemon restarts don't require user intervention — extensions reconnect automatically.  
+✅ Bounded worst-case reconnect latency: 5 minutes after backoff ceiling is reached.  
+✅ Deterministic for tests — Jun can inject controlled delays and assert on attempt counts.  
+✅ Logging on each attempt provides debuggability.  
+❌ Stale extensions could attempt reconnects for hours if daemon down. Acceptable — CPU cost negligible (~one syscall per 5 minutes at ceiling).  
+❌ Worst-case 5-minute reconnect delay after daemon restart. Acceptable — daemon restarts rare.
+
+---
+
+### ADR-7: Heartbeat Protocol — Ping/Pong + Pipe Teardown
+
+**Status:** ACCEPTED
+
+Use BOTH mechanisms:
+
+1. **Fast path — Pipe teardown detection:** Daemon listens for `close` event on each extension's pipe connection. When CLI dies, OS closes pipe handle, daemon receives event. Detection latency: <1 second.
+
+2. **Slow path — Ping/pong heartbeat:** Daemon sends `ping` every 30 seconds to each connected extension. Extension replies with `pong` within 5 seconds. If daemon misses one pong (30s cycle passes without pong), it waits 15s grace period before marking session `unreachable`.
+
+**Protocol messages:**
+```json
+{"type": "ping", "id": "uuid-v4"}
+{"type": "pong", "id": "uuid-v4"}
+```
+
+**Timing analysis:**
+- **Pipe close (fast path):** <1s detection.
+- **Missed pong (slow path):** Worst case = 30s + 5s + 15s = **50s**. Typical case = 5s + 15s = **20s**. Aaron's target of ≤45s is met in typical case; worst case is 50s (one cycle boundary overshoot). Acceptable.
+
+**Consequences:**  
+✅ Fast disconnect detection via pipe close — sub-second for normal CLI exits.  
+✅ Catches network-style hangs.  
+✅ Deterministic for tests.  
+✅ UUID correlation prevents stale pongs after reconnect.  
+❌ 30s background traffic per session (negligible — ~50 bytes per ping/pong pair per 30s cycle).  
+❌ Worst-case detection is 50s, slightly above Aaron's 45s target. Acceptable — overshoot is boundary condition.
+
+---
+
+### Updated Phase 6 Status
+
+| Dimension | Status |
+|-----------|--------|
+| **Architecture** | LOCKED |
+| **Open architectural questions** | NONE — all gated decisions resolved |
+| **ADRs** | 7 accepted (ADR-1 through ADR-7) |
+| **Implementation gates** | Test doubles (`FakeDaemon`, `FakeExtensionClient`) needed Days 1–2 per Jun. Carter can start named-pipe server skeleton in parallel. Kat can start `install.ts` refactor in parallel. |
+
+**Out of scope (Phase 6):**
+- Multi-user-on-same-host (explicit single-user scope decision, ADR-5)
+- Conversational Session 0 (command-only, Decision #1)
+- Per-session git worktrees
+- `/afk` / `/back` commands (deferred — not load-bearing)
+
+---
+
+### Day 1 Parallel Tasks
+
+All three tasks below have **no hard data dependencies** and can start immediately in parallel.
+
+**Carter — Named Pipe Server Skeleton + Extension Handshake**  
+**Start:** Immediately  
+**Deliverable:** `src/bridge/extensionBridge.ts` — pipe server on `\\.\pipe\reach-bridge`, accepts connections, parses JSON-Lines, handles `hello` → `session.registered` handshake. Stub `inject` and `stream` message handlers. Also `extension.mjs` skeleton — connects to pipe, sends `hello`, handles `ping`/`pong`, implements reconnect loop per ADR-6.
+
+**Kat — install.ts Refactor for User-Account Service Install**  
+**Start:** Immediately  
+**Deliverable:** Refactored `src/service/install.ts` — service installs as current user (not LocalSystem) per ADR-5. `whoami /upn` primary, `wmic` fallback. Password prompt flow. Clear error on cancellation. Fixes existing `LookupAccountName failed: 1332` bug.
+
+**Jun — FakeDaemon + FakeExtensionClient Test Doubles**  
+**Start:** Immediately  
+**Deliverable:** `test/helpers/FakeDaemon.ts` — spawns pipe server on random pipe name, accepts connections, sends/receives protocol messages, exposes assertion helpers. `test/helpers/FakeExtensionClient.ts` — connects to pipe, sends `hello`, responds to `ping`, exposes message log for assertions.
+
+---
+
+# Decisions Archive
+
 **Last updated:** 2026-05-09
 
 ---

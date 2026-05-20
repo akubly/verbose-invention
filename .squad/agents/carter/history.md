@@ -163,6 +163,27 @@ See `history-archive.md` for full Phases 1–5 documentation.
 
 ---
 
+---
+
+## Phase 6 Architecture LOCKED (2026-05-19)
+
+**Event:** Phase 6 architecture finalized and locked for implementation.
+
+**Seven ADRs accepted:**
+- ADR-1: Copilot CLI Extension API for session attach
+- ADR-2: Push-based discovery with `listSessions()` fallback
+- ADR-3: Single named pipe, multiplexed by sessionId
+- ADR-4: Extension crash = session unreachable (no auto-recovery)
+- ADR-5: Daemon service account runs as logged-in user (fixes `LookupAccountName failed: 1332`)
+- ADR-6: Extension reconnect policy using exponential backoff
+- ADR-7: Heartbeat protocol using both pipe teardown + ping/pong
+
+**Day 1 task for Carter:** Named pipe server skeleton (`src/bridge/extensionBridge.ts`) + extension handshake + `extension.mjs` skeleton. Can start immediately with no blocking data dependencies.
+
+See `.squad/decisions.md` for full ADR documentation and orchestration log.
+
+---
+
 ## Archive
 
 Full Phases 1–5 documentation in `history-archive.md`.

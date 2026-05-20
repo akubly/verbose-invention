@@ -1,34 +1,32 @@
 ---
-updated_at: 2026-05-19T22:37:10Z
-focus_area: Phase 6 Day 1 COMPLETE — 7 ADRs locked + ADR-8 (Canonical Protocol) issued. Protocol drift reconciled. Day 2 migration tasks assigned.
-active_issues: [Day 2 — Carter protocol migration (~8 changes), Jun addition (1 type), then full test suite. Days 3–4 relay integration.]
+updated_at: 2026-05-20T00:02:37Z
+focus_area: Phase 6 Day 2 COMPLETE — ADR-8 protocol migration operationalized. All bridges migrated. 296 tests green. Days 3–4 relay integration ready.
+active_issues: [Days 3–4 — Kat relay integration (requestId correlation, stream editing). Day 5+ — end-to-end testing, dogfooding, production readiness.]
 ---
 
 # What We're Focused On
 
-**Phase 6: Session 0 Control Plane + Extension-Bridge Data Plane — DAY 1 COMPLETE, ADR-8 LOCKED**
+**Phase 6: Session 0 Control Plane + Extension-Bridge Data Plane — DAY 2 COMPLETE, ADR-8 OPERATIONALIZED**
 
-Phases 1–5 shipped. Aaron dogfooding Reach. **Phase 6 Day 1 implementation kickoff complete.** All three agents shipped code, all 296 tests green. Protocol reconciliation via ADR-8.
+Phases 1–5 shipped. Aaron dogfooding Reach. **Phase 6 Day 1 implementation kicked off. Phase 6 Day 2 protocol migration complete.** All agents shipped code, all 296 tests green. ADR-8 canonical schema validated across all three bridges.
 
-## Phase 6 Day 1 Summary
+## Phase 6 Day 2 Summary
 
 **Code Delivered:**
-- ✅ **Carter:** `src/bridge/extensionBridge.ts` (pipe server), `extension.mjs` (skeleton), all tests green
-- ✅ **Jun:** `tests/helpers/FakeDaemon.ts`, `tests/helpers/FakeExtensionClient.ts`, 15-test smoke suite green
-- ✅ **Kat:** `src/service/install.ts` refactored (user-account install per ADR-5), all tests green
-- ✅ **Noble Six:** ADR-8 issued (canonical pipe protocol reconciliation)
+- ✅ **Carter:** `extensionBridge.ts` + `extension.mjs` migrated to ADR-8 (8 mechanical changes), all tests green
+- ✅ **Jun:** `FakeDaemon.ts` updated with `SessionEventMessage` type (1 addition), all tests green
+- ✅ **Scribe:** Decisions merged (inbox cleared), old archive entries purged, orchestration logs written
 
 **Protocol Event:**
-Carter and Jun converged on different wire protocols (both valid per ADR-3). ADR-8 resolves via systematic comparison:
-- **Decision:** Adopt Jun's streaming schema (`inject`/`stream`/`requestId`/`chunk`/`done`) as canonical
-- **Rationale:** Streaming UX (Phase 5 Telegram edit feature), request correlation, terminology consistency
-- **Migration:** Carter Day 2 (~8 changes), Jun Day 2 (1 addition), both pass full 296-test suite
+ADR-8 canonical wire protocol fully operationalized. Protocol drift reconciled Day 1; Day 2 migration validates schema across all code paths (extensionBridge, extension, test doubles).
+
+**Architecture Status:** 7 ADRs locked + ADR-8 (protocol). All bridges speak canonical JSON-Lines schema. Ready for relay integration.
 
 **Test Status:** 296 passed, 4 skipped, 0 failed ✅
 
-## Architecture — LOCKED + ADR-8
+## Architecture — LOCKED + ADR-8 OPERATIONALIZED
 
-**ADRs 1–7 + 8 Finalized:**
+**ADRs 1–8 Finalized:**
 1. ✅ **ADR-1:** Copilot CLI Extension API for session attach
 2. ✅ **ADR-2:** Push-based discovery with `listSessions()` fallback
 3. ✅ **ADR-3:** Single named pipe `\\.\pipe\reach-bridge`, JSON-Lines, multiplexed by sessionId
@@ -38,20 +36,21 @@ Carter and Jun converged on different wire protocols (both valid per ADR-3). ADR
 7. ✅ **ADR-7:** Heartbeat = ping/pong + pipe-teardown detection
 8. ✅ **ADR-8:** Canonical Pipe Wire Protocol (streaming, request correlation, self-describing messages)
 
-## Day 2 Plan
+## Next Steps (Days 3–4)
 
-| Agent | Task | Duration | Dependency |
-|-------|------|----------|-----------|
-| **Carter** | Migrate `extensionBridge.ts` + `extension.mjs` to ADR-8 schema (~8 changes) | ~2 hours | ADR-8 (locked) |
-| **Jun** | Add `session.event` type to message union (forward compatibility) | ~15 minutes | ADR-8 (locked) |
-| **Verification** | Full 296-test suite + tsc/lint clean | ~10 minutes | Both migrations complete |
+**Relay Integration (Kat):**
+- Consume `requestId` from `bridge.sendCommand()` for message correlation
+- Match incoming `stream` events to pending Telegram placeholder edits
+- Preserve 800ms throttle window for real-time UX
 
-**No blocking issues.** Migration is mechanical (rename and restructure).
+**End-to-End Testing & Dogfooding (Days 5+)**
+
+---
 
 ## Latest Artifacts
 
-- **Decisions:** `.squad/decisions.md` (Phase 6 ADRs 1–8, all merged from inbox)
-- **Orchestration:** `.squad/orchestration-log/2026-05-19T2237-phase6-day1-{carter,jun,kat,noble-six}.md`
-- **Session log:** `.squad/log/2026-05-19T2237-phase6-day1-kickoff.md`
-- **Agent updates:** Each agent's `history.md` updated with Day 1 recap and ADR-8 note
+- **Decisions:** `.squad/decisions.md` (Phase 6 ADRs 1–8, merged + archived)
+- **Orchestration:** `.squad/orchestration-log/2026-05-20T0002-phase6-day2-{carter,jun}.md`
+- **Session log:** `.squad/log/2026-05-20T0002-phase6-day2-adr8-migration.md`
+- **Agent updates:** Each agent's `history.md` updated with Day 2 recap
 

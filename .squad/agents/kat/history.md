@@ -198,3 +198,23 @@ No changes to `install.ts`. The refactored install.ts (user-account service) is 
 **Status:** Kat's Day 1 deliverable is complete and verified. No regressions. Ready for Phase 6 continued.
 
 See orchestration logs and `decisions.md` for full ADR-8 technical details.
+
+---
+
+### 2026-05-20 — Phase 6 Day 2: ADR-8 Protocol Operationalization
+
+**Status:** Complete. All bridges migrated to ADR-8 canonical schema. 296 tests green.
+
+**What happened:**
+- **Carter:** 8 mechanical migration changes (extensionBridge.ts + extension.mjs) to ADR-8 schema completed
+- **Jun:** SessionEventMessage type added to InboundMessage union for forward compatibility
+- **Decisions merged:** 2 inbox records (sendCommand API, session.event shape) → decisions.md
+- **Archive:** Old decision entries (>7d) purged from decisions.md per archival threshold
+
+**Impact on Kat:**
+No action required Day 2. `sendCommand()` now returns `requestId` (or `false`) instead of `boolean`. This is internal to the bridge layer; Kat's relay integration (Days 3–4) will consume the `requestId` for correlating incoming `stream` chunks to pending Telegram message edits.
+
+**Key outcome:** Protocol drift is fully resolved. All three code paths (bridge + test doubles + relay) now speak ADR-8 schema. Relay integration can proceed with confidence.
+
+**Baseline preserved:** 296 passed / 4 skipped / 0 failed ✅
+

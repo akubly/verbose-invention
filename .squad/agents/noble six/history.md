@@ -71,6 +71,23 @@ Carter and Jun independently designed different message protocols (both valid pe
 
 ---
 
+---
+
+## Phase 6 Day 2 (2026-05-20)
+
+**Status:** ADR-8 operationalization complete. Protocol migration validated.
+
+**Outcomes:**
+- ✅ **Carter:** 8 mechanical migration changes (extensionBridge.ts + extension.mjs) → ADR-8 canonical schema
+- ✅ **Jun:** SessionEventMessage type added to InboundMessage union (forward-compat)
+- ✅ **Verification:** 296 passed / 4 skipped / 0 failed | tsc + lint clean
+- ✅ **Decision records:** 2 inbox entries (sendCommand API, session.event shape) merged into decisions.md
+- ✅ **Archive:** Old decisions (>7 days) purged from decisions.md; baseline preserved
+
+**Key Insight:** Day 1 protocol reconciliation (ADR-8) proves out on Day 2 with zero regressions. All bridges now speak canonical schema. Ready for relay integration (Days 3–4).
+
+---
+
 ## Archive
 
-Full Phases 1–5 + detailed Phase 6 spike documentation in \history-archive.md\.
+Full Phases 1–5 + detailed Phase 6 spike documentation in history-archive.md.

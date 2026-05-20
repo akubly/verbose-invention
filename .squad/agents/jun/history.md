@@ -220,3 +220,25 @@ Day 2 migration = 1 addition: add `session.event` to `InboundMessage` union (for
 **Status:** ADR-8 locked in `decisions.md`. Day 2 changes trivial. Full 296-test suite will remain green post-Carter migration.
 
 See orchestration logs for full technical details and Carter's migration tasks.
+
+---
+
+### 2026-05-20 — Phase 6 Day 2: ADR-8 Forward-Compat Addition
+
+**Event:** Added `session.event` to the `InboundMessage` union in `tests/helpers/FakeDaemon.ts` per ADR-8 §6.
+
+**What I did:**
+- Read ADR-8 canonical schema: `session.event` shape is `{ type: 'session.event'; sessionId: string; payload: unknown }`. Reserved for tool-call notifications, permission prompts, and session lifecycle events.
+- Added `SessionEventMessage` type and included it in the `InboundMessage` discriminated union.
+- No handler added — ADR-8 explicitly says "no handler required in Day 2 migration; daemon logs and ignores unknown session.event payloads." The existing `default: break` in `_handleInbound` covers it.
+
+**Shape choice:** Used `payload: unknown` (not `data?: unknown`) because ADR-8's canonical example shows `payload` as the field name, and `unknown` (not `any`) preserves strict type safety for future callers that need to narrow the value.
+
+**Verification:**
+- `npx tsc --noEmit` → clean ✅
+- `npx vitest run` → **296 passed**, 4 skipped, 0 failed ✅ (baseline preserved)
+- `npm run lint` → 0 warnings, 0 errors ✅
+
+**Files modified:** `tests/helpers/FakeDaemon.ts` only. Intentionally did not touch Carter's `extensionBridge.ts` or any source files.
+
+**Decision drop:** `.squad/decisions/inbox/jun-day2-session-event-shape.md` — rationale for `payload: unknown` vs alternative shapes.

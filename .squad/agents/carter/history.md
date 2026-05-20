@@ -233,6 +233,34 @@ See orchestration logs for full technical details.
 
 ---
 
+## Phase 6 Day 2: ADR-8 Protocol Migration (2026-05-20)
+
+**Task:** Migrate `extensionBridge.ts` and `extension.mjs` from Carter's Day 1 wire schema to the ADR-8 canonical schema.
+
+**Files touched:**
+- `src/bridge/extensionBridge.ts`
+- `extension.mjs`
+
+**8 mechanical changes applied (matching ADR-8 §1–§8):**
+
+1. `register` → `hello`; added `sessionName: string` to `RegisterMessage` (ADR-8 §1 + §3)
+2. `registered` → `session.registered` for `RegisteredMessage` (ADR-8 §2)
+3. `session.command` → `inject` with flat `{ requestId, text }` replacing `{ payload }` envelope (ADR-8 §4)
+4. `session.command-result` → `stream` with `{ requestId, chunk, done }` streaming chunks (ADR-8 §5)
+5. Added `StreamErrorMessage` (`stream.error`) to `InboundMessage` union (ADR-8 §5)
+6. Added `sessionId` to `PingMessage` (ADR-8 §7)
+7. Added `sessionId` to `PongMessage` (ADR-8 §8)
+8. `extension.mjs`: added `SESSION_NAME` constant (env var with SESSION_ID fallback, ADR-8 §3)
+9. `extension.mjs`: `handleCommand` → `handleInject` with real streaming (send `stream` per chunk, terminal `done: true`, `stream.error` on failure)
+
+**ADR-8 §6 (session.event):** Retained in `InboundMessage` union + `BridgeEmitter` as forward-compat dead type. No handler added. Extension stub (`wireSessionEvents`) unchanged.
+
+**`sendCommand()` API change:** Signature `(sessionId, payload) → boolean` → `(sessionId, text) → string | false`. Returns generated `requestId` on success (so relay can correlate streaming responses), `false` if session not found/unreachable.
+
+**Test results:** 296 passed, 4 skipped, 0 failed. `tsc --noEmit` clean. `npm run lint` clean. Baseline preserved.
+
+---
+
 ## Archive
 
 Full Phases 1–5 documentation in `history-archive.md`.

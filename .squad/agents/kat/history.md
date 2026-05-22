@@ -186,4 +186,27 @@ No action required Day 2. `sendCommand()` now returns `requestId` (or `false`) i
 
 **Baseline preserved:** 296 passed / 4 skipped / 0 failed ✅
 
+---
+
+### 2026-05-22 — Phase 6 Day 5: ADR-9 (Permission Prompting) Drafted — Implementation Gates Pending
+
+**Event:** Noble Six drafted ADR-9 and Jun drafted 29-scenario test catalog. Both deliverables in decisions.md.
+
+**ADR-9 Summary:**
+- **Problem:** `BridgeSession` silently discards `permissionCallback` — destructive tools execute without user consent
+- **Decision:** In-stream interleaving on existing pipe (ADR-3). 3 new message types: `permission.request` (ext→daemon), `permission.response` (daemon→ext), `permission.cancelled` (ext→daemon)
+- **Status:** PROPOSED — awaiting Aaron's decisions on 4 open questions
+
+**4 Open Questions (Aaron must decide):**
+1. Telegram UX shape (reply-keyboard vs. inline buttons vs. free-text commands)
+2. Default `timeoutMs` (30s proposed for dogfooding)
+3. `allow-always` scope (per-session/per-tool in-memory vs. persisted)
+4. Risk classification ownership (extension or daemon)
+
+**Impact on Kat:** Permission-prompting implementation is **GATED** on ADR-9 resolution. Cannot start until Aaron locks these 4 decisions. All implementation work (§10 in ADR-9) is spelled out for when gates open.
+
+**Test scenarios ready:** Jun's 29-scenario catalog + test doubles contract waiting for protocol finalization.
+
+**Blocking:** Production dogfooding cannot proceed without permission prompting. This is the gating issue for Phase 6 MVP completion.
+
 

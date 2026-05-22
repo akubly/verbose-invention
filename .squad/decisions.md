@@ -4,6 +4,26 @@
 
 ---
 
+## ADR-9: Permission Prompting Over the Bridge (2026-05-22)
+
+**Status:** PROPOSED  
+**Author:** Noble Six (Lead / Architect)  
+**Date:** 2026-05-22  
+**Relates to:** ADR-3 (pipe), ADR-6 (reconnect), ADR-7 (heartbeat), ADR-8 (wire protocol)  
+**Gating:** Production dogfooding blocked until this is resolved. 4 open questions for Aaron before Kat begins implementation.
+
+**Summary:** Adopt in-stream interleaving for permission prompts over the existing named pipe (ADR-3), adding `permission.request` / `permission.response` / `permission.cancelled` message pair to the canonical wire protocol (ADR-8). No additional pipe or channel introduced. See full document in inbox.
+
+**Open Questions for Aaron:**
+1. **Telegram UX Shape** — Reply-keyboard, inline buttons, or free-text `/allow`/`deny`?
+2. **Default `timeoutMs`** — 30s proposed; is this right for dogfooding?
+3. **`allow-always` scope** — Per-session/per-tool in-memory (loses on restart) vs. persisted to disk?
+4. **Risk classification** — Extension classifies (has tool context) or daemon (has policy knowledge)?
+
+**Full document:** 345 lines, covers problem statement, decision, wire schema, adapter integration, security, alternatives, trade-offs, implementation work (Kat), test scenarios (Jun).
+
+---
+
 ## Phase 6 Days 3–4 — Relay on Bridge (2026-05-22)
 
 **Status:** IMPLEMENTED  

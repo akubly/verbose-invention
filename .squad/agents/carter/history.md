@@ -67,10 +67,31 @@ Full Phase 1–5 documentation (MarkdownV2, message splitting, relay plumbing, s
 5. **Streaming over single-shot:** `requestId` correlation needed for relay's per-chunk editing (800ms throttle)
 6. **Typed event emitters:** Composition + overloads (not class inheritance) avoids eslint lint issues
 
-See `history-archive.md` for earlier phases and spike methodology.
+See `history-archive.md` for earlier phases and Phase 6 spike details.
 
 ---
 
-## Archive
+## Phase 6 Day 5 (2026-05-22)
 
-Full Phases 1–5 and Phase 6 spike details in `history-archive.md`.
+**Status:** ADR-9 (Permission Prompting Over Bridge) drafted. **GATING:** 4 open questions for Aaron before implementation begins.
+
+**ADR-9 Summary:**
+- **Problem:** `BridgeSession` silently discards `permissionCallback` — destructive tools run without user consent
+- **Decision:** In-stream interleaving. 3 new message types: `permission.request`, `permission.response`, `permission.cancelled` on existing pipe (ADR-3/ADR-8)
+- **Delivery scope:** Full wire schema, adapter integration (extensionBridge.ts + BridgeSession), security guidance, test scenarios (Jun's 29-scenario catalog complete)
+
+**4 Decisions Locked for Aaron:**
+1. Telegram UX shape (buttons? commands?)
+2. Default `timeoutMs` (30s proposed)
+3. `allow-always` scope (in-memory per-session vs. persisted)
+4. Risk classification owner (extension or daemon)
+
+**Impact on Carter's Bridge:** 
+- New message types added to wire protocol union (inbound: `permission.request`, `permission.cancelled`; outbound: `permission.response`)
+- New event types added to `BridgeEmitter` (`permission.request`, `permission.cancelled`)
+- New helper: `bridge.sendPermissionResponse()` to send daemon→extension decisions
+- No breaking changes to existing protocol; new types append to unions
+
+**Blocking:** Production dogfooding blocked on ADR-9 resolution. This is the gating issue for Phase 6 completion.
+
+

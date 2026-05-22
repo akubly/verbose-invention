@@ -121,7 +121,55 @@ See orchestration logs and `decisions.md` for full ADR-8 technical details.
 
 ---
 
-### 2026-05-20 — Phase 6 Day 2: ADR-8 Protocol Operationalization
+### 2026-05-22 — Phase 6 Days 3–4: Bridge Adapter (BridgeSession / BridgeSessionFactory)
+
+**Status:** Complete. All 296 tests green. tsc + lint clean.
+
+**What was built:**
+
+- **`src/bridge/bridgeSession.ts`** — `BridgeSession implements CopilotSession`. Adapts the bridge's
+  push-event model (`stream` / `stream.error`) into `AsyncIterable<string>` using an async-queue
+  pattern. The key insight: push listeners into a queue + `wake()`, drain queue in generator loop,
+  re-check after setting `signal` to close the race window between empty-queue check and `await`.
+  `try/finally` guarantees `bridge.off()` on normal completion, error, AND early iterator abandonment.
+
+- **`src/bridge/bridgeSessionFactory.ts`** — `BridgeSessionFactory implements CopilotSessionFactory`.
+  `resume()` returns `BridgeSession` if extension has registered the session by name, `null` otherwise.
+  `create()` throws if not registered (bridge sessions are extension-created, not factory-created).
+  `resetForRestart()` is a no-op per ADR-6.
+
+- **`src/bridge/compositeSessionFactory.ts`** — Bridge-first, SDK-fallback composite factory.
+  `resume()` tries bridge first, falls back to SDK. `create()` uses bridge if session is live,
+  SDK otherwise. Enables graceful coexistence of CLI-attached and Reach-spawned sessions.
+
+- **`src/bridge/extensionBridge.ts`** (minor edit) — Added `sessionName` to `InternalConnection`
+  (stored from `hello` message) and `getSessionByName()` method. Required to map relay's
+  human-readable `sessionName` to bridge's internal `sessionId`-keyed sessions map.
+
+- **`src/main.ts`** (wiring) — Starts bridge before relay wiring; gracefully falls back if pipe
+  is unavailable. Composite factory injected. `sdkFactory` kept as separate reference for shutdown.
+
+**Composition decision:** Option A (composite factory) over Option B (env flag). See decisions inbox.
+
+**Async-queue gotchas to remember:**
+1. The race window: between `queue.length === 0` check and `signal = r`, new items can arrive.
+   Fix: after `signal = r`, re-check `queue.length > 0` and immediately resolve if true.
+2. Last-chunk semantics: ADR-8 `done: true` frames can carry a non-empty `chunk`. Handle both
+   in the same listener call (push chunk item then done item).
+3. Listener cast: `bridge.off()` takes `(...args: unknown[]) => void`. Typed listeners must be cast.
+   Store typed aliases and cast only at `off()` callsites.
+4. `sendFn` separation: Constructor takes `sendFn` separate from `bridge` for testability.
+   The factory passes `bridge.sendCommand.bind(bridge)`; tests can pass a simple mock.
+
+**Known gap:** Permission prompting over the bridge is unimplemented (TODO ADR-9?). Bridge sessions
+ignore `permissionCallback` — the CLI extension handles permissions locally. Documented in decisions inbox.
+
+**For Jun:** BridgeSession public API exactly matches K1 spec:
+- Constructor: `(bridge: BridgeEmitter, sessionId: string, sendFn: (sid, text) => string | false)`
+- `send(text: string): AsyncIterable<string>`
+- Listener cleanup via `try/finally` with `bridge.off()` cast
+
+
 
 **Status:** Complete. All bridges migrated to ADR-8 canonical schema. 296 tests green.
 

@@ -1,6 +1,93 @@
 # Decisions Archive
 
-**Last updated:** 2026-05-19
+**Last updated:** 2026-05-22
+
+---
+
+## Phase 6 Days 3–4 — Relay on Bridge (2026-05-22)
+
+**Status:** IMPLEMENTED  
+**By:** Noble Six (Architect), Kat (Implementation), Jun (Testing)
+
+---
+
+### Context
+
+Days 3–4 complete the bridge integration with a push-to-pull async-iterator adapter pattern. The bridge provides event-driven streaming (`bridge.on('stream', ...)` with chunks filtered by `requestId`). The relay expects an async iterable (`AsyncIterable<string>` from `CopilotSession.send()`). `BridgeSession` adapts one model to the other, preserving all relay throttle/edit/accumulation logic unchanged.
+
+**What shipped:**
+- **`BridgeSession` (bridgeSession.ts):** Implements `CopilotSession` with push-to-pull async-queue adapter. Yields chunks immediately, throws on `stream.error`, guaranteed listener cleanup.
+- **`BridgeSessionFactory` (bridgeSessionFactory.ts):** `resume()` returns `BridgeSession` if registered on bridge, `null` if not. `create()` throws if session not registered.
+- **`CompositeSessionFactory` (compositeSessionFactory.ts):** Bridge-first, SDK-fallback. No config flag — graceful coexistence. CLI sessions over extension pipe get `BridgeSession` transparently; pure SDK sessions unchanged.
+- **`extensionBridge.ts` additions:** `getSessionByName()` to map human-readable session names to bridge's internal `sessionId` keyed map. Added `sessionName` tracking in `InternalConnection`.
+- **`main.ts` wiring:** Bridge + composite factory instantiated and passed to relay; graceful fallback if pipe unavailable.
+- **20 new tests (J1+J2+J3):** 10 `BridgeSession` contract tests, 4 relay-integration tests, 6 `BridgeSessionFactory` tests. Total suite: 316 passed, 4 skipped, 0 failed.
+
+**Key design choice:** No relay.ts changes. Option A (adapter pattern) preserves 800ms throttle, `MAX_ACCUMULATED_BYTES` cap, MarkdownV2 fallback, split-chunk logic, and error handling automatically. Zero regression risk.
+
+---
+
+### Decisions Made
+
+#### K3 Composition: Bridge-First Composite Factory (Option A)
+
+**Decision:** Use `CompositeSessionFactory` (bridge-first, SDK-fallback) instead of config flag or env var swap.
+
+**Rationale:**
+- Single factory wraps both. `resume()` and `create()` try bridge first; fallback to SDK if session not registered.
+- Graceful coexistence: CLI sessions attached over extension pipe get `BridgeSession` adapters. Pure SDK sessions unchanged.
+- No config coordination. Bridge `resume()` returns `null` → fallback automatic and silent.
+- Prevents hard-disable of either factory, enabling mixed use (live CLI session + standalone SDK session in same daemon).
+
+**Impact:** `src/main.ts` wires one factory (`CompositeSessionFactory`). Relay calls one method. Zero delegation logic needed.
+
+---
+
+#### BridgeEmitter Interface (Reused)
+
+**Decision:** Use existing `BridgeEmitter` interface from `extensionBridge.ts` directly.
+
+**Rationale:** Carter's Day 2 work already extracted the minimal typed-subscription interface. `BridgeSession` takes `BridgeEmitter` + separate `sendFn: (sessionId, text) => string | false` — exactly matching Noble Six's K1 spec and unit-testable with Jun's fake `BridgeEmitter`.
+
+---
+
+#### Contract Gap: Permission Callback Ignored (ADR-9 Future)
+
+**Gap:** Bridge sessions accept `permissionCallback` in `resume()`/`create()` for interface compatibility but ignore it. Wire protocol has no mechanism to send permission requests from extension to daemon and await user decision.
+
+**Impact:** Bridge sessions always auto-approve (or use CLI extension's default policy). Interactive `interactiveDestructive` policy has no effect on bridge-attached sessions.
+
+**Future:** ADR-9 could add `permission.request` / `permission.response` message pair to protocol.
+
+**Decision:** Accept gap. Bridge sessions defer to CLI's permission policy. No blocker for Phase 6 completion.
+
+---
+
+### J2 Scope Reduction Rationale
+
+Original charter called for a single complex test asserting at-most-once-per-800ms throttle. Full test would require tight coupling to relay implementation details not exposed by its contract.
+
+**Actual J2 tests (4):**
+1. `BridgeSession` yields accumulated chunks (direct consumption)
+2. `BridgeSession` closes cleanly on `done` sentinel
+3. Relay + BridgeSession: final `editMessageText` contains all chunks (content contract)
+4. Relay + BridgeSession: edit count ≤ chunk count (throttle regression guard)
+
+Tests 3–4 verify throttle without needing precise timing. Full at-most-once-per-800ms bound already tested exhaustively in `relay.test.ts` (unit-level). No regression risk.
+
+---
+
+### Minor Discovery: requestId Filtering
+
+**Note:** `BridgeSession` filters events by `requestId` only, not `sessionId`. Foreign session IDs with the same `requestId` would NOT be filtered (but effectively never occurs since `requestId` is UUID-per-request). Low risk in production; documented here for future awareness.
+
+---
+
+### Verification
+
+- `tsc --noEmit` ✅
+- `npm run lint` ✅
+- `npx vitest run` → 316 passed / 4 skipped / 0 failed ✅
 
 ---
 

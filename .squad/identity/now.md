@@ -1,28 +1,36 @@
 ---
-updated_at: 2026-05-20T00:02:37Z
-focus_area: Phase 6 Day 2 COMPLETE — ADR-8 protocol migration operationalized. All bridges migrated. 296 tests green. Days 3–4 relay integration ready.
-active_issues: [Days 3–4 — Kat relay integration (requestId correlation, stream editing). Day 5+ — end-to-end testing, dogfooding, production readiness.]
+updated_at: 2026-05-22T19:56:00Z
+focus_area: Phase 6 Days 3–4 COMPLETE — BridgeSession adapter + composite factory wired; relay inherits all 800ms throttle + MarkdownV2 + splitter logic over the bridge for free. 316 tests green. Day 5+ end-to-end dogfooding next.
+active_issues: [Day 5+ — end-to-end testing against a live CLI session over the pipe; permission-prompting over bridge (ADR-9 future); production readiness.]
 ---
 
 # What We're Focused On
 
-**Phase 6: Session 0 Control Plane + Extension-Bridge Data Plane — DAY 2 COMPLETE, ADR-8 OPERATIONALIZED**
+**Phase 6: Session 0 Control Plane + Extension-Bridge Data Plane — DAYS 3–4 COMPLETE, RELAY ON BRIDGE**
 
-Phases 1–5 shipped. Aaron dogfooding Reach. **Phase 6 Day 1 implementation kicked off. Phase 6 Day 2 protocol migration complete.** All agents shipped code, all 296 tests green. ADR-8 canonical schema validated across all three bridges.
+Phases 1–5 shipped. Aaron dogfooding Reach. Phase 6 Days 1–2 (ADR-8 protocol) committed. **Days 3–4 (relay-on-bridge) complete and green.** Telegram messages can now flow over the extension pipe with zero changes to the relay's battle-tested throttle/MarkdownV2/splitter logic.
 
-## Phase 6 Day 2 Summary
+## Phase 6 Days 3–4 Summary
 
-**Code Delivered:**
-- ✅ **Carter:** `extensionBridge.ts` + `extension.mjs` migrated to ADR-8 (8 mechanical changes), all tests green
-- ✅ **Jun:** `FakeDaemon.ts` updated with `SessionEventMessage` type (1 addition), all tests green
-- ✅ **Scribe:** Decisions merged (inbox cleared), old archive entries purged, orchestration logs written
+**Code Delivered (Kat):**
+- ✅ `src/bridge/bridgeSession.ts` — `BridgeSession implements CopilotSession`; push-to-pull async-iterator adapter with guaranteed listener cleanup
+- ✅ `src/bridge/bridgeSessionFactory.ts` — `CopilotSessionFactory` over the bridge
+- ✅ `src/bridge/compositeSessionFactory.ts` — bridge-first, SDK-fallback (no config flag; graceful coexistence)
+- ✅ `src/bridge/extensionBridge.ts` — added `getSessionByName()` to map relay's session names to bridge `sessionId`
+- ✅ `src/main.ts` — wired bridge + composite factory; graceful fallback if pipe unavailable on startup
+- ✅ New skill: `push-to-pull-async-iterator`
 
-**Protocol Event:**
-ADR-8 canonical wire protocol fully operationalized. Protocol drift reconciled Day 1; Day 2 migration validates schema across all code paths (extensionBridge, extension, test doubles).
+**Tests Delivered (Jun):**
+- ✅ `tests/bridge/bridgeSession.test.ts` (10 cases — single/multi-chunk, error, foreign-requestId filter, unreachable, listener-cleanup on success/error/abandon, pre-iterate buffering, empty completion)
+- ✅ `tests/bridge/bridgeSessionFactory.test.ts` (6 cases)
+- ✅ `tests/bridge/relay-with-bridge.test.ts` (J2 throttle regression across adapter boundary)
+- ✅ New skill: `async-iterable-adapter-testing` (frozen-Date gotcha + FakeBridge pattern)
 
-**Architecture Status:** 7 ADRs locked + ADR-8 (protocol). All bridges speak canonical JSON-Lines schema. Ready for relay integration.
+**Architecture Status:** ADRs 1–8 locked and implemented. Relay no longer cares whether sessions are SDK-backed or bridge-backed. Composite factory enables both transparently.
 
-**Test Status:** 296 passed, 4 skipped, 0 failed ✅
+**Test Status:** 316 passed, 4 skipped, 0 failed ✅ (296 prior + 20 new bridge tests)
+
+**Known gap (ADR-9 candidate):** bridge sessions silently ignore `permissionCallback` — destructive-tool prompting over the bridge is not yet specced in the wire protocol.
 
 ## Architecture — LOCKED + ADR-8 OPERATIONALIZED
 
@@ -36,21 +44,24 @@ ADR-8 canonical wire protocol fully operationalized. Protocol drift reconciled D
 7. ✅ **ADR-7:** Heartbeat = ping/pong + pipe-teardown detection
 8. ✅ **ADR-8:** Canonical Pipe Wire Protocol (streaming, request correlation, self-describing messages)
 
-## Next Steps (Days 3–4)
+## Next Steps (Day 5+)
 
-**Relay Integration (Kat):**
-- Consume `requestId` from `bridge.sendCommand()` for message correlation
-- Match incoming `stream` events to pending Telegram placeholder edits
-- Preserve 800ms throttle window for real-time UX
+**End-to-End Dogfooding:**
+- Install/start daemon as logged-in user; attach a real Copilot CLI session through the extension; drive it from Telegram
+- Validate streaming behavior under real network conditions (chunk timing, throttle, splitter against real Copilot output)
+- Validate ADR-6 reconnect + ADR-7 heartbeat against a live extension restart
 
-**End-to-End Testing & Dogfooding (Days 5+)**
+**Production Readiness:**
+- Decide on ADR-9 (permission prompting over the bridge — destructive-tool approvals)
+- Crash-resilience drills: kill extension mid-stream, kill daemon mid-stream, network hiccups
+- Logging and observability for the bridge path
 
 ---
 
 ## Latest Artifacts
 
-- **Decisions:** `.squad/decisions.md` (Phase 6 ADRs 1–8, merged + archived)
-- **Orchestration:** `.squad/orchestration-log/2026-05-20T0002-phase6-day2-{carter,jun}.md`
-- **Session log:** `.squad/log/2026-05-20T0002-phase6-day2-adr8-migration.md`
-- **Agent updates:** Each agent's `history.md` updated with Day 2 recap
+- **Decisions:** `.squad/decisions.md` (Phase 6 ADRs 1–8; Days 3–4 entries pending Scribe merge)
+- **Orchestration:** `.squad/orchestration-log/` (Days 3–4 entries pending Scribe)
+- **Agent updates:** Kat + Jun `history.md` updated with Days 3–4 recap
+- **New skills:** `push-to-pull-async-iterator`, `async-iterable-adapter-testing`
 

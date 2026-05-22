@@ -57,12 +57,24 @@ export type StreamErrorMessage = {
   error: string;
 };
 
+/**
+ * Forward-compat hook (ADR-8 §6): daemon-pushed session lifecycle events
+ * (tool calls, permission prompts, etc.). No handler today — daemon logs and
+ * ignores. Shape per ADR-8 canonical schema.
+ */
+export type SessionEventMessage = {
+  type: 'session.event';
+  sessionId: string;
+  payload: unknown;
+};
+
 /** All message shapes the daemon can receive from an extension. */
 export type InboundMessage =
   | HelloMessage
   | PongMessage
   | StreamChunkMessage
-  | StreamErrorMessage;
+  | StreamErrorMessage
+  | SessionEventMessage;
 
 export type PingMessage = {
   type: 'ping';

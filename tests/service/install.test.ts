@@ -40,6 +40,27 @@ vi.mock('fs', async (importOriginal) => {
   };
 });
 
+// ─── Mock os ─────────────────────────────────────────────────────────────────
+
+vi.mock('os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('os')>();
+  return {
+    ...actual,
+    userInfo: vi.fn(() => ({ username: 'TestUser', uid: -1, gid: -1, shell: null, homedir: 'C:\\Users\\TestUser' })),
+  };
+});
+
+// ─── Mock readline ───────────────────────────────────────────────────────────
+
+vi.mock('readline', () => ({
+  createInterface: vi.fn(() => ({
+    question: vi.fn((_prompt: string, cb: (answer: string) => void) => cb('test-password')),
+    close: vi.fn(),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    _writeToOutput: (_str: string) => {},
+  })),
+}));
+
 // ─── Spy declarations (initialized in beforeAll) ────────────────────────────
 
 let mockExit: ReturnType<typeof vi.spyOn<typeof process, 'exit'>>;
@@ -70,7 +91,11 @@ describe('Service installer', () => {
       TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN,
       TELEGRAM_CHAT_ID: process.env.TELEGRAM_CHAT_ID,
       REACH_MODEL: process.env.REACH_MODEL,
+      USERDOMAIN: process.env.USERDOMAIN,
+      COMPUTERNAME: process.env.COMPUTERNAME,
     };
+    // Deterministic user-resolution values for all install() tests
+    process.env.USERDOMAIN = 'TESTDOMAIN';
     vi.clearAllMocks();
     constructedConfig = undefined;
     eventHandlers.clear();
@@ -101,15 +126,15 @@ describe('Service installer', () => {
   // ── install() ─────────────────────────────────────────────────────────────
 
   describe('install()', () => {
-    it('creates a Service and calls svc.install() when script exists', () => {
-      install();
+    it('creates a Service and calls svc.install() when script exists', async () => {
+      await install();
 
       expect(mockSvcInstall).toHaveBeenCalledOnce();
       expect(constructedConfig).toBeDefined();
       expect(constructedConfig!.name).toBe('Reach');
     });
 
-    it('exits with error when dist/main.js is missing', () => {
+    it('exits with error when dist/main.js is missing', async () => {
       mockExistsSync.mockImplementation((filePath: unknown) => {
         const p = String(filePath);
         if (p.endsWith('main.js')) return false;       // script missing
@@ -118,7 +143,7 @@ describe('Service installer', () => {
         return false;
       });
 
-      expect(() => install()).toThrow('process.exit(1)');
+      await expect(install()).rejects.toThrow('process.exit(1)');
       expect(mockExit).toHaveBeenCalledWith(1);
       expect(mockConsoleError).toHaveBeenCalledWith(
         expect.stringContaining('Script not found'),
@@ -126,7 +151,7 @@ describe('Service installer', () => {
       expect(mockSvcInstall).not.toHaveBeenCalled();
     });
 
-    it('exits with error when .env file is missing and env vars are not set', () => {
+    it('exits with error when .env file is missing and env vars are not set', async () => {
       mockExistsSync.mockImplementation((filePath: unknown) => {
         const p = String(filePath);
         if (p.endsWith('main.js')) return true;        // script exists
@@ -138,14 +163,14 @@ describe('Service installer', () => {
       delete process.env.TELEGRAM_BOT_TOKEN;
       delete process.env.TELEGRAM_CHAT_ID;
 
-      expect(() => install()).toThrow('process.exit(1)');
+      await expect(install()).rejects.toThrow('process.exit(1)');
       expect(mockConsoleError).toHaveBeenCalledWith(
         expect.stringContaining('required env vars are not set'),
       );
       expect(mockSvcInstall).not.toHaveBeenCalled();
     });
 
-    it('exits with error when .env is missing and only TELEGRAM_BOT_TOKEN is set', () => {
+    it('exits with error when .env is missing and only TELEGRAM_BOT_TOKEN is set', async () => {
       mockExistsSync.mockImplementation((filePath: unknown) => {
         const p = String(filePath);
         if (p.endsWith('main.js')) return true;        // script exists
@@ -157,14 +182,14 @@ describe('Service installer', () => {
       process.env.TELEGRAM_BOT_TOKEN = 'test-token';
       delete process.env.TELEGRAM_CHAT_ID;
 
-      expect(() => install()).toThrow('process.exit(1)');
+      await expect(install()).rejects.toThrow('process.exit(1)');
       expect(mockConsoleError).toHaveBeenCalledWith(
         expect.stringContaining('required env vars are not set'),
       );
       expect(mockSvcInstall).not.toHaveBeenCalled();
     });
 
-    it('exits with error when .env is missing and only TELEGRAM_CHAT_ID is set', () => {
+    it('exits with error when .env is missing and only TELEGRAM_CHAT_ID is set', async () => {
       mockExistsSync.mockImplementation((filePath: unknown) => {
         const p = String(filePath);
         if (p.endsWith('main.js')) return true;        // script exists
@@ -176,14 +201,14 @@ describe('Service installer', () => {
       delete process.env.TELEGRAM_BOT_TOKEN;
       process.env.TELEGRAM_CHAT_ID = '12345';
 
-      expect(() => install()).toThrow('process.exit(1)');
+      await expect(install()).rejects.toThrow('process.exit(1)');
       expect(mockConsoleError).toHaveBeenCalledWith(
         expect.stringContaining('required env vars are not set'),
       );
       expect(mockSvcInstall).not.toHaveBeenCalled();
     });
 
-    it('warns but continues when .env is missing but env vars are set', () => {
+    it('warns but continues when .env is missing but env vars are set', async () => {
       mockExistsSync.mockImplementation((filePath: unknown) => {
         const p = String(filePath);
         if (p.endsWith('main.js')) return true;        // script exists
@@ -195,7 +220,7 @@ describe('Service installer', () => {
       process.env.TELEGRAM_BOT_TOKEN = 'test-token';
       process.env.TELEGRAM_CHAT_ID = '12345';
 
-      install();
+      await install();
 
       expect(mockConsoleWarn).toHaveBeenCalledWith(
         expect.stringContaining('WARNING'),
@@ -203,12 +228,12 @@ describe('Service installer', () => {
       expect(mockSvcInstall).toHaveBeenCalledOnce();
     });
 
-    it('warns when .env exists but is missing required vars', () => {
+    it('warns when .env exists but is missing required vars', async () => {
       mockReadFileSync.mockReturnValue('# empty config\nREACH_MODEL=gpt-4\n');
       delete process.env.TELEGRAM_BOT_TOKEN;
       delete process.env.TELEGRAM_CHAT_ID;
 
-      install();
+      await install();
 
       expect(mockConsoleWarn).toHaveBeenCalledWith(
         expect.stringContaining('Required vars appear missing'),
@@ -223,20 +248,20 @@ describe('Service installer', () => {
       expect(mockSvcInstall).toHaveBeenCalledOnce();
     });
 
-    it('does not warn when .env has both required vars', () => {
+    it('does not warn when .env has both required vars', async () => {
       mockReadFileSync.mockReturnValue('TELEGRAM_BOT_TOKEN=abc\nTELEGRAM_CHAT_ID=123\n');
 
-      install();
+      await install();
 
       expect(mockConsoleWarn).not.toHaveBeenCalled();
       expect(mockSvcInstall).toHaveBeenCalledOnce();
     });
 
-    it('warns and embeds when .env is missing a var but process.env has it', () => {
+    it('warns and embeds when .env is missing a var but process.env has it', async () => {
       mockReadFileSync.mockReturnValue('TELEGRAM_BOT_TOKEN=abc\n');
       process.env.TELEGRAM_CHAT_ID = '999';
 
-      install();
+      await install();
 
       expect(mockConsoleWarn).toHaveBeenCalledWith(
         expect.stringContaining('embedded from the current environment'),
@@ -250,13 +275,39 @@ describe('Service installer', () => {
       expect(envNames).toContain('TELEGRAM_CHAT_ID');
     });
 
-    it('exits 0 when alreadyinstalled event fires', () => {
-      install();
+    it('exits 0 when alreadyinstalled event fires', async () => {
+      await install();
 
       const handler = eventHandlers.get('alreadyinstalled');
       expect(handler).toBeDefined();
       expect(() => handler!()).toThrow('process.exit(0)');
       expect(mockExit).toHaveBeenCalledWith(0);
+    });
+
+    it('installs service under current user account (not NetworkService)', async () => {
+      await install();
+
+      expect(constructedConfig!.logOnAs).toEqual({
+        domain: 'TESTDOMAIN',
+        account: 'TestUser',
+        password: 'test-password',
+      });
+      expect(constructedConfig!.allowServiceLogon).toBe(true);
+    });
+
+    it('exits with error when empty password is entered', async () => {
+      const { createInterface } = await import('readline');
+      (createInterface as ReturnType<typeof vi.fn>).mockReturnValueOnce({
+        question: vi.fn((_prompt: string, cb: (answer: string) => void) => cb('')),
+        close: vi.fn(),
+        _writeToOutput: (_str: string) => {},
+      });
+
+      await expect(install()).rejects.toThrow('process.exit(1)');
+      expect(mockConsoleError).toHaveBeenCalledWith(
+        expect.stringContaining('requires your Windows password'),
+      );
+      expect(mockSvcInstall).not.toHaveBeenCalled();
     });
   });
 
@@ -285,12 +336,22 @@ describe('Service installer', () => {
       expect(constructedConfig!.workingDirectory).toBe(process.cwd());
     });
 
-    it('runs as NetworkService via logOnAs', () => {
+    it('does not set logOnAs when no account is provided', () => {
       createService();
 
+      expect(constructedConfig!.logOnAs).toBeUndefined();
+      expect(constructedConfig!.allowServiceLogon).toBeUndefined();
+    });
+
+    it('sets logOnAs with user account when account is provided', () => {
+      createService({
+        account: { username: 'AaronSmith', domain: 'MYCOMPANY', password: 'secret' },
+      });
+
       expect(constructedConfig!.logOnAs).toEqual({
-        domain: 'NT AUTHORITY',
-        account: 'NetworkService',
+        domain: 'MYCOMPANY',
+        account: 'AaronSmith',
+        password: 'secret',
       });
       expect(constructedConfig!.allowServiceLogon).toBe(true);
     });
@@ -346,30 +407,30 @@ describe('Service installer', () => {
       process.argv = originalArgv;
     });
 
-    it('exits with error when no command is provided', () => {
+    it('exits with error when no command is provided', async () => {
       process.argv = ['node', 'install.js'];
 
-      expect(() => main()).toThrow('process.exit(1)');
+      await expect(main()).rejects.toThrow('process.exit(1)');
       expect(mockExit).toHaveBeenCalledWith(1);
       expect(mockConsoleError).toHaveBeenCalledWith(
         expect.stringContaining('Usage'),
       );
     });
 
-    it('exits with error when an unknown command is provided', () => {
+    it('exits with error when an unknown command is provided', async () => {
       process.argv = ['node', 'install.js', 'restart'];
 
-      expect(() => main()).toThrow('process.exit(1)');
+      await expect(main()).rejects.toThrow('process.exit(1)');
       expect(mockExit).toHaveBeenCalledWith(1);
       expect(mockConsoleError).toHaveBeenCalledWith(
         expect.stringContaining('Usage'),
       );
     });
 
-    it('calls install() when command is "install"', () => {
+    it('calls install() when command is "install"', async () => {
       process.argv = ['node', 'install.js', 'install'];
 
-      main();
+      await main();
 
       expect(mockSvcInstall).toHaveBeenCalledOnce();
     });

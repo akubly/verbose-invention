@@ -2,11 +2,12 @@
  * extensionBridge.ts — Named-pipe server (daemon side).
  *
  * Listens on \\.\pipe\reach-bridge (single pipe, multiplexed by sessionId).
- * Each CLI extension instance connects, sends a `register` message, and is
+ * Each CLI extension instance connects, sends a `hello` message, and is
  * tracked in a Map<sessionId, ExtensionConnection>.
  *
  * Protocol: UTF-8 JSON-Lines (one JSON object per newline-terminated line).
  *           Max 64 KB per line (ADR-3).
+ *           Canonical message schema per ADR-8.
  *
  * Heartbeat: daemon sends `ping` every 30 s (ADR-7). Extension must reply
  *            `pong` within 5 s; if missed, a 15 s grace period begins.
@@ -15,7 +16,8 @@
  *            immediately via the `close` event (fast path, <1 s).
  *
  * ADR compliance: ADR-3 (single pipe), ADR-4 (crash = unreachable),
- *                 ADR-5 (user-level daemon), ADR-7 (ping/pong + teardown).
+ *                 ADR-5 (user-level daemon), ADR-7 (ping/pong + teardown),
+ *                 ADR-8 (canonical wire protocol: inject/stream/requestId).
  */
 
 import { EventEmitter } from 'node:events';
@@ -37,44 +39,59 @@ const MAX_LINE_BYTES = 64 * 1024;
 //
 // Inbound (extension → daemon)
 
-/** First message from every new extension connection. */
+/** First message from every new extension connection (re-sent on reconnect per ADR-6). */
 export interface RegisterMessage {
-  type: 'register';
+  type: 'hello';
   sessionId: string;
+  /** Human-readable session label. Reads SESSION_NAME env var; falls back to sessionId. */
+  sessionName: string;
 }
 
 /** Heartbeat reply from extension. `id` must echo the ping's `id`. */
 export interface PongMessage {
   type: 'pong';
   id: string;
+  sessionId: string;
 }
 
-/** CLI session event forwarded from the extension to the daemon. */
+/** CLI session event forwarded from the extension to the daemon (reserved for forward compat). */
 export interface SessionEventMessage {
   type: 'session.event';
   sessionId: string;
   payload: unknown;
 }
 
-/** Result of a `session.command` that the daemon previously sent. */
-export interface SessionCommandResultMessage {
-  type: 'session.command-result';
+/** One streaming chunk of a CLI response (extension → daemon). */
+export interface StreamMessage {
+  type: 'stream';
   sessionId: string;
-  payload: unknown;
+  requestId: string;
+  chunk: string;
+  /** `true` on the final chunk for this requestId. Exactly one per request. */
+  done: boolean;
+}
+
+/** Terminal error for a CLI response (extension → daemon). */
+export interface StreamErrorMessage {
+  type: 'stream.error';
+  sessionId: string;
+  requestId: string;
+  error: string;
 }
 
 export type InboundMessage =
   | RegisterMessage
   | PongMessage
   | SessionEventMessage
-  | SessionCommandResultMessage;
+  | StreamMessage
+  | StreamErrorMessage;
 
 //
 // Outbound (daemon → extension)
 
-/** Acknowledgement sent after successful `register`. */
+/** Acknowledgement sent after successful `hello`. */
 export interface RegisteredMessage {
-  type: 'registered';
+  type: 'session.registered';
   sessionId: string;
 }
 
@@ -82,19 +99,21 @@ export interface RegisteredMessage {
 export interface PingMessage {
   type: 'ping';
   id: string;
+  sessionId: string;
 }
 
 /** Command injected into the CLI session by the daemon. */
-export interface SessionCommandMessage {
-  type: 'session.command';
+export interface InjectMessage {
+  type: 'inject';
   sessionId: string;
-  payload: unknown;
+  requestId: string;
+  text: string;
 }
 
 export type OutboundMessage =
   | RegisteredMessage
   | PingMessage
-  | SessionCommandMessage;
+  | InjectMessage;
 
 // ── Connection state ─────────────────────────────────────────────────────────
 
@@ -125,18 +144,23 @@ interface InternalConnection extends ExtensionConnection {
  * Typed event subscription handle for ExtensionBridge.
  *
  * Events:
- * - `session.registered`     — extension connected and registered
- * - `session.disconnected`   — pipe closed or heartbeat timed out (session evicted)
- * - `session.event`          — CLI event forwarded by the extension
- * - `session.command-result` — result of a daemon-injected command
+ * - `session.registered`  — extension connected and sent hello
+ * - `session.disconnected` — pipe closed or heartbeat timed out (session evicted)
+ * - `session.event`       — CLI event forwarded by the extension (reserved, future use)
+ * - `stream`              — one streaming chunk from a CLI response
+ * - `stream.error`        — terminal error for a CLI response
  */
 export interface BridgeEmitter {
   on(event: 'session.registered', listener: (sessionId: string) => void): this;
   on(event: 'session.disconnected', listener: (sessionId: string) => void): this;
   on(event: 'session.event', listener: (sessionId: string, payload: unknown) => void): this;
   on(
-    event: 'session.command-result',
-    listener: (sessionId: string, payload: unknown) => void,
+    event: 'stream',
+    listener: (sessionId: string, requestId: string, chunk: string, done: boolean) => void,
+  ): this;
+  on(
+    event: 'stream.error',
+    listener: (sessionId: string, requestId: string, error: string) => void,
   ): this;
   off(event: string, listener: (...args: unknown[]) => void): this;
 }
@@ -162,8 +186,12 @@ export class ExtensionBridge implements BridgeEmitter {
   on(event: 'session.disconnected', listener: (sessionId: string) => void): this;
   on(event: 'session.event', listener: (sessionId: string, payload: unknown) => void): this;
   on(
-    event: 'session.command-result',
-    listener: (sessionId: string, payload: unknown) => void,
+    event: 'stream',
+    listener: (sessionId: string, requestId: string, chunk: string, done: boolean) => void,
+  ): this;
+  on(
+    event: 'stream.error',
+    listener: (sessionId: string, requestId: string, error: string) => void,
   ): this;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: string, listener: (...args: any[]) => void): this {
@@ -246,15 +274,16 @@ export class ExtensionBridge implements BridgeEmitter {
   }
 
   /**
-   * Send a command payload to an extension identified by `sessionId`.
-   * Returns `true` if the message was sent, `false` if the session is
-   * not registered or is unreachable.
+   * Inject a text command into an extension identified by `sessionId`.
+   * Generates and returns a `requestId` for response correlation.
+   * Returns `false` if the session is not registered or is unreachable.
    */
-  sendCommand(sessionId: string, payload: unknown): boolean {
+  sendCommand(sessionId: string, text: string): string | false {
     const conn = this.sessions.get(sessionId);
     if (conn === undefined || conn.status !== 'registered') return false;
-    conn.send({ type: 'session.command', sessionId, payload });
-    return true;
+    const requestId = randomUUID();
+    conn.send({ type: 'inject', sessionId, requestId, text });
+    return requestId;
   }
 
   // ── Connection lifecycle ────────────────────────────────────────────────────
@@ -326,8 +355,8 @@ export class ExtensionBridge implements BridgeEmitter {
     const conn = this.findConnectionBySocket(socket);
 
     switch (type) {
-      case 'register':
-        this.handleRegister(socket, msg as RegisterMessage);
+      case 'hello':
+        this.handleHello(socket, msg as RegisterMessage);
         break;
       case 'pong':
         if (conn !== undefined) this.handlePong(conn, msg as PongMessage);
@@ -337,21 +366,26 @@ export class ExtensionBridge implements BridgeEmitter {
           this._emitter.emit('session.event', conn.sessionId, (msg as SessionEventMessage).payload);
         }
         break;
-      case 'session.command-result':
+      case 'stream': {
         if (conn !== undefined) {
-          this._emitter.emit(
-            'session.command-result',
-            conn.sessionId,
-            (msg as SessionCommandResultMessage).payload,
-          );
+          const sm = msg as StreamMessage;
+          this._emitter.emit('stream', conn.sessionId, sm.requestId, sm.chunk, sm.done);
         }
         break;
+      }
+      case 'stream.error': {
+        if (conn !== undefined) {
+          const se = msg as StreamErrorMessage;
+          this._emitter.emit('stream.error', conn.sessionId, se.requestId, se.error);
+        }
+        break;
+      }
       default:
         console.warn(`[bridge] Unknown message type "${String(type)}" — ignoring`);
     }
   }
 
-  private handleRegister(socket: net.Socket, msg: RegisterMessage): void {
+  private handleHello(socket: net.Socket, msg: RegisterMessage): void {
     const { sessionId } = msg;
 
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
@@ -361,7 +395,7 @@ export class ExtensionBridge implements BridgeEmitter {
     }
 
     // Evict any stale connection for the same sessionId (extension reconnected
-    // after daemon restart per ADR-6 backoff policy).
+    // after daemon restart per ADR-6 backoff policy; re-sends hello on reconnect).
     const stale = this.sessions.get(sessionId);
     if (stale !== undefined && stale.socket !== socket) {
       console.log(`[bridge] Replacing stale connection for session ${sessionId}`);
@@ -389,7 +423,7 @@ export class ExtensionBridge implements BridgeEmitter {
     this.pendingSockets.delete(socket);
     this.sessions.set(sessionId, conn);
 
-    conn.send({ type: 'registered', sessionId });
+    conn.send({ type: 'session.registered', sessionId });
     console.log(`[bridge] Session registered: ${sessionId}`);
     this._emitter.emit('session.registered', sessionId);
   }
@@ -422,7 +456,7 @@ export class ExtensionBridge implements BridgeEmitter {
 
     const id = randomUUID();
     conn.pendingPingId = id;
-    conn.send({ type: 'ping', id });
+    conn.send({ type: 'ping', id, sessionId: conn.sessionId });
 
     // ADR-7: pong window (5 s), then grace period (15 s).
     conn.pongTimeoutHandle = setTimeout(() => {

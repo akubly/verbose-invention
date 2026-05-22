@@ -13,23 +13,24 @@
  * it is terminated. The extension must not hold any long-lived state that
  * cannot be re-established on reconnect.
  *
- * BRIDGE PROTOCOL (JSON-Lines, UTF-8, max 64 KB per line):
+ * BRIDGE PROTOCOL (JSON-Lines, UTF-8, max 64 KB per line, ADR-8 canonical schema):
  *
  *   Inbound  (daemon → extension):
- *     { "type": "registered", "sessionId": "..." }
- *     { "type": "ping", "id": "<uuid>" }
- *     { "type": "session.command", "sessionId": "...", "payload": { ... } }
+ *     { "type": "session.registered", "sessionId": "..." }
+ *     { "type": "ping", "id": "<uuid>", "sessionId": "..." }
+ *     { "type": "inject", "sessionId": "...", "requestId": "...", "text": "..." }
  *
  *   Outbound (extension → daemon):
- *     { "type": "register", "sessionId": "..." }
- *     { "type": "pong", "id": "<uuid>" }
- *     { "type": "session.event", "sessionId": "...", "payload": { ... } }
- *     { "type": "session.command-result", "sessionId": "...", "payload": { ... } }
+ *     { "type": "hello", "sessionId": "...", "sessionName": "..." }
+ *     { "type": "pong", "id": "<uuid>", "sessionId": "..." }
+ *     { "type": "stream", "sessionId": "...", "requestId": "...", "chunk": "...", "done": false }
+ *     { "type": "stream.error", "sessionId": "...", "requestId": "...", "error": "..." }
+ *     { "type": "session.event", "sessionId": "...", "payload": { ... } }  (future use)
  *
  * RECONNECT POLICY (ADR-6):
  *   Exponential backoff — base 1 s, multiplier 2×, ceiling 300 s.
  *   Never give up while the CLI session is alive.
- *   On successful reconnect: re-send `register` and reset backoff.
+ *   On successful reconnect: re-send `hello` and reset backoff.
  *
  * HEARTBEAT (ADR-7):
  *   Daemon sends `ping` every 30 s; extension replies `pong` with same `id`.
@@ -63,6 +64,12 @@ const BACKOFF_MULTIPLIER = 2;
 
 /** The SESSION_ID assigned by the CLI. Available as env var in extension processes. */
 const SESSION_ID = process.env['SESSION_ID'] ?? '';
+
+/**
+ * Human-readable session name. Read from SESSION_NAME env var if set by the CLI;
+ * fall back to SESSION_ID so the field is always a non-empty string (ADR-8 §3).
+ */
+const SESSION_NAME = process.env['SESSION_NAME'] || SESSION_ID;
 
 /** Copilot SDK session handle (set on first successful joinSession). */
 let sdkSession = null;
@@ -148,17 +155,17 @@ function sendToDaemon(msg) {
  */
 function handleMessage(msg) {
   switch (msg.type) {
-    case 'registered':
+    case 'session.registered':
       log('info', `Registered with daemon (session: ${msg.sessionId})`);
       break;
 
     case 'ping':
-      // ADR-7: reply immediately with the same id.
-      sendToDaemon({ type: 'pong', id: msg.id });
+      // ADR-7: reply immediately with the same id, including sessionId (ADR-8 §8).
+      sendToDaemon({ type: 'pong', id: msg.id, sessionId: SESSION_ID });
       break;
 
-    case 'session.command':
-      handleCommand(msg);
+    case 'inject':
+      handleInject(msg);
       break;
 
     default:
@@ -167,50 +174,60 @@ function handleMessage(msg) {
 }
 
 /**
- * Handle a `session.command` message from the daemon.
- * Injects the command text into the active Copilot CLI session.
+ * Handle an `inject` message from the daemon.
+ * Injects the command text into the active Copilot CLI session and streams
+ * each SDK response chunk back as a `stream` message (ADR-8 §5).
  *
- * @param {{ sessionId: string, payload: { text?: string } }} msg
- *
- * TODO (Phase 6 Day 3–4): Full relay integration — collect streaming
- *   response chunks and send back `session.command-result` messages.
+ * @param {{ sessionId: string, requestId: string, text: string }} msg
  */
-async function handleCommand(msg) {
+async function handleInject(msg) {
   if (sdkSession === null) {
-    log('warn', 'session.command received but no SDK session — dropping');
+    log('warn', 'inject received but no SDK session — sending stream.error');
     sendToDaemon({
-      type: 'session.command-result',
+      type: 'stream.error',
       sessionId: SESSION_ID,
-      payload: { error: 'no-sdk-session' },
+      requestId: msg.requestId,
+      error: 'no-sdk-session',
     });
     return;
   }
 
-  const text = typeof msg.payload?.text === 'string' ? msg.payload.text : '';
+  const text = typeof msg.text === 'string' ? msg.text : '';
   if (text.length === 0) {
-    log('warn', 'session.command: empty text payload — ignoring');
+    log('warn', 'inject: empty text — ignoring');
     return;
   }
 
   try {
-    // Stub: collect full response then send a single command-result.
-    // Phase 6 Day 3–4 will add streaming chunk forwarding.
-    let accumulated = '';
+    // Forward each SDK chunk immediately — do NOT buffer (ADR-8 §5).
+    let chunkCount = 0;
     for await (const chunk of sdkSession.send(text)) {
-      accumulated += chunk;
+      sendToDaemon({
+        type: 'stream',
+        sessionId: SESSION_ID,
+        requestId: msg.requestId,
+        chunk: String(chunk),
+        done: false,
+      });
+      chunkCount++;
     }
+    // Final chunk with done:true signals completion (ADR-8 §5).
     sendToDaemon({
-      type: 'session.command-result',
+      type: 'stream',
       sessionId: SESSION_ID,
-      payload: { text: accumulated },
+      requestId: msg.requestId,
+      chunk: '',
+      done: true,
     });
+    log('info', `inject complete: requestId=${msg.requestId} chunks=${chunkCount}`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    log('error', `session.command error: ${message}`);
+    log('error', `inject error: ${message}`);
     sendToDaemon({
-      type: 'session.command-result',
+      type: 'stream.error',
       sessionId: SESSION_ID,
-      payload: { error: message },
+      requestId: msg.requestId,
+      error: message,
     });
   }
 }
@@ -261,7 +278,8 @@ function connectToDaemon() {
       log('info', `Connected to daemon pipe (session: ${SESSION_ID})`);
 
       // ADR-2: push-based registration — first thing sent on connect.
-      sendToDaemon({ type: 'register', sessionId: SESSION_ID });
+      // Re-sent on every reconnect (ADR-6 hello-resend rule, ADR-8 §1).
+      sendToDaemon({ type: 'hello', sessionId: SESSION_ID, sessionName: SESSION_NAME });
       registered = true;
     });
 

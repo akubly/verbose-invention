@@ -88,6 +88,16 @@ Carter and Jun independently designed different message protocols (both valid pe
 
 ---
 
+## Learnings
+
+**2026-05-21 — Triage: extension-side work can leap ahead of the spec.**  
+Phase 6 Day 2 triage revealed that `extension.mjs` had already implemented full per-chunk streaming (`handleInject`) — originally spec'd as a stub until Days 3–4. The code was complete, self-contained, and green. Lesson: when a deliverable is "ahead of plan" and passes tests, commit it. The completed extension-side streaming reduced Kat's Days 3–4 scope to relay/daemon-side only, not both sides. **Don't revert work that already passes — triage it and update the plan.**
+
+**2026-05-21 — Adapter > rewrite when the abstraction already fits.**  
+Days 3–4 relay integration choice: `relay.ts` was already written against `CopilotSession.send() → AsyncIterable<string>`. The bridge emits `stream` events. A `BridgeSession` adapter (~60 LOC) bridges the gap and inherits 140+ LOC of throttle/edit/fallback logic at zero cost. The principle: when an existing abstraction's shape matches the new integration point, use an adapter before considering a rewrite.
+
+---
+
 ## Archive
 
 Full Phases 1–5 + detailed Phase 6 spike documentation in history-archive.md.

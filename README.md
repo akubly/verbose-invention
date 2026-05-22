@@ -136,9 +136,13 @@ This unlinks the session from the topic. The Copilot session history persists (y
 The service installer uses `node-windows` to register Reach as a native Windows Service.
 
 - **Service name:** Reach
-- **Logon account:** NetworkService (low-privilege system account)
+- **Logon account:** Your currently logged-in Windows user account (ADR-5)
 - **Auto-restart:** Enabled (restarts automatically on crash)
 - **Event logging:** Logs to Windows Event Viewer
+
+At install time, the installer resolves your username automatically (`os.userInfo()`) and prompts for your Windows account password once. The password is passed directly to the Windows Service Control Manager and is not stored by Reach.
+
+> **Note:** The service runs under your account, so it stops when you log off. This is intentional — Reach is a personal-host tool and accesses your CLI sessions via a named pipe in your user session (`\\.\pipe\reach-bridge`).
 
 **Install:**
 

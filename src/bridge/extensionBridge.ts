@@ -131,6 +131,8 @@ export interface ExtensionConnection {
 /** Internal implementation — includes mutable status and heartbeat bookkeeping. */
 interface InternalConnection extends ExtensionConnection {
   status: ConnectionStatus;
+  /** Human-readable session label supplied in the `hello` message (SESSION_NAME env var). */
+  readonly sessionName: string;
   readonly socket: net.Socket;
   /** ID of the ping we're waiting on, or undefined if no outstanding ping. */
   pendingPingId: string | undefined;
@@ -274,6 +276,21 @@ export class ExtensionBridge implements BridgeEmitter {
   }
 
   /**
+   * Look up a registered session by its human-readable name (the `sessionName`
+   * field from the extension's `hello` message — typically the SESSION_NAME env var).
+   * Returns `undefined` if no registered session has that name, or if the matching
+   * session has become unreachable.
+   */
+  getSessionByName(sessionName: string): ExtensionConnection | undefined {
+    for (const conn of this.sessions.values()) {
+      if (conn.sessionName === sessionName && conn.status === 'registered') {
+        return conn;
+      }
+    }
+    return undefined;
+  }
+
+  /**
    * Inject a text command into an extension identified by `sessionId`.
    * Generates and returns a `requestId` for response correlation.
    * Returns `false` if the session is not registered or is unreachable.
@@ -405,6 +422,7 @@ export class ExtensionBridge implements BridgeEmitter {
 
     const conn: InternalConnection = {
       sessionId,
+      sessionName: msg.sessionName,
       socket,
       status: 'registered',
       pendingPingId: undefined,

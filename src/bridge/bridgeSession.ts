@@ -115,7 +115,35 @@ export class BridgeSession implements CopilotSession {
     return this._generateStream(text);
   }
 
-  // ── Permission control-plane (ADR-9) ────────────────────────────────────────
+  // ── Dispose (B1) ─────────────────────────────────────────────────────────────
+
+  /**
+   * Stored references to the three permission control-plane listeners registered
+   * in _wirePermissionHandlers. null when no permOptions were supplied.
+   */
+  private _permListeners: Array<{ event: string; listener: (...args: unknown[]) => void }> | null = null;
+
+  /**
+   * Remove all permission control-plane listeners from the bridge emitter and abort
+   * all pending permission callbacks. Safe to call multiple times (idempotent).
+   *
+   * Called from two paths:
+   *   1. relay.ts idle eviction / stale-name eviction — prevents duplicate listener
+   *      growth when a new BridgeSession is created for the same sessionId.
+   *   2. session.disconnected handler — self-cleanup when the pipe actually closes.
+   */
+  dispose(): void {
+    if (this._permListeners !== null) {
+      for (const { event, listener } of this._permListeners) {
+        this.bridge.off(event, listener);
+      }
+      this._permListeners = null;
+    }
+    // Abort the session-level controller so any in-flight permission callbacks unblock.
+    if (!this._sessionAbortController.signal.aborted) {
+      this._sessionAbortController.abort();
+    }
+  }
 
   /** Session-level AbortController — aborted when this session disconnects. */
   private readonly _sessionAbortController = new AbortController();
@@ -133,6 +161,15 @@ export class BridgeSession implements CopilotSession {
       args: string,
     ): void => {
       if (sId !== this.sessionId) return;
+      // I9: rate-limit concurrent pending permissions to prevent flooding Telegram.
+      if (this._pendingByPermId.size >= MAX_PENDING_PERMISSIONS) {
+        console.warn(
+          `[bridge-session] Rate limit: ${MAX_PENDING_PERMISSIONS} concurrent permission requests ` +
+          `reached — auto-denying permId=${permId}`,
+        );
+        sendPermissionResponseFn(this.sessionId, permId, 'deny');
+        return;
+      }
       void this._handlePermissionRequest(
         rId, permId, toolName, args,
         permissionCallback, allowAlwaysStore, sendPermissionResponseFn,
@@ -146,12 +183,16 @@ export class BridgeSession implements CopilotSession {
 
     const onDisconnected = (sId: string): void => {
       if (sId !== this.sessionId) return;
-      this._sessionAbortController.abort();
-      // Self-cleaning: remove all three permission listeners on disconnect.
-      this.bridge.off('permission.request', onPermissionRequest as (...args: unknown[]) => void);
-      this.bridge.off('permission.cancelled', onPermissionCancelled as (...args: unknown[]) => void);
-      this.bridge.off('session.disconnected', onDisconnected as (...args: unknown[]) => void);
+      // dispose() removes all three listeners and aborts _sessionAbortController.
+      this.dispose();
     };
+
+    // Store refs so dispose() can remove them on idle eviction (before disconnect fires).
+    this._permListeners = [
+      { event: 'permission.request', listener: onPermissionRequest as (...args: unknown[]) => void },
+      { event: 'permission.cancelled', listener: onPermissionCancelled as (...args: unknown[]) => void },
+      { event: 'session.disconnected', listener: onDisconnected as (...args: unknown[]) => void },
+    ];
 
     this.bridge.on('permission.request', onPermissionRequest);
     this.bridge.on('permission.cancelled', onPermissionCancelled);
@@ -223,6 +264,17 @@ export class BridgeSession implements CopilotSession {
       done: boolean,
     ): void => {
       if (rId !== requestId) return;
+      // I5: guard against unbounded queue growth when the consumer is slow.
+      if (queue.length >= MAX_STREAM_QUEUE_SIZE) {
+        queue.push({
+          kind: 'error',
+          err: new Error(
+            `Stream buffer overflow: >${MAX_STREAM_QUEUE_SIZE} chunks buffered — consumer too slow`,
+          ),
+        });
+        wake();
+        return;
+      }
       // The final frame may carry both a non-empty chunk AND done: true — yield both.
       if (chunk.length > 0) queue.push({ kind: 'chunk', value: chunk });
       if (done) queue.push({ kind: 'done' });
@@ -239,8 +291,17 @@ export class BridgeSession implements CopilotSession {
       wake();
     };
 
+    // B2: session disconnect terminates the stream so the relay's for-await unblocks.
+    // Without this listener the generator hangs indefinitely when the extension dies mid-stream.
+    const disconnectListener = (sId: string): void => {
+      if (sId !== this.sessionId) return;
+      queue.push({ kind: 'error', err: new Error(`Session ${this.sessionId} disconnected mid-stream`) });
+      wake();
+    };
+
     this.bridge.on('stream', streamListener);
     this.bridge.on('stream.error', errorListener);
+    this.bridge.on('session.disconnected', disconnectListener);
 
     try {
       while (true) {
@@ -269,6 +330,7 @@ export class BridgeSession implements CopilotSession {
       // Guaranteed cleanup: runs on normal completion, error, AND early iterator abandonment.
       this.bridge.off('stream', streamListener as (...args: unknown[]) => void);
       this.bridge.off('stream.error', errorListener as (...args: unknown[]) => void);
+      this.bridge.off('session.disconnected', disconnectListener as (...args: unknown[]) => void);
     }
   }
 }

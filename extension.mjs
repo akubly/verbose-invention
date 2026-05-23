@@ -151,12 +151,27 @@ let stopping = false;
 const pendingPermissions = new Map();
 
 /**
- * The requestId of the currently executing inject (if any).
- * Forwarded in permission.request for daemon-side context.
+ * Set of requestIds for inject operations currently executing sdkSession.send().
+ * Replaces the single `currentRequestId` global to avoid the race window where
+ * two concurrent injects would overwrite each other's requestId context.
+ * Insertion-ordered: the last entry is the most recently started inject.
  *
- * @type {string | null}
+ * @type {Set<string>}
  */
-let currentRequestId = null;
+const activeInjectIds = new Set();
+
+/**
+ * Returns the requestId of the most recently started inject still in flight,
+ * or '' if no inject is currently running. Used in permission.request messages
+ * as informational context (ADR-9 §3.1 — "context only").
+ *
+ * @returns {string}
+ */
+function getActiveRequestId() {
+  let last = '';
+  for (const id of activeInjectIds) last = id;
+  return last;
+}
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
@@ -277,20 +292,33 @@ async function handleInject(msg) {
     return;
   }
 
-  // Track current requestId so onPermissionRequest can include it in permission.request.
-  currentRequestId = msg.requestId;
+  // Track inject as active so onPermissionRequest can include its requestId in permission.request.
+  activeInjectIds.add(msg.requestId);
 
   try {
     // Forward each SDK chunk immediately — do NOT buffer (ADR-8 §5).
     let chunkCount = 0;
     for await (const chunk of sdkSession.send(text)) {
-      sendToDaemon({
+      const frame = JSON.stringify({
         type: 'stream',
         sessionId: SESSION_ID,
         requestId: msg.requestId,
         chunk: String(chunk),
         done: false,
-      });
+      }) + '\n';
+      // I5: respect TCP backpressure — await drain if the write buffer is full.
+      if (pipeSocket !== null && !pipeSocket.destroyed) {
+        const canWriteMore = pipeSocket.write(frame, 'utf-8');
+        if (!canWriteMore) {
+          await new Promise((resolve) => {
+            if (pipeSocket !== null) {
+              pipeSocket.once('drain', resolve);
+            } else {
+              resolve(undefined);
+            }
+          });
+        }
+      }
       chunkCount++;
     }
     // Final chunk with done:true signals completion (ADR-8 §5).
@@ -312,10 +340,8 @@ async function handleInject(msg) {
       error: message,
     });
   } finally {
-    // Clear current requestId when inject completes (success or error).
-    if (currentRequestId === msg.requestId) {
-      currentRequestId = null;
-    }
+    // Clear active inject tracking when inject completes (success or error).
+    activeInjectIds.delete(msg.requestId);
   }
 }
 
@@ -337,10 +363,14 @@ function handlePermissionResponse(msg) {
   resolve(msg.decision === 'allow');
 }
 
+/** Minor: 10-minute ceiling on permission prompts to prevent truly orphaned callbacks. */
+const PERMISSION_FALLBACK_TIMEOUT_MS = 10 * 60 * 1000;
+
 /**
  * Wait for a permission.response from the daemon for the given permissionId.
  * Returns a Promise that resolves to true (allow) or false (deny).
  * The Promise is aborted with false if the pipe closes before a response arrives.
+ * A 10-minute fallback timer resolves deny if no response arrives after that window.
  *
  * @param {string} permissionId
  * @returns {Promise<boolean>}
@@ -348,6 +378,15 @@ function handlePermissionResponse(msg) {
 function waitForPermissionResponse(permissionId) {
   return new Promise((resolve) => {
     pendingPermissions.set(permissionId, resolve);
+    // Fallback ceiling: resolve deny if no response arrives within 10 minutes.
+    // This is a safety net only — normal resolution is daemon response or pipe close.
+    setTimeout(() => {
+      if (pendingPermissions.has(permissionId)) {
+        pendingPermissions.delete(permissionId);
+        log('warn', `permission.request ${permissionId} unanswered after 10 minutes — denying`);
+        resolve(false);
+      }
+    }, PERMISSION_FALLBACK_TIMEOUT_MS);
   });
 }
 
@@ -363,7 +402,7 @@ function abortPendingPermissions() {
   pendingPermissions.clear();
 }
 
-// ─── Session event forwarding ─────────────────────────────────────────────────
+// ─── SDK permission hook (ADR-9) ──────────────────────────────────────────────
 
 /**
  * Subscribe to SDK session events and forward them to the daemon.
@@ -397,7 +436,7 @@ function wireSessionEvents(session) {
       sendToDaemon({
         type: 'permission.request',
         sessionId: SESSION_ID,
-        requestId: currentRequestId ?? '',
+        requestId: getActiveRequestId(),
         permissionId,
         toolName,
         args: truncatedArgs,
@@ -405,6 +444,20 @@ function wireSessionEvents(session) {
       });
 
       log('info', `permission.request sent for tool "${toolName}" (permissionId: ${permissionId})`);
+
+      // I2: if the SDK fires req.signal before the daemon responds, send permission.cancelled
+      // so the daemon cleans up the pending Telegram prompt.
+      if (req?.signal instanceof AbortSignal) {
+        req.signal.addEventListener('abort', () => {
+          const pendingResolve = pendingPermissions.get(permissionId);
+          if (pendingResolve !== undefined) {
+            pendingPermissions.delete(permissionId);
+            sendToDaemon({ type: 'permission.cancelled', sessionId: SESSION_ID, permissionId });
+            log('info', `permission.cancelled sent for ${permissionId} (SDK AbortSignal fired)`);
+            pendingResolve(false);
+          }
+        }, { once: true });
+      }
 
       // Await decision indefinitely — no local timer (ADR-9 Q4).
       // Pipe-close abort is handled by abortPendingPermissions() on 'close' event.

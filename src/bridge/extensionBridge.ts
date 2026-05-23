@@ -381,7 +381,24 @@ export class ExtensionBridge implements BridgeEmitter {
   // ── Connection lifecycle ────────────────────────────────────────────────────
 
   private handleConnection(socket: net.Socket): void {
+    // Minor: cap pre-hello (pending) sockets to prevent slow-loris resource exhaustion.
+    if (this.pendingSockets.size >= 10) {
+      console.warn('[bridge] Pending socket limit (10) reached — rejecting new connection');
+      socket.destroy();
+      return;
+    }
+
     this.pendingSockets.add(socket);
+
+    // Minor: 10s auth timeout — if hello isn't received by then, close the socket.
+    const authTimeout = setTimeout(() => {
+      if (this.pendingSockets.has(socket)) {
+        console.warn('[bridge] Auth timeout (10 s) — closing pre-hello socket');
+        this.pendingSockets.delete(socket);
+        socket.destroy();
+      }
+    }, 10_000);
+    socket.once('close', () => { clearTimeout(authTimeout); });
 
     let lineBuffer = '';
 
@@ -519,6 +536,18 @@ export class ExtensionBridge implements BridgeEmitter {
       return;
     }
 
+    // I6: reject duplicate sessionName claimed by a different sessionId.
+    // Allows the same sessionId to reconnect (ADR-6 hello-resend rule).
+    const existingByName = this.getSessionByName(msg.sessionName);
+    if (existingByName !== undefined && existingByName.sessionId !== sessionId) {
+      console.warn(
+        `[bridge] Rejected hello: sessionName "${msg.sessionName}" already claimed by ` +
+        `${existingByName.sessionId} — closing duplicate`,
+      );
+      socket.destroy();
+      return;
+    }
+
     // Evict any stale connection for the same sessionId (extension reconnected
     // after daemon restart per ADR-6 backoff policy; re-sends hello on reconnect).
     const stale = this.sessions.get(sessionId);
@@ -558,6 +587,10 @@ export class ExtensionBridge implements BridgeEmitter {
     if (conn.pendingPingId !== undefined && conn.pendingPingId === msg.id) {
       this.clearPingState(conn);
       if (conn.status === 'unreachable') {
+        // unreachable: the session is deleted from this.sessions before the grace period
+        // expires (sendPing → graceTimeout → sessions.delete → socket.destroy), so
+        // findConnectionBySocket returns undefined and handlePong is never called with
+        // a connection in 'unreachable' state. Branch retained for future-safety only.
         conn.status = 'registered';
         console.log(`[bridge] Session recovered (late pong): ${conn.sessionId}`);
       }

@@ -71,6 +71,7 @@ export class Relay {
     // Evict stale cache: if the topic was re-linked to a different session name
     // (e.g. /remove then /new), the cached handle is for the wrong session.
     if (cached && cached.sessionName !== entry.sessionName) {
+      cached.session.dispose?.();
       this.activeSessions.delete(topicId);
       session = undefined;
     }
@@ -107,6 +108,8 @@ export class Relay {
 
     // Reset idle timer — evict cached session handle on inactivity
     this.idleMonitor.reset(topicId, () => {
+      const evicted = this.activeSessions.get(topicId);
+      evicted?.session.dispose?.();
       this.activeSessions.delete(topicId);
       console.log(`[relay] Session handle evicted (idle): topic ${topicId} → "${entry.sessionName}"`);
     });
@@ -183,10 +186,13 @@ export class Relay {
       const isTimeout = err instanceof StreamTimeoutError;
       if (!isTimeout && this.factory.resetForRestart) {
         this.idleMonitor.cancelAll();
+        for (const { session } of this.activeSessions.values()) session.dispose?.();
         this.activeSessions.clear();
         this.factory.resetForRestart();
         console.log(`[relay] SDK error detected — factory marked for restart; cleared cached sessions`);
       } else {
+        const evicted = this.activeSessions.get(topicId);
+        evicted?.session.dispose?.();
         this.activeSessions.delete(topicId); // Only evict current topic for timeouts
       }
       
@@ -300,6 +306,7 @@ export class Relay {
   /** Tear down all active sessions and timers (call on graceful shutdown). */
   dispose(): void {
     this.idleMonitor.cancelAll();
+    for (const { session } of this.activeSessions.values()) session.dispose?.();
     this.activeSessions.clear();
   }
 }

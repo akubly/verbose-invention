@@ -36,7 +36,7 @@ export class BridgeSessionFactory implements CopilotSessionFactory {
     _model?: string,
     permissionCallback?: PermissionPromptCallback,
   ): Promise<CopilotSession | null> {
-    void _model;
+    // _model unused: bridge sessions are model-agnostic — the extension selects the model at CLI startup.
     const conn = this.bridge.getSessionByName(sessionName);
     if (!conn) return null;
     return this._makeSession(conn.sessionId, permissionCallback);
@@ -51,7 +51,7 @@ export class BridgeSessionFactory implements CopilotSessionFactory {
     _model?: string,
     permissionCallback?: PermissionPromptCallback,
   ): Promise<CopilotSession> {
-    void _model;
+    // _model unused: bridge sessions are model-agnostic — the extension selects the model at CLI startup.
     const conn = this.bridge.getSessionByName(sessionName);
     if (!conn) {
       throw new Error(

@@ -65,9 +65,29 @@ export async function generatePipeAuth(): Promise<PipeAuthConfig> {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
 
   // Atomic write: write to .tmp then rename so readers never see a partial file.
+  // On Windows, rename fails with EPERM or EEXIST when the destination already
+  // exists (e.g. after an unclean shutdown).  Fall back to unlink-then-rename.
+  // The outer try/catch ensures the .tmp file is cleaned up on any failure.
   const tmp = `${filePath}.tmp`;
-  await fs.writeFile(tmp, JSON.stringify(authFile, null, 2), 'utf-8');
-  await fs.rename(tmp, filePath);
+  try {
+    await fs.writeFile(tmp, JSON.stringify(authFile, null, 2), 'utf-8');
+    try {
+      await fs.rename(tmp, filePath);
+    } catch (renameErr) {
+      const code = (renameErr as NodeJS.ErrnoException).code;
+      if (code === 'EPERM' || code === 'EEXIST') {
+        // Destination exists — remove it first, then retry.
+        await fs.unlink(filePath);
+        await fs.rename(tmp, filePath);
+      } else {
+        throw renameErr;
+      }
+    }
+  } catch (err) {
+    // Best-effort cleanup of the temp file so stale .tmp files don't accumulate.
+    await fs.unlink(tmp).catch(() => { /* non-fatal */ });
+    throw err;
+  }
 
   // Option B (partial): restrict to owner-only ACL on Windows.
   // %LOCALAPPDATA% itself is user-scoped, so this is belt-and-suspenders.

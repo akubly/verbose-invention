@@ -106,13 +106,26 @@ export class Relay {
       }
     }
 
-    // Reset idle timer — evict cached session handle on inactivity
-    this.idleMonitor.reset(topicId, () => {
-      const evicted = this.activeSessions.get(topicId);
-      evicted?.session.dispose?.();
-      this.activeSessions.delete(topicId);
-      console.log(`[relay] Session handle evicted (idle): topic ${topicId} → "${entry.sessionName}"`);
-    });
+    // Reset idle timer — evict cached session handle on inactivity.
+    // ADR-9: if the session has a pending permission prompt (isBusy), defer
+    // eviction by re-scheduling the timer rather than calling dispose(), which
+    // would abort the session AbortController and deny the in-flight prompt.
+    const scheduleIdle = (): void => {
+      this.idleMonitor.reset(topicId, () => {
+        const evicted = this.activeSessions.get(topicId);
+        if (!evicted) return;
+        if (evicted.session.isBusy?.()) {
+          // Session has pending permissions — defer eviction, re-arm the timer.
+          console.log(`[relay] Session busy (pending permission), deferring idle eviction: topic ${topicId} → "${entry.sessionName}"`);
+          scheduleIdle();
+          return;
+        }
+        evicted.session.dispose?.();
+        this.activeSessions.delete(topicId);
+        console.log(`[relay] Session handle evicted (idle): topic ${topicId} → "${entry.sessionName}"`);
+      });
+    };
+    scheduleIdle();
 
     const placeholder = await ctx.reply('…', { message_thread_id: topicId });
 

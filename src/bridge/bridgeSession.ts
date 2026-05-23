@@ -145,6 +145,15 @@ export class BridgeSession implements CopilotSession {
     }
   }
 
+  /**
+   * Returns true when at least one permission prompt is awaiting a response.
+   * The relay uses this to defer idle eviction and avoid aborting pending prompts
+   * (ADR-9 no-timeout requirement).
+   */
+  isBusy(): boolean {
+    return this._pendingByPermId.size > 0;
+  }
+
   /** Session-level AbortController — aborted when this session disconnects. */
   private readonly _sessionAbortController = new AbortController();
   /** Per-permissionId AbortControllers — aborted when permission.cancelled arrives. */
@@ -272,6 +281,12 @@ export class BridgeSession implements CopilotSession {
             `Stream buffer overflow: >${MAX_STREAM_QUEUE_SIZE} chunks buffered — consumer too slow`,
           ),
         });
+        // T6: Latch into terminal overflowed state — remove both stream listeners
+        // immediately so further frames don't enqueue additional error items while
+        // the consumer unwinds.  The finally block will call off() again, which
+        // is a safe no-op on an already-removed listener.
+        this.bridge.off('stream', streamListener as (...args: unknown[]) => void);
+        this.bridge.off('stream.error', errorListener as (...args: unknown[]) => void);
         wake();
         return;
       }

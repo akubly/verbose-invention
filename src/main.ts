@@ -17,7 +17,7 @@ import { Bot } from 'grammy';
 import { ExtensionBridge } from './bridge/extensionBridge.js';
 import { BridgeSessionFactory } from './bridge/bridgeSessionFactory.js';
 import { CompositeSessionFactory } from './bridge/compositeSessionFactory.js';
-import { generatePipeAuth } from './bridge/pipeAuth.js';
+import { generatePipeAuth, cleanupPipeAuth } from './bridge/pipeAuth.js';
 import type { CopilotSessionFactory } from './copilot/factory.js';
 
 function getRegistryPath(): string {
@@ -115,6 +115,12 @@ async function main(): Promise<void> {
     await bridge.start();
     console.log('[reach] Extension bridge: listening on named pipe');
   } catch (err) {
+    // If generatePipeAuth() succeeded but bridge.start() threw, the auth file
+    // is on disk but no listener is active.  Clean it up so the extension
+    // doesn't try to connect to a dead pipe on the next startup.
+    // cleanupPipeAuth() is ENOENT-safe, so it's also harmless if generatePipeAuth
+    // itself failed before writing the file.
+    await cleanupPipeAuth().catch(() => { /* non-fatal — daemon is failing anyway */ });
     console.warn(
       '[reach] Extension bridge unavailable — bridge sessions disabled:',
       err instanceof Error ? err.message : String(err),

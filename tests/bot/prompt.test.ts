@@ -212,6 +212,55 @@ describe('promptUserForPermission', () => {
     expect(String(editMessageText.mock.calls.at(-1)?.[2] ?? '')).toMatch(/aborted/i);
   });
 
+  it('does not leak an abort listener on the signal after normal completion', async () => {
+    const { bot, sendMessage, click } = makeMockBot();
+    const controller = new AbortController();
+    const signal = controller.signal;
+
+    const addSpy = vi.spyOn(signal, 'addEventListener');
+    const removeSpy = vi.spyOn(signal, 'removeEventListener');
+
+    const decision = invokePrompt(bot, { signal });
+    await flushMicrotasks();
+
+    const abortAddCalls = addSpy.mock.calls.filter(([event]) => event === 'abort');
+    expect(abortAddCalls).toHaveLength(1);
+
+    const approveData = getButtonData(sendMessage).find((value) => /^perm:approve:/.test(value));
+    await click(approveData!);
+    await expect(decision).resolves.toBe(true);
+    await flushMicrotasks();
+
+    const abortRemoveCalls = removeSpy.mock.calls.filter(([event]) => event === 'abort');
+    expect(abortRemoveCalls).toHaveLength(1);
+    // Same handler reference registered and removed — no orphan listener.
+    expect(abortRemoveCalls[0]?.[1]).toBe(abortAddCalls[0]?.[1]);
+  });
+
+  it('does not leak an abort listener on the signal after deny', async () => {
+    const { bot, sendMessage, click } = makeMockBot();
+    const controller = new AbortController();
+    const signal = controller.signal;
+
+    const addSpy = vi.spyOn(signal, 'addEventListener');
+    const removeSpy = vi.spyOn(signal, 'removeEventListener');
+
+    const decision = invokePrompt(bot, { signal });
+    await flushMicrotasks();
+
+    const abortAddCalls = addSpy.mock.calls.filter(([event]) => event === 'abort');
+    expect(abortAddCalls).toHaveLength(1);
+
+    const denyData = getButtonData(sendMessage).find((value) => /^perm:deny:/.test(value));
+    await click(denyData!);
+    await expect(decision).resolves.toBe(false);
+    await flushMicrotasks();
+
+    const abortRemoveCalls = removeSpy.mock.calls.filter(([event]) => event === 'abort');
+    expect(abortRemoveCalls).toHaveLength(1);
+    expect(abortRemoveCalls[0]?.[1]).toBe(abortAddCalls[0]?.[1]);
+  });
+
   it('truncates long args in the prompt message', async () => {
     const { bot, sendMessage, click } = makeMockBot();
     const longArgs = 'x'.repeat(260);

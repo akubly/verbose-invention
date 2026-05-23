@@ -133,6 +133,7 @@ export async function promptUserForPermission(
 
   let settled = false;
   let resolveResult: ((approved: boolean) => void) | undefined;
+  let abortHandler: (() => void) | undefined;
 
   const resultPromise = new Promise<boolean>((resolve) => {
     resolveResult = resolve;
@@ -145,6 +146,13 @@ export async function promptUserForPermission(
 
     settled = true;
     registry.pendingByRequestId.delete(requestId);
+
+    // Remove the abort listener now that the prompt has settled (normal or abort path).
+    // Prevents listener retention when the supplied signal outlives this prompt.
+    if (abortHandler) {
+      signal?.removeEventListener('abort', abortHandler);
+      abortHandler = undefined;
+    }
 
     const approved = outcome === 'approve';
     const statusText = formatOutcomeText(outcome, toolName);
@@ -177,9 +185,10 @@ export async function promptUserForPermission(
     if (signal.aborted) {
       void complete('aborted').catch(() => {});
     } else {
-      signal.addEventListener('abort', () => {
+      abortHandler = () => {
         void complete('aborted').catch(() => {});
-      }, { once: true });
+      };
+      signal.addEventListener('abort', abortHandler, { once: true });
     }
   }
 

@@ -20,8 +20,11 @@ export interface SessionLookup {
 /**
  * Port: prompts the user interactively to approve or deny a destructive tool
  * execution. Relay calls this when a permissionPrompter is injected.
- * Returns true = approved, false = denied or timed out.
+ * Returns true = approved, false = denied or aborted.
+ *
+ * @param signal - Optional AbortSignal; when fired the prompt resolves false
+ *   immediately (e.g., on session disconnect). K1 / ADR-9 §6.
  */
 export interface PermissionPrompter {
-  prompt(chatId: number, topicId: number, toolName: string, args: string): Promise<boolean>;
+  prompt(chatId: number, topicId: number, toolName: string, args: string, signal?: AbortSignal): Promise<boolean>;
 }

@@ -6,11 +6,9 @@
  * is to look up those externally-registered sessions and wrap them in BridgeSession
  * adapters so relay.ts can consume them via the standard CopilotSession contract.
  *
- * Permission prompting: bridge sessions do not currently support tool-permission
- * prompting through the wire protocol. The parameter is accepted for interface
- * compatibility but ignored. TODO ADR-9? — permission prompting over the bridge
- * is a future protocol extension; the SDK path handles this via onPermissionRequest
- * and there is no equivalent hook in the bridge wire protocol yet.
+ * ADR-9: When a permissionCallback is supplied by the relay, it is forwarded to the
+ * BridgeSession which wires the permission control-plane over the pipe. The optional
+ * AllowAlwaysStore enables per-session auto-approve for previously consented tools.
  */
 
 import type {
@@ -20,9 +18,18 @@ import type {
 } from '../copilot/factory.js';
 import { BridgeSession } from './bridgeSession.js';
 import type { ExtensionBridge } from './extensionBridge.js';
+import type { AllowAlwaysStore } from './allowAlwaysStore.js';
 
 export class BridgeSessionFactory implements CopilotSessionFactory {
-  constructor(private readonly bridge: ExtensionBridge) {}
+  /**
+   * @param bridge          - The named-pipe server.
+   * @param allowAlwaysStore - Optional per-session allow-always store (ADR-9 Q2).
+   *   Inject InMemoryAllowAlwaysStore from the composition root in main.ts.
+   */
+  constructor(
+    private readonly bridge: ExtensionBridge,
+    private readonly allowAlwaysStore?: AllowAlwaysStore,
+  ) {}
 
   /**
    * Returns a BridgeSession if the extension has a session registered under
@@ -32,20 +39,12 @@ export class BridgeSessionFactory implements CopilotSessionFactory {
   async resume(
     sessionName: string,
     _model?: string,
-    // TODO ADR-9? Permission prompting over the bridge is a future protocol extension.
-    // Bridge sessions don't support tool-permission prompting through the wire protocol.
-    // The SDK path handles this via onPermissionRequest; no equivalent bridge hook exists yet.
-    _permissionCallback?: PermissionPromptCallback,
+    permissionCallback?: PermissionPromptCallback,
   ): Promise<CopilotSession | null> {
     void _model;
-    void _permissionCallback;
     const conn = this.bridge.getSessionByName(sessionName);
     if (!conn) return null;
-    return new BridgeSession(
-      this.bridge,
-      conn.sessionId,
-      this.bridge.sendCommand.bind(this.bridge),
-    );
+    return this._makeSession(conn.sessionId, permissionCallback);
   }
 
   /**
@@ -55,10 +54,9 @@ export class BridgeSessionFactory implements CopilotSessionFactory {
   async create(
     sessionName: string,
     _model?: string,
-    _permissionCallback?: PermissionPromptCallback,
+    permissionCallback?: PermissionPromptCallback,
   ): Promise<CopilotSession> {
     void _model;
-    void _permissionCallback;
     const conn = this.bridge.getSessionByName(sessionName);
     if (!conn) {
       throw new Error(
@@ -66,11 +64,7 @@ export class BridgeSessionFactory implements CopilotSessionFactory {
           `sessions are created externally when the extension attaches to the daemon pipe`,
       );
     }
-    return new BridgeSession(
-      this.bridge,
-      conn.sessionId,
-      this.bridge.sendCommand.bind(this.bridge),
-    );
+    return this._makeSession(conn.sessionId, permissionCallback);
   }
 
   /**
@@ -79,5 +73,25 @@ export class BridgeSessionFactory implements CopilotSessionFactory {
    */
   resetForRestart(): void {
     // intentional no-op per ADR-6
+  }
+
+  private _makeSession(sessionId: string, permissionCallback?: PermissionPromptCallback): BridgeSession {
+    const permOptions = permissionCallback !== undefined
+      ? {
+          permissionCallback,
+          // Conditionally spread to satisfy exactOptionalPropertyTypes.
+          ...(this.allowAlwaysStore !== undefined ? { allowAlwaysStore: this.allowAlwaysStore } : {}),
+          sendPermissionResponseFn: (sid: string, permId: string, decision: 'allow' | 'deny'): void => {
+            this.bridge.sendPermissionResponse(sid, permId, decision);
+          },
+        }
+      : undefined;
+
+    return new BridgeSession(
+      this.bridge,
+      sessionId,
+      this.bridge.sendCommand.bind(this.bridge),
+      permOptions,
+    );
   }
 }

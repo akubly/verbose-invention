@@ -44,6 +44,20 @@ export class FakeBridge implements BridgeEmitter {
     event: 'stream.error',
     listener: (sessionId: string, requestId: string, error: string) => void,
   ): this;
+  on(
+    event: 'permission.request',
+    listener: (
+      sessionId: string,
+      requestId: string,
+      permissionId: string,
+      toolName: string,
+      args: string,
+    ) => void,
+  ): this;
+  on(
+    event: 'permission.cancelled',
+    listener: (sessionId: string, permissionId: string) => void,
+  ): this;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: string, listener: (...args: any[]) => void): this {
     this.onCalls.push({ event, listener: listener as (...args: unknown[]) => void });
@@ -68,6 +82,27 @@ export class FakeBridge implements BridgeEmitter {
   /** Synchronously emit a `stream.error` event to all registered listeners. */
   emitStreamError(sessionId: string, requestId: string, error: string): void {
     this._emitter.emit('stream.error', sessionId, requestId, error);
+  }
+
+  /** Synchronously emit a `permission.request` event to all registered listeners. */
+  emitPermissionRequest(
+    sessionId: string,
+    requestId: string,
+    permissionId: string,
+    toolName: string,
+    args: string,
+  ): void {
+    this._emitter.emit('permission.request', sessionId, requestId, permissionId, toolName, args);
+  }
+
+  /** Synchronously emit a `permission.cancelled` event to all registered listeners. */
+  emitPermissionCancelled(sessionId: string, permissionId: string): void {
+    this._emitter.emit('permission.cancelled', sessionId, permissionId);
+  }
+
+  /** Synchronously emit a `session.disconnected` event to all registered listeners. */
+  emitDisconnected(sessionId: string): void {
+    this._emitter.emit('session.disconnected', sessionId);
   }
 
   /** Reset tracking state (does NOT remove registered listeners from the emitter). */

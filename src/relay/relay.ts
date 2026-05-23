@@ -88,8 +88,8 @@ export class Relay {
           }
 
           const prompter = this.permissionPrompter;
-          permissionCallback = (toolName: string, args: string) =>
-            prompter.prompt(chatId, topicId, toolName, args);
+          permissionCallback = (toolName: string, args: string, signal?: AbortSignal) =>
+            prompter.prompt(chatId, topicId, toolName, args, signal);
         }
 
         session = await this.factory.resume(entry.sessionName, entry.model, permissionCallback)

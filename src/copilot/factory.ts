@@ -9,7 +9,8 @@ export interface CopilotSession {
   send(message: string): AsyncIterable<string>;
 }
 
-export type PermissionPromptCallback = (toolName: string, args: string) => Promise<boolean>;
+/** K1/ADR-9: signal is optional for backward compatibility; SDK path ignores it. */
+export type PermissionPromptCallback = (toolName: string, args: string, signal?: AbortSignal) => Promise<boolean>;
 
 export interface CopilotSessionFactory {
   /**

@@ -33,6 +33,7 @@ function makeBridgeMock(
       return { sessionId, status: 'registered' as const, send: vi.fn() };
     }),
     sendCommand: vi.fn((): string | false => 'req-factory-1'),
+    sendPermissionResponse: vi.fn(),
     on: vi.fn().mockReturnThis(),
     off: vi.fn().mockReturnThis(),
     // Fill remaining shape with stubs so the cast is safe
@@ -96,9 +97,9 @@ describe('BridgeSessionFactory', () => {
     expect(() => factory.resetForRestart()).not.toThrow();
   });
 
-  // ── 6. permissionCallback accepted but ignored (ADR-9 documented gap) ────────
+  // ── 6. permissionCallback wired end-to-end (ADR-9) ───────────────────────────
 
-  it('accepts a permissionCallback without crashing, but does not invoke it', async () => {
+  it('accepts a permissionCallback and wires it — callback not called until permission.request fires', async () => {
     const bridge = makeBridgeMock({ 'reach-myapp': 'sess-uuid-3' });
     const factory = new BridgeSessionFactory(bridge);
 
@@ -107,8 +108,7 @@ describe('BridgeSessionFactory', () => {
     const result = await factory.resume('reach-myapp', undefined, permCb);
 
     expect(result).toBeInstanceOf(BridgeSession);
-    // Callback accepted for interface compatibility, but never called —
-    // bridge sessions handle permissions locally in the extension (ADR-9 gap).
+    // Callback is wired but not called until a permission.request event arrives.
     expect(permCb).not.toHaveBeenCalled();
   });
 });

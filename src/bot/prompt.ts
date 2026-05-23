@@ -2,11 +2,16 @@ import { randomUUID } from 'node:crypto';
 import type { Bot, Context } from 'grammy';
 
 type PromptAction = 'approve' | 'deny';
-type PromptOutcome = PromptAction | 'timeout';
+/** ADR-9: 'timeout' renamed to 'aborted' — automatic resolution is disconnect-driven, not timer-driven. */
+type PromptOutcome = PromptAction | 'aborted';
+
+const TEN_MINUTES_MS = 10 * 60 * 1000;
 
 interface PendingPrompt {
   chatId: number;
   messageId: number;
+  /** Unix ms when this prompt was registered — used by the passive stale-prompt scanner. */
+  createdAt: number;
   complete: (outcome: PromptOutcome, ctx?: Context) => Promise<void>;
 }
 
@@ -33,7 +38,7 @@ function formatOutcomeText(outcome: PromptOutcome, toolName: string): string {
     return `❌ Denied: ${toolName}`;
   }
 
-  return `⏰ Timed out: ${toolName} (denied)`;
+  return `⚠️ Aborted: ${toolName}`;
 }
 
 function ensurePromptRegistry(bot: Bot<Context>): PromptRegistry {
@@ -47,6 +52,19 @@ function ensurePromptRegistry(bot: Bot<Context>): PromptRegistry {
   };
 
   promptRegistries.set(bot, registry);
+
+  // Passive stale-prompt warning scanner (ADR-9 observability).
+  // Emits a warning for prompts open >10 minutes. Does NOT resolve them.
+  const scanHandle = setInterval(() => {
+    const now = Date.now();
+    for (const [reqId, pending] of registry.pendingByRequestId) {
+      if (now - pending.createdAt > TEN_MINUTES_MS) {
+        console.warn(`[prompt] Permission prompt ${reqId} has been open for >10 minutes`);
+      }
+    }
+  }, TEN_MINUTES_MS);
+  // Do not prevent process exit while waiting for user taps.
+  scanHandle.unref();
 
   // One callback middleware per bot; individual prompts clean themselves up via the pending map.
   bot.on('callback_query:data', async (ctx, next) => {
@@ -85,7 +103,11 @@ function ensurePromptRegistry(bot: Bot<Context>): PromptRegistry {
 
 /**
  * Send an inline keyboard prompt to approve/deny a tool execution.
- * Returns true if approved, false if denied or timed out.
+ * Waits indefinitely for an explicit user decision (ADR-9 §7: no wall-clock timeout).
+ * Returns true if approved, false if denied or aborted.
+ *
+ * @param signal - When fired (e.g., session disconnect), the prompt resolves false
+ *   immediately without waiting for user input. ADR-9 Q3/Q4.
  */
 export async function promptUserForPermission(
   bot: Bot<Context>,
@@ -93,12 +115,11 @@ export async function promptUserForPermission(
   topicId: number,
   toolName: string,
   args: string,
-  timeoutMs = 60_000,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const registry = ensurePromptRegistry(bot);
   const requestId = randomUUID();
-  const timeoutSeconds = Math.ceil(timeoutMs / 1000);
-  const promptText = `⚠️ Tool approval needed\n\nTool: ${toolName}\nArgs: ${truncateArgs(args)}\n\nApprove or deny within ${timeoutSeconds} seconds.`;
+  const promptText = `⚠️ Tool approval needed\n\nTool: ${toolName}\nArgs: ${truncateArgs(args)}\n\nApprove or deny — waiting for your decision.`;
 
   const promptMessage = await bot.api.sendMessage(chatId, promptText, {
     message_thread_id: topicId,
@@ -111,7 +132,6 @@ export async function promptUserForPermission(
   });
 
   let settled = false;
-  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   let resolveResult: ((approved: boolean) => void) | undefined;
 
   const resultPromise = new Promise<boolean>((resolve) => {
@@ -125,9 +145,6 @@ export async function promptUserForPermission(
 
     settled = true;
     registry.pendingByRequestId.delete(requestId);
-    if (timeoutHandle) {
-      clearTimeout(timeoutHandle);
-    }
 
     const approved = outcome === 'approve';
     const statusText = formatOutcomeText(outcome, toolName);
@@ -151,14 +168,22 @@ export async function promptUserForPermission(
   registry.pendingByRequestId.set(requestId, {
     chatId,
     messageId: promptMessage.message_id,
+    createdAt: Date.now(),
     complete,
   });
 
-  const timeoutPromise = new Promise<boolean>((resolve) => {
-    timeoutHandle = setTimeout(() => {
-      void complete('timeout').then(() => resolve(false)).catch(() => {});
-    }, timeoutMs);
-  });
+  // ADR-9 Q3: AbortSignal-driven abort on session disconnect (no setTimeout).
+  if (signal) {
+    if (signal.aborted) {
+      void complete('aborted').catch(() => {});
+    } else {
+      signal.addEventListener('abort', () => {
+        void complete('aborted').catch(() => {});
+      }, { once: true });
+    }
+  }
 
-  return Promise.race([resultPromise, timeoutPromise]);
+  // No timeout. No Promise.race. Just wait for user input (or abort signal).
+  return resultPromise;
 }
+

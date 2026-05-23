@@ -59,6 +59,64 @@ const PIPE_PATH = '\\\\.\\pipe\\reach-bridge';
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_CEILING_MS = 300_000;
 const BACKOFF_MULTIPLIER = 2;
+/** Max chars for serialised tool args forwarded in permission.request. */
+const ARGS_MAX_CHARS = 4096;
+
+// ─── Risk classification (ADR-9 §5 — mirrors src/copilot/permissions.ts) ─────
+//
+// The extension owns risk classification (Q5). This list is the authoritative
+// consumer of DESTRUCTIVE_TOOLS from permissions.ts. Any update to that list
+// MUST be mirrored here.
+
+const DESTRUCTIVE_TOOLS = new Set([
+  'edit',
+  'create',
+  'powershell',
+  'bash',
+  'git_commit',
+  'gh_pr_create',
+  'gh_issue_create',
+]);
+
+const SAFE_TOOLS = new Set([
+  'read',
+  'url',
+  'view',
+  'grep',
+  'glob',
+  'list_powershell',
+  'read_powershell',
+  'list_agents',
+  'read_agent',
+  'fetch_copilot_cli_documentation',
+  'web_fetch',
+  'web_search',
+  'session_store_sql',
+  'github-mcp-server-get_file_contents',
+  'github-mcp-server-get_copilot_space',
+  'github-mcp-server-list_copilot_spaces',
+  'github-mcp-server-search_code',
+  'github-mcp-server-search_users',
+  'memory-read_graph',
+  'memory-open_nodes',
+  'memory-search_nodes',
+]);
+
+/**
+ * @param {string} toolName
+ * @returns {boolean}
+ */
+function isDestructive(toolName) {
+  return DESTRUCTIVE_TOOLS.has(toolName);
+}
+
+/**
+ * @param {string} toolName
+ * @returns {boolean}
+ */
+function isKnownSafe(toolName) {
+  return SAFE_TOOLS.has(toolName);
+}
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -82,6 +140,23 @@ let reconnectAttempt = 0;
 
 /** True when teardown has been initiated (stop reconnecting). */
 let stopping = false;
+
+/**
+ * In-flight permission requests awaiting a daemon response.
+ * Maps permissionId → { resolve: (approved: boolean) => void }.
+ * Aborted with deny on pipe close (ADR-9 §5 pipe-close abort).
+ *
+ * @type {Map<string, (approved: boolean) => void>}
+ */
+const pendingPermissions = new Map();
+
+/**
+ * The requestId of the currently executing inject (if any).
+ * Forwarded in permission.request for daemon-side context.
+ *
+ * @type {string | null}
+ */
+let currentRequestId = null;
 
 // ─── Logging ─────────────────────────────────────────────────────────────────
 
@@ -168,6 +243,10 @@ function handleMessage(msg) {
       handleInject(msg);
       break;
 
+    case 'permission.response':
+      handlePermissionResponse(msg);
+      break;
+
     default:
       log('warn', `Unknown message type from daemon: "${msg.type}" — ignoring`);
   }
@@ -197,6 +276,9 @@ async function handleInject(msg) {
     log('warn', 'inject: empty text — ignoring');
     return;
   }
+
+  // Track current requestId so onPermissionRequest can include it in permission.request.
+  currentRequestId = msg.requestId;
 
   try {
     // Forward each SDK chunk immediately — do NOT buffer (ADR-8 §5).
@@ -229,28 +311,105 @@ async function handleInject(msg) {
       requestId: msg.requestId,
       error: message,
     });
+  } finally {
+    // Clear current requestId when inject completes (success or error).
+    if (currentRequestId === msg.requestId) {
+      currentRequestId = null;
+    }
   }
 }
 
 // ─── Session event forwarding ─────────────────────────────────────────────────
 
 /**
+ * Handle a `permission.response` from the daemon.
+ * Resolves the suspended permissionCallback for the matching permissionId.
+ *
+ * @param {{ permissionId: string, decision: 'allow' | 'deny' }} msg
+ */
+function handlePermissionResponse(msg) {
+  const resolve = pendingPermissions.get(msg.permissionId);
+  if (!resolve) {
+    log('warn', `permission.response for unknown permissionId: ${msg.permissionId} — ignoring`);
+    return;
+  }
+  pendingPermissions.delete(msg.permissionId);
+  resolve(msg.decision === 'allow');
+}
+
+/**
+ * Wait for a permission.response from the daemon for the given permissionId.
+ * Returns a Promise that resolves to true (allow) or false (deny).
+ * The Promise is aborted with false if the pipe closes before a response arrives.
+ *
+ * @param {string} permissionId
+ * @returns {Promise<boolean>}
+ */
+function waitForPermissionResponse(permissionId) {
+  return new Promise((resolve) => {
+    pendingPermissions.set(permissionId, resolve);
+  });
+}
+
+/**
+ * Abort all pending permissionCallbacks with deny.
+ * Called on pipe close so the SDK is never left hanging (ADR-9 §5).
+ */
+function abortPendingPermissions() {
+  for (const [permId, resolve] of pendingPermissions) {
+    log('warn', `Aborting pending permission ${permId} (pipe closed) — denying`);
+    resolve(false);
+  }
+  pendingPermissions.clear();
+}
+
+// ─── Session event forwarding ─────────────────────────────────────────────────
+
+/**
  * Subscribe to SDK session events and forward them to the daemon.
+ * Registers the onPermissionRequest hook for destructive tool classification (ADR-9 §5).
  *
  * @param {object} session - The SDK CopilotSession handle.
- *
- * TODO (Phase 6 Day 3–4): Wire specific event types (message, tool_call,
- *   stream_delta) once the relay refactor defines the forwarding schema.
  */
 function wireSessionEvents(session) {
-  // Stub: log that wiring is set up; specific event subscriptions added in Day 3–4.
-  log('info', 'Session event forwarding wired (stub — awaiting relay refactor)');
+  log('info', 'Session event forwarding wired (ADR-9 permission hook active)');
 
-  // Example of how to forward an event once event types are defined:
-  // session.on('some.event', (payload) => {
-  //   sendToDaemon({ type: 'session.event', sessionId: SESSION_ID, payload });
-  // });
-  void session; // suppress unused-variable lint until wired
+  // ADR-9 §5: Extension classifies tool risk and forwards only destructive tools.
+  // The daemon routes permission.request to the user via Telegram inline keyboard.
+  if (typeof session.onPermissionRequest === 'function') {
+    session.onPermissionRequest(async (req) => {
+      const toolName = req?.toolName ?? '';
+      const args = req?.args !== undefined ? JSON.stringify(req.args) : '';
+
+      // Known-safe tools and non-destructive tools are auto-approved without prompting.
+      if (isKnownSafe(toolName) || !isDestructive(toolName)) {
+        return { kind: 'approved' };
+      }
+
+      // Destructive tool: forward to daemon for user approval.
+      const permissionId = randomUUID();
+      const truncatedArgs = args.length > ARGS_MAX_CHARS ? args.slice(0, ARGS_MAX_CHARS) : args;
+
+      sendToDaemon({
+        type: 'permission.request',
+        sessionId: SESSION_ID,
+        requestId: currentRequestId ?? '',
+        permissionId,
+        toolName,
+        args: truncatedArgs,
+        riskLevel: 'destructive',
+      });
+
+      log('info', `permission.request sent for tool "${toolName}" (permissionId: ${permissionId})`);
+
+      // Await decision indefinitely — no local timer (ADR-9 Q4).
+      // Pipe-close abort is handled by abortPendingPermissions() on 'close' event.
+      const approved = await waitForPermissionResponse(permissionId);
+
+      log('info', `permission response for "${toolName}": ${approved ? 'allow' : 'deny'}`);
+      return approved ? { kind: 'approved' } : { kind: 'denied' };
+    });
+  }
 }
 
 // ─── Pipe connection loop ────────────────────────────────────────────────────
@@ -321,6 +480,10 @@ function connectToDaemon() {
       if (registered) {
         log('info', 'Daemon pipe closed');
       }
+      // ADR-9 §5: abort all in-flight permission requests with deny on pipe close.
+      // This ensures the SDK's permissionCallback is never left hanging when the
+      // daemon disconnects (e.g., daemon restart, SIGTERM).
+      abortPendingPermissions();
       resolve();
     });
 

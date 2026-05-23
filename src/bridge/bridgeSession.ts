@@ -8,15 +8,47 @@
  *
  * Listener cleanup is guaranteed via try/finally: bridge.off() fires on normal
  * completion, on error, and if the consumer abandons the iterator early.
+ *
+ * ADR-9: When permOptions are provided, BridgeSession wires the permission
+ * control-plane: incoming permission.request messages are forwarded to the
+ * PermissionPromptCallback (which triggers a Telegram inline keyboard). The
+ * user's decision is sent back as a permission.response. Session disconnect
+ * aborts all pending prompts via AbortSignal.
  */
 
 import type { BridgeEmitter } from './extensionBridge.js';
 import type { CopilotSession } from '../copilot/factory.js';
+import type { PermissionPromptCallback } from '../copilot/factory.js';
+import type { AllowAlwaysStore } from './allowAlwaysStore.js';
 
 type QueueItem =
   | { kind: 'chunk'; value: string }
   | { kind: 'done' }
   | { kind: 'error'; err: Error };
+
+/** Options for ADR-9 permission control-plane wiring. All fields required together. */
+export interface BridgeSessionPermOptions {
+  permissionCallback: PermissionPromptCallback;
+  allowAlwaysStore?: AllowAlwaysStore;
+  /** Sends permission.response back to the extension over the named pipe. */
+  sendPermissionResponseFn: (sessionId: string, permissionId: string, decision: 'allow' | 'deny') => void;
+}
+
+/**
+ * Create an AbortSignal that fires as soon as any of the supplied signals fires.
+ * Equivalent to AbortSignal.any() but explicit for clarity and Node 20 compat.
+ */
+function raceAbortSignals(signals: AbortSignal[]): AbortSignal {
+  const controller = new AbortController();
+  for (const sig of signals) {
+    if (sig.aborted) {
+      controller.abort(sig.reason);
+      return controller.signal;
+    }
+    sig.addEventListener('abort', () => { controller.abort(sig.reason); }, { once: true });
+  }
+  return controller.signal;
+}
 
 export class BridgeSession implements CopilotSession {
   /**
@@ -25,16 +57,104 @@ export class BridgeSession implements CopilotSession {
    * @param sessionId - The bridge session ID used to correlate commands and events.
    * @param sendFn   - Injects text into the session; returns a requestId for correlation,
    *                   or `false` if the session is unreachable.
+   * @param permOptions - ADR-9 permission wiring. Optional; when omitted the session
+   *                      operates without permission prompting (backward compatible).
    */
   constructor(
     private readonly bridge: BridgeEmitter,
     private readonly sessionId: string,
     private readonly sendFn: (sessionId: string, text: string) => string | false,
-  ) {}
+    permOptions?: BridgeSessionPermOptions,
+  ) {
+    if (permOptions !== undefined) {
+      this._wirePermissionHandlers(permOptions);
+    }
+  }
 
   send(text: string): AsyncIterable<string> {
     return this._generateStream(text);
   }
+
+  // ── Permission control-plane (ADR-9) ────────────────────────────────────────
+
+  /** Session-level AbortController — aborted when this session disconnects. */
+  private readonly _sessionAbortController = new AbortController();
+  /** Per-permissionId AbortControllers — aborted when permission.cancelled arrives. */
+  private readonly _pendingByPermId = new Map<string, AbortController>();
+
+  private _wirePermissionHandlers(opts: BridgeSessionPermOptions): void {
+    const { permissionCallback, allowAlwaysStore, sendPermissionResponseFn } = opts;
+
+    const onPermissionRequest = (
+      sId: string,
+      rId: string,
+      permId: string,
+      toolName: string,
+      args: string,
+    ): void => {
+      if (sId !== this.sessionId) return;
+      void this._handlePermissionRequest(
+        rId, permId, toolName, args,
+        permissionCallback, allowAlwaysStore, sendPermissionResponseFn,
+      );
+    };
+
+    const onPermissionCancelled = (sId: string, permId: string): void => {
+      if (sId !== this.sessionId) return;
+      this._pendingByPermId.get(permId)?.abort();
+    };
+
+    const onDisconnected = (sId: string): void => {
+      if (sId !== this.sessionId) return;
+      this._sessionAbortController.abort();
+      // Self-cleaning: remove all three permission listeners on disconnect.
+      this.bridge.off('permission.request', onPermissionRequest as (...args: unknown[]) => void);
+      this.bridge.off('permission.cancelled', onPermissionCancelled as (...args: unknown[]) => void);
+      this.bridge.off('session.disconnected', onDisconnected as (...args: unknown[]) => void);
+    };
+
+    this.bridge.on('permission.request', onPermissionRequest);
+    this.bridge.on('permission.cancelled', onPermissionCancelled);
+    this.bridge.on('session.disconnected', onDisconnected);
+  }
+
+  private async _handlePermissionRequest(
+    _requestId: string,
+    permId: string,
+    toolName: string,
+    args: string,
+    permissionCallback: PermissionPromptCallback,
+    allowAlwaysStore: AllowAlwaysStore | undefined,
+    sendPermissionResponseFn: (sid: string, permId: string, decision: 'allow' | 'deny') => void,
+  ): Promise<void> {
+    // Fast-path: tool in allow-always store → auto-approve without prompting.
+    if (allowAlwaysStore?.has(toolName)) {
+      sendPermissionResponseFn(this.sessionId, permId, 'allow');
+      return;
+    }
+
+    // Per-permission AbortController for permission.cancelled support.
+    const permAbortController = new AbortController();
+    this._pendingByPermId.set(permId, permAbortController);
+
+    // Combined signal: fires on session disconnect OR extension cancellation.
+    const combinedSignal = raceAbortSignals([
+      this._sessionAbortController.signal,
+      permAbortController.signal,
+    ]);
+
+    try {
+      const approved = await permissionCallback(toolName, args, combinedSignal);
+      sendPermissionResponseFn(this.sessionId, permId, approved ? 'allow' : 'deny');
+    } catch {
+      // AbortError or any unexpected error → deny, so the extension is never left hanging.
+      sendPermissionResponseFn(this.sessionId, permId, 'deny');
+    } finally {
+      this._pendingByPermId.delete(permId);
+    }
+  }
+
+  // ── Data-plane streaming (ADR-8) ────────────────────────────────────────────
 
   private async *_generateStream(text: string): AsyncGenerator<string> {
     const requestId = this.sendFn(this.sessionId, text);

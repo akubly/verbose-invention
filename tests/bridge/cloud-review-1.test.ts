@@ -1,5 +1,5 @@
 /**
- * Cloud-review-1 regression tests — Carter's fixes for Copilot review T1/T3/T4/T6.
+ * Cloud-review-1 regression tests — Carter's fixes for Copilot review T1/T3/T4/T6/T7.
  *
  * T1 (ADR-9 regression): Idle eviction must NOT call dispose() while a
  *    permission prompt is pending.  BridgeSession.isBusy() gates eviction.
@@ -13,6 +13,10 @@
  *
  * T6 (overflow latch): After the first overflow error is pushed into the stream
  *    queue, subsequent chunks must NOT enqueue additional items.
+ *
+ * T7 (shutdown cleanup race — ADR-10): ExtensionBridge.stop() must await
+ *    cleanupPipeAuth() so the auth file is guaranteed gone before stop() resolves
+ *    (and therefore before process.exit() is called in main.ts shutdown).
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
@@ -177,6 +181,8 @@ import * as fsStatic from 'node:fs/promises';
 import * as osStatic from 'node:os';
 import * as pathStatic from 'node:path';
 import { generatePipeAuth, cleanupPipeAuth, getAuthFilePath } from '../../src/bridge/pipeAuth.js';
+import { ExtensionBridge } from '../../src/bridge/extensionBridge.js';
+import type { PipeAuthConfig } from '../../src/bridge/pipeAuth.js';
 
 describe('T3 — generatePipeAuth() handles Windows rename EPERM/EEXIST', () => {
   afterEach(() => { vi.unstubAllEnvs(); });
@@ -264,7 +270,49 @@ describe('T4 — auth file is removed when bridge startup fails', () => {
   });
 });
 
-// ─── T6: stream overflow latch — no further enqueuing after first overflow ────
+// ─── T7: stop() awaits cleanupPipeAuth — no shutdown race ────────────────────
+
+describe('T7 — ExtensionBridge.stop() awaits auth file removal', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('auth file is gone after stop() resolves (no server started)', async () => {
+    const tempDir = await fsStatic.mkdtemp(pathStatic.join(osStatic.tmpdir(), 'reach-t7-'));
+    vi.stubEnv('LOCALAPPDATA', tempDir);
+
+    try {
+      const config = await generatePipeAuth();
+      const filePath = getAuthFilePath();
+
+      // File exists before stop().
+      await expect(fsStatic.access(filePath)).resolves.toBeUndefined();
+
+      const bridge = new ExtensionBridge(config as PipeAuthConfig);
+      await bridge.stop();
+
+      // File must be gone by the time stop() resolves.
+      await expect(fsStatic.access(filePath)).rejects.toThrow();
+    } finally {
+      await fsStatic.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('stop() is safe when auth file is already absent (no double-delete error)', async () => {
+    const tempDir = await fsStatic.mkdtemp(pathStatic.join(osStatic.tmpdir(), 'reach-t7b-'));
+    vi.stubEnv('LOCALAPPDATA', tempDir);
+
+    try {
+      const config = await generatePipeAuth();
+      await cleanupPipeAuth(); // remove it first
+
+      const bridge = new ExtensionBridge(config as PipeAuthConfig);
+      // Should not reject.
+      await expect(bridge.stop()).resolves.toBeUndefined();
+    } finally {
+      await fsStatic.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
 
 describe('T6 — stream overflow latch stops further enqueuing', () => {
   afterEach(() => { vi.restoreAllMocks(); });

@@ -309,7 +309,9 @@ export class ExtensionBridge implements BridgeEmitter {
 
   /**
    * Gracefully stop the server, cancel all heartbeat timers, and destroy
-   * every open socket. Resolves when the server is fully closed.
+   * every open socket. Resolves when the server is fully closed AND the auth
+   * file has been removed, so callers (e.g. main.ts shutdown) are guaranteed
+   * that bridge-auth.json is gone before process.exit() runs (T7 — ADR-10).
    */
   stop(): Promise<void> {
     this.stopHeartbeat();
@@ -324,17 +326,20 @@ export class ExtensionBridge implements BridgeEmitter {
     this.sessions.clear();
     this.pendingSockets.clear();
 
-    // N2: remove the auth file so stale credentials don't linger after shutdown.
-    void cleanupPipeAuth();
+    // N2/T7: await cleanupPipeAuth() inside the returned Promise so stop() only
+    // resolves after the auth file is gone.  The original `void cleanupPipeAuth()`
+    // was fire-and-forget and could race with process.exit(0) in main.ts shutdown,
+    // leaving bridge-auth.json on disk intermittently.
+    const cleanup = (): Promise<void> => cleanupPipeAuth();
 
     return new Promise<void>((resolve) => {
       if (this.server === null) {
-        resolve();
+        void cleanup().then(resolve);
         return;
       }
       this.server.close(() => {
         this.server = null;
-        resolve();
+        void cleanup().then(resolve);
       });
     });
   }

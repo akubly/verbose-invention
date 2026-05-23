@@ -17,6 +17,7 @@ interface PendingPrompt {
 
 interface PromptRegistry {
   pendingByRequestId: Map<string, PendingPrompt>;
+  scanHandle: ReturnType<typeof setInterval>;
 }
 
 const promptRegistries = new WeakMap<Bot<Context>, PromptRegistry>();
@@ -47,17 +48,13 @@ function ensurePromptRegistry(bot: Bot<Context>): PromptRegistry {
     return existing;
   }
 
-  const registry: PromptRegistry = {
-    pendingByRequestId: new Map(),
-  };
-
-  promptRegistries.set(bot, registry);
+  const pendingByRequestId = new Map<string, PendingPrompt>();
 
   // Passive stale-prompt warning scanner (ADR-9 observability).
   // Emits a warning for prompts open >10 minutes. Does NOT resolve them.
   const scanHandle = setInterval(() => {
     const now = Date.now();
-    for (const [reqId, pending] of registry.pendingByRequestId) {
+    for (const [reqId, pending] of pendingByRequestId) {
       if (now - pending.createdAt > TEN_MINUTES_MS) {
         console.warn(`[prompt] Permission prompt ${reqId} has been open for >10 minutes`);
       }
@@ -65,6 +62,9 @@ function ensurePromptRegistry(bot: Bot<Context>): PromptRegistry {
   }, TEN_MINUTES_MS);
   // Do not prevent process exit while waiting for user taps.
   scanHandle.unref();
+
+  const registry: PromptRegistry = { pendingByRequestId, scanHandle };
+  promptRegistries.set(bot, registry);
 
   // One callback middleware per bot; individual prompts clean themselves up via the pending map.
   bot.on('callback_query:data', async (ctx, next) => {
@@ -99,6 +99,18 @@ function ensurePromptRegistry(bot: Bot<Context>): PromptRegistry {
   });
 
   return registry;
+}
+
+/**
+ * Clear the stale-prompt scanner and remove the registry for `bot`.
+ * Call during bot shutdown or in test teardown to avoid timer accumulation.
+ */
+export function disposePromptRegistry(bot: Bot<Context>): void {
+  const registry = promptRegistries.get(bot);
+  if (registry) {
+    clearInterval(registry.scanHandle);
+    promptRegistries.delete(bot);
+  }
 }
 
 /**

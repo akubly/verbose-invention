@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { promptUserForPermission } from '../../src/bot/prompt.js';
+import { promptUserForPermission, disposePromptRegistry } from '../../src/bot/prompt.js';
 
 type PromptOverrides = {
   chatId?: number;
@@ -310,5 +310,62 @@ describe('promptUserForPermission', () => {
 
     await click(denyData!);
     await expect(decision).resolves.toBe(false);
+  });
+
+  it('creates exactly one scanner interval per bot instance and disposePromptRegistry clears it', async () => {
+    const { bot: bot1 } = makeMockBot();
+    const { bot: bot2 } = makeMockBot();
+    const ac1 = new AbortController();
+    const ac2 = new AbortController();
+
+    // Trigger registry (and scanner) creation for each bot.
+    const p1 = invokePrompt(bot1, { signal: ac1.signal });
+    const p2 = invokePrompt(bot2, { signal: ac2.signal });
+    await flushMicrotasks();
+
+    // Two distinct bots → two setInterval handles.
+    expect(vi.getTimerCount()).toBe(2);
+
+    // Settle both prompts so the promises resolve cleanly.
+    ac1.abort();
+    ac2.abort();
+    await flushMicrotasks();
+    await Promise.all([p1, p2]);
+
+    // Dispose clears both intervals.
+    disposePromptRegistry(bot1);
+    disposePromptRegistry(bot2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('second call to promptUserForPermission on the same bot reuses the registry, no extra interval', async () => {
+    const { bot, sendMessage, click } = makeMockBot();
+
+    const d1 = invokePrompt(bot);
+    await flushMicrotasks();
+    const timerCountAfterFirst = vi.getTimerCount();
+
+    const d2 = invokePrompt(bot);
+    await flushMicrotasks();
+
+    // Same bot → same registry → no new interval.
+    expect(vi.getTimerCount()).toBe(timerCountAfterFirst);
+
+    // Settle both.
+    const [data1, data2] = sendMessage.mock.calls.map(
+      (_call, i) => sendMessage.mock.calls[i]?.[2] as Record<string, any> | undefined,
+    ).map((opts) => {
+      const kb = opts?.reply_markup?.inline_keyboard as Array<Array<{ callback_data: string }>> | undefined;
+      return kb?.flat().find((b) => /^perm:deny:/.test(b.callback_data))?.callback_data;
+    });
+    if (data1) await click(data1);
+    if (data2) await click(data2);
+    await Promise.all([
+      expect(d1).resolves.toBe(false),
+      expect(d2).resolves.toBe(false),
+    ]);
+
+    disposePromptRegistry(bot);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

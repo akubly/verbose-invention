@@ -116,13 +116,17 @@ export class Relay {
         if (!evicted) return;
         if (evicted.session.isBusy?.()) {
           // Session has pending permissions — defer eviction, re-arm the timer.
-          console.log(`[relay] Session busy (pending permission), deferring idle eviction: topic ${topicId} → "${entry.sessionName}"`);
+          // Log evicted.sessionName (read from activeSessions at eviction time)
+          // rather than entry.sessionName from the closure: if the topic was
+          // re-linked after relay() returned, the cached value reflects the
+          // session actually being deferred.
+          console.log(`[relay] Session busy (pending permission), deferring idle eviction: topic ${topicId} → "${evicted.sessionName}"`);
           scheduleIdle();
           return;
         }
         evicted.session.dispose?.();
         this.activeSessions.delete(topicId);
-        console.log(`[relay] Session handle evicted (idle): topic ${topicId} → "${entry.sessionName}"`);
+        console.log(`[relay] Session handle evicted (idle): topic ${topicId} → "${evicted.sessionName}"`);
       });
     };
     scheduleIdle();

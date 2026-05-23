@@ -1,11 +1,9 @@
 /**
  * FakeDaemon — in-process stand-in for the Reach daemon pipe server.
  *
- * TODO: Once Carter's `carter-pipe-protocol.md` is merged, verify that
- * the message schema in `PipeMessage` (especially `hello`, `inject`, `stream`,
- * and any additional envelope fields) matches Carter's implementation exactly.
- * See `.squad/decisions/inbox/jun-test-doubles-contract.md` for the shapes
- * used here.
+ * Message types are defined locally to decouple from production imports while
+ * staying in sync with extensionBridge.ts. Audited against InboundMessage and
+ * OutboundMessage in src/bridge/extensionBridge.ts (ADR-8 + ADR-9).
  *
  * Transport: pure in-memory PassThrough stream pairs — no actual named pipe
  * required, runs on any OS in CI without elevated permissions.
@@ -68,13 +66,33 @@ export type SessionEventMessage = {
   payload: unknown;
 };
 
+/** ADR-9: extension requests user approval before executing a destructive tool. */
+export type PermissionRequestMessage = {
+  type: 'permission.request';
+  sessionId: string;
+  requestId: string;
+  permissionId: string;
+  toolName: string;
+  args: string;
+  riskLevel: 'destructive';
+};
+
+/** ADR-9: extension has abandoned a pending permissionCallback. */
+export type PermissionCancelledMessage = {
+  type: 'permission.cancelled';
+  sessionId: string;
+  permissionId: string;
+};
+
 /** All message shapes the daemon can receive from an extension. */
 export type InboundMessage =
   | HelloMessage
   | PongMessage
   | StreamChunkMessage
   | StreamErrorMessage
-  | SessionEventMessage;
+  | SessionEventMessage
+  | PermissionRequestMessage
+  | PermissionCancelledMessage;
 
 export type PingMessage = {
   type: 'ping';
@@ -94,11 +112,20 @@ export type InjectMessage = {
   text: string;
 };
 
+/** ADR-9: daemon delivers the user's approval decision to the extension. */
+export type PermissionResponseMessage = {
+  type: 'permission.response';
+  sessionId: string;
+  permissionId: string;
+  decision: 'allow' | 'deny';
+};
+
 /** All message shapes the daemon can send to an extension. */
 export type OutboundMessage =
   | PingMessage
   | SessionRegisteredMessage
-  | InjectMessage;
+  | InjectMessage
+  | PermissionResponseMessage;
 
 export type AnyPipeMessage = InboundMessage | OutboundMessage;
 

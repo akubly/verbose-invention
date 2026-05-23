@@ -381,9 +381,13 @@ function wireSessionEvents(session) {
       const toolName = req?.toolName ?? '';
       const args = req?.args !== undefined ? JSON.stringify(req.args) : '';
 
-      // Known-safe tools and non-destructive tools are auto-approved without prompting.
-      if (isKnownSafe(toolName) || !isDestructive(toolName)) {
+      // Known-safe tools are auto-approved without prompting.
+      if (isKnownSafe(toolName)) {
         return { kind: 'approved' };
+      }
+      // Unknown tools (neither safe nor destructive) are denied by default (safety parity with SDK).
+      if (!isDestructive(toolName)) {
+        return { kind: 'denied' };
       }
 
       // Destructive tool: forward to daemon for user approval.

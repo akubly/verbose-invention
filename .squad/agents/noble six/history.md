@@ -96,6 +96,12 @@ Phase 6 Day 2 triage revealed that `extension.mjs` had already implemented full 
 **2026-05-21 — Adapter > rewrite when the abstraction already fits.**  
 Days 3–4 relay integration choice: `relay.ts` was already written against `CopilotSession.send() → AsyncIterable<string>`. The bridge emits `stream` events. A `BridgeSession` adapter (~60 LOC) bridges the gap and inherits 140+ LOC of throttle/edit/fallback logic at zero cost. The principle: when an existing abstraction's shape matches the new integration point, use an adapter before considering a rewrite.
 
+**2026-05-22 — Review Cycle 1: safety-parity regressions hide at abstraction boundaries.**  
+The bridge (`extension.mjs`) auto-approved unknown tools because the condition combined `isKnownSafe || !isDestructive` — logically correct for "safe or non-destructive" but semantically wrong for "unknown." The SDK in-process path (`impl.ts`) had the stricter three-branch logic. Lesson: when duplicating classification logic across a process boundary, match the branch structure exactly, not just the intended behavior for known inputs. Unknown inputs are the adversarial case.
+
+**2026-05-22 — Defense-in-depth for IPC: randomize + authenticate + verify.**  
+Named pipe security requires all three layers: (1) randomized pipe name to prevent blind connection, (2) token exchange to authenticate the client, (3) SID verification to bind to the expected user. Any single layer can be bypassed; all three together make local exploitation impractical for the single-user threat model.
+
 ---
 
 ## Archive

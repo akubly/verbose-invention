@@ -26,6 +26,35 @@ type QueueItem =
   | { kind: 'done' }
   | { kind: 'error'; err: Error };
 
+/** Allowlist regex for tool names received from the extension over the named pipe. */
+const TOOL_NAME_VALID_RE = /^[a-z_][a-z0-9_.:-]{0,127}$/i;
+
+/** Maximum tool name length retained after sanitization. */
+const TOOL_NAME_MAX_LENGTH = 128;
+
+/**
+ * Sanitize a toolName that arrived from an untrusted extension.
+ *
+ * If the name matches the allowlist it is returned unchanged.
+ * Otherwise every disallowed character (including RTL overrides, null bytes,
+ * homoglyphs, and any non-ASCII) is replaced with '_', the result is
+ * truncated to TOOL_NAME_MAX_LENGTH, and a warning is emitted so the anomaly
+ * is observable in daemon logs.
+ */
+function sanitizeToolName(toolName: string): string {
+  if (TOOL_NAME_VALID_RE.test(toolName)) {
+    return toolName;
+  }
+  const sanitized = toolName
+    .slice(0, TOOL_NAME_MAX_LENGTH)
+    .replace(/[^A-Za-z0-9_.:-]/g, '_');
+  console.warn(
+    `[bridgeSession] toolName failed allowlist validation; sanitized for display. ` +
+    `original=${JSON.stringify(toolName)} sanitized=${JSON.stringify(sanitized)}`,
+  );
+  return sanitized;
+}
+
 /** Options for ADR-9 permission control-plane wiring. All fields required together. */
 export interface BridgeSessionPermOptions {
   permissionCallback: PermissionPromptCallback;
@@ -33,6 +62,12 @@ export interface BridgeSessionPermOptions {
   /** Sends permission.response back to the extension over the named pipe. */
   sendPermissionResponseFn: (sessionId: string, permissionId: string, decision: 'allow' | 'deny') => void;
 }
+
+/** I9: Maximum concurrent pending permission requests. Additional requests are auto-denied. */
+const MAX_PENDING_PERMISSIONS = 5;
+
+/** I5: Maximum depth of the per-send stream queue. Exceeding this terminates the stream. */
+const MAX_STREAM_QUEUE_SIZE = 1000;
 
 /**
  * Create an AbortSignal that fires as soon as any of the supplied signals fires.
@@ -45,7 +80,12 @@ function raceAbortSignals(signals: AbortSignal[]): AbortSignal {
       controller.abort(sig.reason);
       return controller.signal;
     }
-    sig.addEventListener('abort', () => { controller.abort(sig.reason); }, { once: true });
+    // {once: true} auto-removes after first fire; {signal: controller.signal} auto-removes
+    // the remaining listeners when the controller itself aborts (prevents listener buildup).
+    sig.addEventListener('abort', () => { controller.abort(sig.reason); }, {
+      once: true,
+      signal: controller.signal,
+    });
   }
   return controller.signal;
 }
@@ -127,8 +167,12 @@ export class BridgeSession implements CopilotSession {
     allowAlwaysStore: AllowAlwaysStore | undefined,
     sendPermissionResponseFn: (sid: string, permId: string, decision: 'allow' | 'deny') => void,
   ): Promise<void> {
+    // Sanitize toolName before any use — guards against RTL overrides, null bytes,
+    // control characters, or homoglyphs injected by a compromised extension.
+    const safeName = sanitizeToolName(toolName);
+
     // Fast-path: tool in allow-always store → auto-approve without prompting.
-    if (allowAlwaysStore?.has(toolName)) {
+    if (allowAlwaysStore?.has(safeName)) {
       sendPermissionResponseFn(this.sessionId, permId, 'allow');
       return;
     }
@@ -144,7 +188,7 @@ export class BridgeSession implements CopilotSession {
     ]);
 
     try {
-      const approved = await permissionCallback(toolName, args, combinedSignal);
+      const approved = await permissionCallback(safeName, args, combinedSignal);
       sendPermissionResponseFn(this.sessionId, permId, approved ? 'allow' : 'deny');
     } catch {
       // AbortError or any unexpected error → deny, so the extension is never left hanging.

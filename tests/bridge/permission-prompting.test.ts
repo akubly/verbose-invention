@@ -266,18 +266,16 @@ describe('C7 — regression guards', () => {
 
   it('C7-03: an active stream yields correctly while a permission prompt is concurrently pending', async () => {
     const bridge = new FakeBridge();
-    // Callback that hangs until manually resolved.
+    // Single session: hanging permission callback proves the data plane is NOT blocked by
+    // a pending control-plane prompt.  The previous version used two BridgeSession instances
+    // on the same FakeBridge — the second one auto-resolved the permission before the
+    // hanging first session could ever interfere, making the test vacuously true.
     let resolvePermission!: (approved: boolean) => void;
-    const { sendResponseFn } = makePermSession(bridge, SESSION_ID, {
+    const { session, sendResponseFn } = makePermSession(bridge, SESSION_ID, {
       callback: vi.fn(() => new Promise<boolean>((r) => { resolvePermission = r; })),
     });
 
-    // Start a data-plane stream.
-    const session = new BridgeSession(bridge, SESSION_ID, () => REQUEST_ID, {
-      permissionCallback: vi.fn().mockResolvedValue(true),
-      sendPermissionResponseFn: sendResponseFn,
-    });
-
+    // Start a data-plane stream on the same session whose permission callback hangs.
     const chunks: string[] = [];
     const streamDone = (async () => {
       for await (const chunk of session.send('hello')) {
@@ -288,7 +286,7 @@ describe('C7 — regression guards', () => {
     // Emit permission.request while stream is open — data plane must not stall.
     bridge.emitPermissionRequest(SESSION_ID, REQUEST_ID, PERM_ID, 'bash', '{}');
 
-    // Stream chunks arrive normally.
+    // Stream chunks arrive normally despite the unresolved permission.
     bridge.emitStream(SESSION_ID, REQUEST_ID, 'chunk-1', false);
     bridge.emitStream(SESSION_ID, REQUEST_ID, 'chunk-2', true);
 

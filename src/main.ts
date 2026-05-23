@@ -17,7 +17,6 @@ import { Bot } from 'grammy';
 import { ExtensionBridge } from './bridge/extensionBridge.js';
 import { BridgeSessionFactory } from './bridge/bridgeSessionFactory.js';
 import { CompositeSessionFactory } from './bridge/compositeSessionFactory.js';
-import { InMemoryAllowAlwaysStore } from './bridge/allowAlwaysStore.js';
 import type { CopilotSessionFactory } from './copilot/factory.js';
 
 function getRegistryPath(): string {
@@ -123,10 +122,9 @@ async function main(): Promise<void> {
 
   const sdkFactory = new CopilotClientImpl(model, permissionPolicy);
   // Composite factory: bridge-first, SDK-fallback (Option A — see decisions inbox).
-  // AllowAlwaysStore is per-daemon-instance (in-memory; ADR-9 Q2 — Phase 7+ seam for persisted).
-  const allowAlwaysStore = new InMemoryAllowAlwaysStore();
+  // AllowAlwaysStore is created fresh per BridgeSession by the factory (ADR-9 Q2 — per-session).
   const factory: CopilotSessionFactory = bridge
-    ? new CompositeSessionFactory(new BridgeSessionFactory(bridge, allowAlwaysStore), sdkFactory)
+    ? new CompositeSessionFactory(new BridgeSessionFactory(bridge), sdkFactory)
     : sdkFactory;
 
   const bot = createBot(token, chatId);

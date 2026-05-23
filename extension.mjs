@@ -106,7 +106,7 @@ const SAFE_TOOLS = new Set([
  * @param {string} toolName
  * @returns {boolean}
  */
-function isDestructive(toolName) {
+export function isDestructive(toolName) {
   return DESTRUCTIVE_TOOLS.has(toolName);
 }
 
@@ -114,7 +114,7 @@ function isDestructive(toolName) {
  * @param {string} toolName
  * @returns {boolean}
  */
-function isKnownSafe(toolName) {
+export function isKnownSafe(toolName) {
   return SAFE_TOOLS.has(toolName);
 }
 

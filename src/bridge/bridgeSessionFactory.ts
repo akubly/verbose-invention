@@ -18,18 +18,13 @@ import type {
 } from '../copilot/factory.js';
 import { BridgeSession } from './bridgeSession.js';
 import type { ExtensionBridge } from './extensionBridge.js';
-import type { AllowAlwaysStore } from './allowAlwaysStore.js';
+import { InMemoryAllowAlwaysStore } from './allowAlwaysStore.js';
 
 export class BridgeSessionFactory implements CopilotSessionFactory {
   /**
-   * @param bridge          - The named-pipe server.
-   * @param allowAlwaysStore - Optional per-session allow-always store (ADR-9 Q2).
-   *   Inject InMemoryAllowAlwaysStore from the composition root in main.ts.
+   * @param bridge - The named-pipe server.
    */
-  constructor(
-    private readonly bridge: ExtensionBridge,
-    private readonly allowAlwaysStore?: AllowAlwaysStore,
-  ) {}
+  constructor(private readonly bridge: ExtensionBridge) {}
 
   /**
    * Returns a BridgeSession if the extension has a session registered under
@@ -79,8 +74,8 @@ export class BridgeSessionFactory implements CopilotSessionFactory {
     const permOptions = permissionCallback !== undefined
       ? {
           permissionCallback,
-          // Conditionally spread to satisfy exactOptionalPropertyTypes.
-          ...(this.allowAlwaysStore !== undefined ? { allowAlwaysStore: this.allowAlwaysStore } : {}),
+          // Fresh store per session — enforces ADR-9 Q2 per-session isolation contract.
+          allowAlwaysStore: new InMemoryAllowAlwaysStore(),
           sendPermissionResponseFn: (sid: string, permId: string, decision: 'allow' | 'deny'): void => {
             this.bridge.sendPermissionResponse(sid, permId, decision);
           },

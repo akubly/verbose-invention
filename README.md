@@ -142,7 +142,7 @@ The service installer uses `node-windows` to register Reach as a native Windows 
 
 At install time, the installer resolves your username automatically (`os.userInfo()`) and prompts for your Windows account password once. The password is passed directly to the Windows Service Control Manager and is not stored by Reach.
 
-> **Note:** The service runs under your account, so it stops when you log off. This is intentional — Reach is a personal-host tool. At startup the daemon creates a randomized named pipe (`reach-bridge-<suffix>`) and writes the pipe path and an access token to `%LOCALAPPDATA%\reach\bridge-auth.json` (user-only ACL). The extension reads that file on every connect attempt.
+> **Note:** The daemon runs as a Windows Service under your user account — services run independently of interactive sessions, so it keeps running across logoff and persists until the machine shuts down or you uninstall it. At startup the daemon creates a randomized named pipe (`reach-bridge-<suffix>`) and writes the pipe path and an access token to `%LOCALAPPDATA%\reach\bridge-auth.json` (user-only ACL). The extension reads that file on every connect attempt.
 
 **Install:**
 

@@ -6,21 +6,165 @@
 
 ## ADR-9: Permission Prompting Over the Bridge (2026-05-22)
 
-**Status:** PROPOSED  
-**Author:** Noble Six (Lead / Architect)  
-**Date:** 2026-05-22  
-**Relates to:** ADR-3 (pipe), ADR-6 (reconnect), ADR-7 (heartbeat), ADR-8 (wire protocol)  
-**Gating:** Production dogfooding blocked until this is resolved. 4 open questions for Aaron before Kat begins implementation.
+**Status:** ACCEPTED
+**Author:** Noble Six (Lead / Architect)
+**Date:** 2026-05-22
+**Amended:** 2026-05-22 (all questions settled; Q4 verified by Carter)
+**Relates to:** ADR-3 (pipe), ADR-6 (reconnect), ADR-7 (heartbeat), ADR-8 (wire protocol)
+**Supersedes:** Original `noble-six-adr9-permission-prompting.md`
 
-**Summary:** Adopt in-stream interleaving for permission prompts over the existing named pipe (ADR-3), adding `permission.request` / `permission.response` / `permission.cancelled` message pair to the canonical wire protocol (ADR-8). No additional pipe or channel introduced. See full document in inbox.
+**Amendment trail:**
+- `noble-six-adr9-open-questions-walkthrough.md` — initial Q1–Q4 analysis
+- `noble-six-adr9-followup-clarifications.md` — Q1/Q2/Q4 reanalysis, Q5 added
+- `noble-six-adr9-no-timeout-analysis.md` — Q4 no-timeout steel-man analysis
+- `carter-sdk-permission-timeout-verification.md` — SDK verification: NO internal timeout
+- Final amendment — all decisions locked, Q4 settled to Branch A (no timeout)
 
-**Open Questions for Aaron:**
-1. **Telegram UX Shape** — Reply-keyboard, inline buttons, or free-text `/allow`/`deny`?
-2. **Default `timeoutMs`** — 30s proposed; is this right for dogfooding?
-3. **`allow-always` scope** — Per-session/per-tool in-memory (loses on restart) vs. persisted to disk?
-4. **Risk classification** — Extension classifies (has tool context) or daemon (has policy knowledge)?
+### Problem
 
-**Full document:** 345 lines, covers problem statement, decision, wire schema, adapter integration, security, alternatives, trade-offs, implementation work (Kat), test scenarios (Jun).
+`BridgeSession` accepts `permissionCallback` but silently discards it. No wire-protocol mechanism exists for permission requests from CLI to daemon. Destructive tools execute without user consent on bridge sessions. `REACH_PERMISSION_POLICY=interactiveDestructive` has no effect.
+
+### Decision
+
+Extend the named pipe with three new message types: `permission.request`, `permission.response`, `permission.cancelled`. Messages interleave with streaming data on the same pipe (no second channel). The extension classifies tool risk (has SDK context); daemon routes user decision via Telegram inline keyboard. No timeout — wait indefinitely for explicit decision or session disconnect.
+
+### Wire Protocol Schema
+
+**Extension → Daemon: `permission.request`**
+```json
+{
+  "type": "permission.request",
+  "sessionId": "abc-123",
+  "requestId": "req-001",
+  "permissionId": "perm-7a2b3c4d",
+  "toolName": "bash",
+  "args": "{\"command\": \"rm -rf dist/\"}",
+  "riskLevel": "destructive"
+}
+```
+
+**Daemon → Extension: `permission.response`**
+```json
+{
+  "type": "permission.response",
+  "sessionId": "abc-123",
+  "permissionId": "perm-7a2b3c4d",
+  "decision": "allow"
+}
+```
+
+**Extension → Daemon: `permission.cancelled`**
+```json
+{
+  "type": "permission.cancelled",
+  "sessionId": "abc-123",
+  "permissionId": "perm-7a2b3c4d"
+}
+```
+
+### Q1 (Settled) — UX Shape: Inline Keyboard
+
+**Decision:** Use inline keyboard buttons (✅ Approve / ❌ Deny), same as SDK sessions. Reuse existing `promptUserForPermission()` unchanged.
+
+**Rationale:** Supports multiple concurrent prompts. Reply keyboard (one per conversation) would clobber concurrent prompts. Inline keyboard is self-cleaning on stale prompts; reply keyboard leaks on crash. Wire protocol is UX-agnostic — changing to threaded replies later is a one-line change.
+
+### Q2 (Settled) — Allow-Always Scope: Injectable Interface, In-Memory Default
+
+**Decision (Phase 6):** Per-session in-memory. `AllowAlwaysStore` interface injected; `InMemoryAllowAlwaysStore` impl by default. State resets on daemon restart.
+
+**Phase 7+ upgrade:** `PersistedAllowAlwaysStore` backed by `~/.config/reach/allow-always.json`. Interface-first design makes the swap a 1-file change at composition root.
+
+**"Yolo mode" documentation:** `REACH_PERMISSION_POLICY=approveAll` bypasses all permission prompting. Extension never sends `permission.request`. No Telegram prompts. This is Aaron's current workflow.
+
+### Q3 (Settled) — AbortSignal on Disconnect: Mandatory
+
+**Decision:** Add optional `signal?: AbortSignal` to `PermissionPrompter.prompt()`. Non-breaking. BridgeSession passes `abortController.signal` keyed to session disconnect.
+
+**Why mandatory for no-timeout:** Without AbortSignal, a dead session's pending prompt stays open indefinitely. With AbortSignal, dead session prompts cancel within one event loop turn. Implemented by wiring `signal.addEventListener('abort', ...)` to `complete('aborted')`.
+
+### Q4 (Settled) — Timeout: NO TIMEOUT (Branch A, Verified by Carter)
+
+**Decision:** Indefinite wait. Permission prompt waits for explicit human decision (approve or deny). Only automatic resolution: session disconnect → AbortSignal fires → prompt resolves false.
+
+**Verification (Carter):** SDK has NO internal timeout on `onPermissionRequest`. Source: `_executePermissionAndRespond` performs plain await, no setTimeout/Promise.race/AbortController wrapping. No timeout constant in SDK types. The 60s timeout in current `prompt.ts` is entirely application code (our own). SDK v3 uses notification-based broadcast (not RPC), so no CLI-side timer either.
+
+**Semantics:** 
+- Aaron taps ✅/❌ → tool executes or denies (happy path)
+- Session disconnects → AbortSignal fires → auto-deny
+- Daemon restarts → buttons become "no longer active"
+- "Friday → Monday" case: prompt waits through weekend, Telegram buttons work 72 hours later, tool executes when tapped
+
+**Implementation changes:**
+- Remove `timeoutMs` parameter and `setTimeout` / `Promise.race` from `prompt.ts`
+- Remove timeout constant from extension.mjs
+- Rename `PromptOutcome` `'timeout'` → `'aborted'` (resolution driven by disconnect, not elapsed time)
+- Add passive 10-minute-open warning scanner (UX aid, not a hard timeout)
+
+### Q5 (Settled) — Risk Classification: Extension Classifies
+
+**Decision:** Extension classifies destructive tools. Extension has SDK `PermissionRequest` object with tool context. Daemon does NOT duplicate `isDestructive()`. Eliminates split-brain: two functions in different processes cannot drift apart.
+
+**Implementation:** Extension inlines/imports tool classification (mirrors `permissions.ts`). Extension `onPermissionRequest` hook: check `isKnownSafe()` → approve silently; check `isDestructive()` → send `permission.request`; otherwise → deny. Extension-side pipe-close abort: all pending permissions aborted with deny.
+
+### Implementation Tasks (Kat)
+
+**K1 — Wire Protocol:** Add `PermissionRequestMessage`, `PermissionCancelledMessage`, `PermissionResponseMessage` to unions. Add dispatch in `handleLine()`. Add `sendPermissionResponse()` helper. Add bridge events. (~80 LOC in `extensionBridge.ts`)
+
+**K2 — BridgeSession Routing:** Add `permissionPrompter?`, `allowAlwaysStore`, `chatId`, `topicId` to constructor. Wire bridge events to `promptUserForPermission()`. Wire `permission.cancelled` to abort controller. Wire `session.disconnected` to abort all pending. (~70 LOC in `bridgeSession.ts`)
+
+**K3 — PermissionPrompter.prompt() + Timeout Removal:** Add `signal?: AbortSignal` to interface. Wire abort event. Remove `timeoutMs` parameter and all timer logic. Rename `'timeout'` → `'aborted'`. (~15 LOC in `ports.ts` + `prompt.ts`)
+
+**K4 — AllowAlwaysStore Interface:** Create `allowAlwaysStore.ts` with interface + `InMemoryAllowAlwaysStore`. Inject via factory. Update `main.ts`. (~30 LOC)
+
+**K5 — Extension Permission Handling:** Add `isDestructive()` / `isKnownSafe()` lists to `extension.mjs`. Implement `onPermissionRequest` hook + `waitForPermissionResponse()`. Pipe-close abort for pending permissions. (~60 LOC in `extension.mjs`)
+
+**K6 — Prompt Text + Observability:** Update prompt text (remove countdown language, e.g., "Approve or deny — waiting for your decision"). Add 10-minute passive warning scanner. Test branch verification. (~20 LOC)
+
+### Test Scenarios (Jun)
+
+Jun's 29-scenario catalog revisions required:
+
+**Category 2 (Timeout/cancellation) — all 5 scenarios need revision:**
+- Replace "auto-deny after timeoutMs" with "waits indefinitely; disconnect fires → auto-deny via AbortSignal"
+- Session ends mid-prompt now tests AbortSignal path
+
+**New scenarios to add:**
+- **Friday → Monday:** No response for 72 simulated hours; heartbeat maintains session (ADR-7). User taps Approve after weekend. `permissionCallback` resolves. Tool executes. Session clean throughout.
+- **Late callback tap:** User taps Approve after prompt message has scrolled away, returns to message hours later, taps. Telegram's `answerCallbackQuery` window is from tap (not send), so this works.
+- **Concurrent prompts with abort:** Two prompts in flight. Session disconnects. Both AbortSignals fire simultaneously. Both prompts clean up. No leaks.
+
+**Categories unaffected:** 1 (happy path), 3 (ordering), 4 (adversarial), 5 (regression), 6 (protocol) — all valid as written.
+
+### Security
+
+**Input validation:** `permission.request` messages validated on receipt. `permissionId` and `toolName` non-empty. `riskLevel == "destructive"`. Malformed messages logged and dropped; extension not disconnected.
+
+**`permissionId` spoofing:** Pipe secured by ADR-5 (user-level daemon). Same-user-process spoofing already within threat model.
+
+**Prompt flood DoS:** Future hardening task (Phase 7). Rate-limit `permission.request` per session (e.g., max 5 concurrent). Excess auto-denied with log warning.
+
+**Allow-always scope:** `InMemoryAllowAlwaysStore` per `BridgeSession` instance — not shared across sessions. Malicious session cannot whitelist tools for other sessions.
+
+### User Guide
+
+| Env Var | Value | Behavior |
+|---|---|---|
+| `REACH_PERMISSION_POLICY` | `approveAll` | All tools auto-approved. No prompts. **Aaron's mode.** |
+| `REACH_PERMISSION_POLICY` | `denyAll` | All destructive tools auto-denied. No prompts. |
+| `REACH_PERMISSION_POLICY` | `interactiveDestructive` | Destructive tools trigger Telegram prompt. ADR-9 behavior applies. |
+
+**In interactive mode:** Approve/Deny buttons on prompt. Approving adds tool to session-level allow-always store. Subsequent invocations auto-approved without prompting. Store resets on daemon restart (Phase 6).
+
+### Open Items (Deferred to Phase 7+)
+
+- Rate-limit `permission.request` flood (max N concurrent per session)
+- `PersistedAllowAlwaysStore` (per-tool, disk-backed, survives restarts)
+- Tiered allow response ("allow once" vs "allow always" — two distinct buttons)
+- Snooze button (requires protocol extension)
+
+**Implementation Ready:** All gates cleared. K1–K5 can begin immediately. K3/K6 (prompt text, timer removal, rename) fully unblocked.
+
+*Signed: Noble Six (Architect) & Carter (Bridge Dev), 2026-05-22*
 
 ---
 

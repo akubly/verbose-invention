@@ -41,6 +41,34 @@
 
 ---
 
+### 2026-05-22 — ADR-9 ACCEPTED: K1–K6 Unblocked
+
+**Status:** ADR-9 (Permission Prompting Over the Bridge) transitioned from PROPOSED → **ACCEPTED**. All 5 open questions settled.
+
+**What this unblocks for Kat:**
+
+| Task | Scope | Status |
+|---|---|---|
+| K1: Wire protocol extensions | ~80 LOC in `extensionBridge.ts` | **READY NOW** |
+| K2: BridgeSession routing | ~70 LOC in `bridgeSession.ts` | **READY NOW** |
+| K3: AbortSignal + timeout removal | ~15 LOC in `ports.ts` + `prompt.ts` | **READY NOW** |
+| K4: AllowAlwaysStore interface | ~30 LOC in new file + factory | **READY NOW** |
+| K5: Extension permission handling | ~60 LOC in `extension.mjs` | **READY NOW** |
+| K6: Prompt text + observability | ~20 LOC | **READY NOW** |
+
+**Total new code:** ~275 LOC across 5 files + new `allowAlwaysStore.ts`.
+
+**Key decisions (all locked):**
+- **Q1:** Inline keyboard buttons (supports concurrent prompts)
+- **Q2:** Per-session in-memory AllowAlwaysStore (injectable interface; Phase 7+ upgrade to persisted)
+- **Q3:** AbortSignal on `PermissionPrompter.prompt()` (mandatory for disconnect-abort safety)
+- **Q4:** **NO TIMEOUT** (Branch A) — verified by Carter (SDK has no internal timeout)
+- **Q5:** Extension classifies destructive tools (eliminates split-brain)
+
+**Zero technical blockers.** Implementation can proceed immediately.
+
+---
+
 
 ## Phase 6+ Roadmap (Future)
 

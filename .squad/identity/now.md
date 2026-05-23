@@ -1,40 +1,46 @@
 ---
-updated_at: 2026-05-22T19:56:00Z
-focus_area: Phase 6 Days 3–4 COMPLETE — BridgeSession adapter + composite factory wired; relay inherits all 800ms throttle + MarkdownV2 + splitter logic over the bridge for free. 316 tests green. Day 5+ end-to-end dogfooding next.
-active_issues: [Day 5+ — end-to-end testing against a live CLI session over the pipe; permission-prompting over bridge (ADR-9 future); production readiness.]
+updated_at: 2026-05-23T01:12:35Z
+focus_area: Phase 6 Day 5 — ADR-9 ACCEPTED. All 5 open questions settled (Q1 inline KB, Q2 injectable AllowAlwaysStore, Q3 AbortSignal, Q4 NO TIMEOUT verified by Carter, Q5 extension classifies). Kat unblocked for K1–K6 permission-prompting implementation. Production dogfooding ready.
+active_issues: []
 ---
 
 # What We're Focused On
 
-**Phase 6: Session 0 Control Plane + Extension-Bridge Data Plane — DAYS 3–4 COMPLETE, RELAY ON BRIDGE**
+**Phase 6: Session 0 Control Plane + Extension-Bridge Data Plane — DAYS 3–4 COMPLETE, DAY 5 COMPLETE**
 
-Phases 1–5 shipped. Aaron dogfooding Reach. Phase 6 Days 1–2 (ADR-8 protocol) committed. **Days 3–4 (relay-on-bridge) complete and green.** Telegram messages can now flow over the extension pipe with zero changes to the relay's battle-tested throttle/MarkdownV2/splitter logic.
+Phases 1–5 shipped. Aaron dogfooding Reach. Phase 6 Days 1–2 (ADR-8 protocol) committed. Days 3–4 (relay-on-bridge) complete and green. **Day 5: ADR-9 (permission prompting) ACCEPTED — all 5 open questions resolved.**
 
-## Phase 6 Days 3–4 Summary
+## Phase 6 Day 5 Summary (FINAL)
 
-**Code Delivered (Kat):**
-- ✅ `src/bridge/bridgeSession.ts` — `BridgeSession implements CopilotSession`; push-to-pull async-iterator adapter with guaranteed listener cleanup
-- ✅ `src/bridge/bridgeSessionFactory.ts` — `CopilotSessionFactory` over the bridge
-- ✅ `src/bridge/compositeSessionFactory.ts` — bridge-first, SDK-fallback (no config flag; graceful coexistence)
-- ✅ `src/bridge/extensionBridge.ts` — added `getSessionByName()` to map relay's session names to bridge `sessionId`
-- ✅ `src/main.ts` — wired bridge + composite factory; graceful fallback if pipe unavailable on startup
-- ✅ New skill: `push-to-pull-async-iterator`
+**ADR-9: Permission Prompting Over the Bridge (ACCEPTED)**
+- ✅ Multi-round analysis complete: open-questions walkthrough → follow-up clarifications → no-timeout steel-man → Carter SDK verification → final amendment
+- ✅ All 5 questions settled:
+  - **Q1:** Inline keyboard buttons (supports concurrent prompts, self-cleaning on stale)
+  - **Q2:** Injectable AllowAlwaysStore interface, in-memory impl (Phase 6); persisted impl (Phase 7+)
+  - **Q3:** AbortSignal mandatory on `PermissionPrompter.prompt()` (required for disconnect-abort safety)
+  - **Q4:** **NO TIMEOUT (Branch A)** — verified by Carter (SDK has NO internal timeout on `onPermissionRequest`)
+  - **Q5:** Extension classifies destructive tools; daemon routes only (eliminates split-brain)
+- ✅ Implementation tasks locked (K1–K6): ~275 LOC across 5 files + new `allowAlwaysStore.ts`
+- ✅ Test scenarios revised: Category 2 timeout scenarios → disconnect-abort scenarios; 3 new scenarios added (Friday→Monday, late tap, concurrent abort)
+- **Status:** ACCEPTED — zero technical blockers
+- **Gating:** Production dogfooding **UNBLOCKED**. Kat can begin K1–K6 immediately.
 
-**Tests Delivered (Jun):**
-- ✅ `tests/bridge/bridgeSession.test.ts` (10 cases — single/multi-chunk, error, foreign-requestId filter, unreachable, listener-cleanup on success/error/abandon, pre-iterate buffering, empty completion)
-- ✅ `tests/bridge/bridgeSessionFactory.test.ts` (6 cases)
-- ✅ `tests/bridge/relay-with-bridge.test.ts` (J2 throttle regression across adapter boundary)
-- ✅ New skill: `async-iterable-adapter-testing` (frozen-Date gotcha + FakeBridge pattern)
+**Test Scenarios Catalog (Jun)**
+- ✅ 29 test scenarios finalized (Category 2 revised, 3 new scenarios added)
+- ✅ All 6 categories locked: happy path, timeout→disconnect-abort, correlation/ordering, adversarial/edge, regression hooks, protocol
+- **Status:** READY — all ambiguities resolved by ADR-9
 
-**Architecture Status:** ADRs 1–8 locked and implemented. Relay no longer cares whether sessions are SDK-backed or bridge-backed. Composite factory enables both transparently.
+**Orchestration & Logging**
+- ✅ Orchestration logs: `2026-05-23T01-12-35Z-carter.md` (SDK verification), `2026-05-23T01-12-35Z-noble-six.md` (ADR-9 analysis)
+- ✅ Session log: `2026-05-23T01-12-35Z-adr9-final.md`
+- ✅ History updates: Kat + Jun notified; K1–K6 unblocked
+- ✅ Decisions archive: ADR-9 merged (PROPOSED → ACCEPTED); 5 inbox files archived
 
-**Test Status:** 316 passed, 4 skipped, 0 failed ✅ (296 prior + 20 new bridge tests)
+**Baseline Preserved:** 316 passed / 4 skipped / 0 failed ✅
 
-**Known gap (ADR-9 candidate):** bridge sessions silently ignore `permissionCallback` — destructive-tool prompting over the bridge is not yet specced in the wire protocol.
+## Architecture — LOCKED (ADRs 1–9 OPERATIONALIZED)
 
-## Architecture — LOCKED + ADR-8 OPERATIONALIZED
-
-**ADRs 1–8 Finalized:**
+**ADRs 1–9 Finalized:**
 1. ✅ **ADR-1:** Copilot CLI Extension API for session attach
 2. ✅ **ADR-2:** Push-based discovery with `listSessions()` fallback
 3. ✅ **ADR-3:** Single named pipe `\\.\pipe\reach-bridge`, JSON-Lines, multiplexed by sessionId
@@ -43,25 +49,35 @@ Phases 1–5 shipped. Aaron dogfooding Reach. Phase 6 Days 1–2 (ADR-8 protocol
 6. ✅ **ADR-6:** Extension reconnect = exponential backoff
 7. ✅ **ADR-7:** Heartbeat = ping/pong + pipe-teardown detection
 8. ✅ **ADR-8:** Canonical Pipe Wire Protocol (streaming, request correlation, self-describing messages)
+9. ✅ **ADR-9:** Permission prompting over bridge — in-stream interleaving, inline keyboard UX, injectable allow-always store, no-timeout semantics, extension risk classification
 
-## Next Steps (Day 5+)
+## Next Steps (Phase 6 Implementation)
 
-**End-to-End Dogfooding:**
-- Install/start daemon as logged-in user; attach a real Copilot CLI session through the extension; drive it from Telegram
-- Validate streaming behavior under real network conditions (chunk timing, throttle, splitter against real Copilot output)
-- Validate ADR-6 reconnect + ADR-7 heartbeat against a live extension restart
+**Kat's Implementation (K1–K6):**
+- K1: Wire protocol extensions (~80 LOC)
+- K2: BridgeSession permission routing (~70 LOC)
+- K3: AbortSignal + timeout removal (~15 LOC)
+- K4: AllowAlwaysStore interface (~30 LOC)
+- K5: Extension permission handling (~60 LOC)
+- K6: Prompt text + observability (~20 LOC)
+- Target: ~1–2 days
 
-**Production Readiness:**
-- Decide on ADR-9 (permission prompting over the bridge — destructive-tool approvals)
-- Crash-resilience drills: kill extension mid-stream, kill daemon mid-stream, network hiccups
-- Logging and observability for the bridge path
+**Jun's Test Revisions:**
+- Revise Category 2 scenarios (5 affected)
+- Add 3 new scenarios (Friday→Monday, late tap, concurrent abort)
+- Finalize 29-scenario catalog
+
+**Production Dogfooding (Aaron):**
+- Test permission-prompting with `interactiveDestructive` policy
+- Validate no-timeout semantics (infinite wait, AbortSignal-driven cancellation)
+- Validate concurrent prompts + allow-always store behavior
 
 ---
 
 ## Latest Artifacts
 
-- **Decisions:** `.squad/decisions.md` (Phase 6 ADRs 1–8; Days 3–4 entries pending Scribe merge)
-- **Orchestration:** `.squad/orchestration-log/` (Days 3–4 entries pending Scribe)
-- **Agent updates:** Kat + Jun `history.md` updated with Days 3–4 recap
-- **New skills:** `push-to-pull-async-iterator`, `async-iterable-adapter-testing`
-
+- **Decisions:** `.squad/decisions.md` (ADRs 1–9; ADR-9 ACCEPTED with full specification)
+- **Orchestration:** `.squad/orchestration-log/` (carter, noble-six, scribe entries for Day 5)
+- **Session logs:** `.squad/log/` (session summary for ADR-9 final)
+- **Agent updates:** Kat + Jun `history.md` updated with Day 5 recap + unblocking
+- **Infrastructure:** Test files staged for commit (bridgeSession probe if Carter created it)

@@ -130,8 +130,22 @@ export function resolveCurrentUser(): { username: string; domain: string } {
  * Prompts for a password on stdin with character echoing suppressed.
  * The password is never written to disk by Reach — it is passed directly
  * to the Windows Service Control Manager at install time.
+ *
+ * Requires a TTY: echo suppression uses the readline internal `_writeToOutput`
+ * hook, which is only effective when stdin is an interactive terminal. In
+ * non-TTY environments (piped input, CI, redirected stdin) we cannot
+ * guarantee the typed password is hidden, so we refuse to prompt and instruct
+ * the caller to provide credentials via environment variables instead.
  */
 export async function promptPassword(prompt: string): Promise<string> {
+  if (!process.stdin.isTTY) {
+    throw new Error(
+      'Cannot prompt for password: stdin is not a TTY. ' +
+      'Set the REACH_SERVICE_PASSWORD environment variable or run install ' +
+      'from an interactive terminal.',
+    );
+  }
+
   return new Promise((resolve) => {
     const rl = readline.createInterface({
       input: process.stdin,
@@ -139,6 +153,10 @@ export async function promptPassword(prompt: string): Promise<string> {
     });
 
     // Suppress echoing of typed characters while still writing the prompt.
+    // This uses readline's internal `_writeToOutput` hook — not a stable
+    // public API, but the only realistic option short of raw-mode keypress
+    // handling. The TTY gate above ensures we never run this code path in
+    // contexts where echo suppression could silently fail.
     let promptWritten = false;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (rl as any)._writeToOutput = (str: string) => {

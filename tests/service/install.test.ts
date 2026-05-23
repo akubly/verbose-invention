@@ -67,10 +67,11 @@ let mockExit: ReturnType<typeof vi.spyOn<typeof process, 'exit'>>;
 let mockConsoleLog: ReturnType<typeof vi.spyOn<typeof console, 'log'>>;
 let mockConsoleError: ReturnType<typeof vi.spyOn<typeof console, 'error'>>;
 let mockConsoleWarn: ReturnType<typeof vi.spyOn<typeof console, 'warn'>>;
+let savedIsTTY: boolean | undefined;
 
 // ─── Import the REAL module under test ───────────────────────────────────────
 
-import { install, uninstall, createService, main } from '../../src/service/install.js';
+import { install, uninstall, createService, main, promptPassword } from '../../src/service/install.js';
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -82,6 +83,10 @@ describe('Service installer', () => {
     mockConsoleLog = vi.spyOn(console, 'log').mockImplementation(() => {});
     mockConsoleError = vi.spyOn(console, 'error').mockImplementation(() => {});
     mockConsoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // promptPassword() requires a TTY; vitest runs without one. Stub it as
+    // truthy for the duration of the suite so install() tests can proceed.
+    savedIsTTY = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true });
   });
 
   let savedEnv: Record<string, string | undefined>;
@@ -121,6 +126,7 @@ describe('Service installer', () => {
 
   afterAll(() => {
     vi.restoreAllMocks();
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: savedIsTTY });
   });
 
   // ── install() ─────────────────────────────────────────────────────────────
@@ -308,6 +314,35 @@ describe('Service installer', () => {
         expect.stringContaining('requires your Windows password'),
       );
       expect(mockSvcInstall).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── promptPassword() — TTY gate ───────────────────────────────────────────
+
+  describe('promptPassword() TTY gate', () => {
+    it('throws a clear error when stdin is not a TTY', async () => {
+      // Echo suppression relies on the readline `_writeToOutput` hook, which
+      // is only effective in interactive terminals. In non-TTY environments
+      // promptPassword() must refuse rather than silently echo the password.
+      const original = process.stdin.isTTY;
+      Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false });
+      try {
+        await expect(promptPassword('pw: ')).rejects.toThrow(/stdin is not a TTY/);
+      } finally {
+        Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: original });
+      }
+    });
+
+    it('resolves with the typed password when stdin is a TTY', async () => {
+      const original = process.stdin.isTTY;
+      Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true });
+      try {
+        const result = await promptPassword('pw: ');
+        // readline mock at the top of this file resolves with 'test-password'
+        expect(result).toBe('test-password');
+      } finally {
+        Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: original });
+      }
     });
   });
 

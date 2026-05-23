@@ -167,3 +167,10 @@ No action required Day 2. `sendCommand()` now returns `requestId` (or `false`) i
 - **K6:** Test harness vi.mock side effects documented
 
 **Closes:** Loop on reconciliation. Implementation + test coverage both green. Ready for live dogfooding (Day 5+ per now.md).
+
+---
+
+### 2026-05-22 — Cloud Review Cycle 1: T2/T5 addressed (commit `689a547`)
+
+- **T2** (`src/bot/prompt.ts:183`): Captured abort handler in named variable; `complete()` now calls `signal.removeEventListener` on every settlement path — listener leak closed.
+- **T5** (`README.md:146`): Replaced hardcoded `\\.\pipe\reach-bridge` with ADR-10 description: randomized pipe name + `%LOCALAPPDATA%\reach\bridge-auth.json` discovery.

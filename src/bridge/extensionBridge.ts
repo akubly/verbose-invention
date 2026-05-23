@@ -22,8 +22,9 @@
 
 import { EventEmitter } from 'node:events';
 import * as net from 'node:net';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import type { PipeAuthConfig } from './pipeAuth.js';
+import { cleanupPipeAuth } from './pipeAuth.js';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -323,6 +324,9 @@ export class ExtensionBridge implements BridgeEmitter {
     this.sessions.clear();
     this.pendingSockets.clear();
 
+    // N2: remove the auth file so stale credentials don't linger after shutdown.
+    void cleanupPipeAuth();
+
     return new Promise<void>((resolve) => {
       if (this.server === null) {
         resolve();
@@ -541,8 +545,13 @@ export class ExtensionBridge implements BridgeEmitter {
     }
 
     // ADR-10 Option A: validate auth token before any session interaction.
+    // Use timingSafeEqual to defend against timing side-channels.
     // Close without sending an error frame to avoid acting as an oracle.
-    if (msg.authToken !== this._authConfig.token) {
+    const provided = typeof msg.authToken === 'string'
+      ? Buffer.from(msg.authToken, 'utf8')
+      : Buffer.alloc(0);
+    const expected = Buffer.from(this._authConfig.token, 'utf8');
+    if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
       console.warn('[bridge] Auth token mismatch — closing unauthenticated connection');
       socket.destroy();
       return;

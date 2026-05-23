@@ -14,9 +14,13 @@
  * No real Windows named pipe is required — these tests run on any OS.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { FakeDaemon } from '../helpers/FakeDaemon.js';
 import { FakeExtensionClient } from '../helpers/FakeExtensionClient.js';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import { generatePipeAuth, cleanupPipeAuth, getAuthFilePath } from '../../src/bridge/pipeAuth.js';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -154,5 +158,84 @@ describe('B3 pipe auth — FakeDaemon token validation (ADR-10)', () => {
 
     expect(daemon.isRegistered('sess-noauth')).toBe(true);
     expect(client.receivedOfType('session.registered')).toHaveLength(1);
+  });
+});
+
+// ─── N1: timingSafeEqual — length-mismatch guard ─────────────────────────────
+
+describe('N1 — constant-time token comparison (FakeDaemon models the reject path)', () => {
+  it('token with wrong length is rejected (not just wrong bytes)', async () => {
+    const daemon = new FakeDaemon();
+    daemon.setRequiredToken(VALID_TOKEN);
+
+    const client = new FakeExtensionClient('sess-shorttoken', 'reach-short');
+    client.connect(daemon);
+    // Send a token that is the right prefix but shorter than 64 chars.
+    client.sendHello('a'.repeat(32));
+
+    await flush();
+    await flush();
+
+    expect(daemon.isRegistered('sess-shorttoken')).toBe(false);
+    expect(client.receivedOfType('session.registered')).toHaveLength(0);
+    daemon.reset();
+  });
+
+  it('empty authToken is rejected', async () => {
+    const daemon = new FakeDaemon();
+    daemon.setRequiredToken(VALID_TOKEN);
+
+    const client = new FakeExtensionClient('sess-emptytoken', 'reach-empty');
+    client.connect(daemon);
+    client.sendHello('');
+
+    await flush();
+    await flush();
+
+    expect(daemon.isRegistered('sess-emptytoken')).toBe(false);
+    daemon.reset();
+  });
+});
+
+// ─── N2: cleanupPipeAuth — removes auth file on shutdown ─────────────────────
+
+describe('N2 — cleanupPipeAuth() removes auth file on daemon shutdown', () => {
+  it('removes the auth file after generatePipeAuth writes it', async () => {
+    // Write a real auth file to a temp location.
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'reach-test-'));
+    const authFilePath = path.join(tempDir, 'bridge-auth.json');
+
+    // Stub getAuthFilePath to return the temp path.
+    vi.stubEnv('LOCALAPPDATA', tempDir);
+
+    try {
+      const config = await generatePipeAuth();
+
+      // File should now exist.
+      await expect(fs.access(getAuthFilePath())).resolves.toBeUndefined();
+
+      // Cleanup should remove it.
+      await cleanupPipeAuth();
+      await expect(fs.access(getAuthFilePath())).rejects.toThrow();
+    } finally {
+      vi.unstubAllEnvs();
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('cleanupPipeAuth is a no-op when auth file is already gone (ENOENT)', async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'reach-test-'));
+    vi.stubEnv('LOCALAPPDATA', tempDir);
+
+    try {
+      const config = await generatePipeAuth();
+      // Delete the file manually first.
+      await fs.unlink(getAuthFilePath());
+      // Calling cleanupPipeAuth again should not throw.
+      await expect(cleanupPipeAuth()).resolves.toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
   });
 });

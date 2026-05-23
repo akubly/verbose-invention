@@ -92,10 +92,24 @@ export async function generatePipeAuth(): Promise<PipeAuthConfig> {
 }
 
 /**
- * Read and parse the current auth file.
- * Returns `null` if the file does not exist, cannot be read, or is malformed.
- * Called by the CLI extension on each connection attempt (handles daemon restart).
+ * Remove the auth file when the daemon shuts down.
+ * Swallows ENOENT (already deleted) — any other error is logged and swallowed
+ * since the daemon is shutting down and cannot recover.
  */
+export async function cleanupPipeAuth(): Promise<void> {
+  const filePath = getAuthFilePath();
+  try {
+    await fs.unlink(filePath);
+    console.log(`[bridge] Auth file removed: ${filePath}`);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.warn(
+        '[bridge] Could not remove auth file on shutdown (non-fatal):',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+}
 export async function readPipeAuth(): Promise<PipeAuthConfig | null> {
   const filePath = getAuthFilePath();
   try {

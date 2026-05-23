@@ -95,6 +95,31 @@ Identified 8 protocol ambiguities that Noble Six must resolve before implementat
 
 New skill extracted: `interleaved-control-plane-testing` — the pattern for testing bidirectional control-plane messages that interleave with active data streams.
 
-## Archive
+**Phase 6 Day 5 (2026-05-22) — ADR-9 Catalog Revision (this task):**
+
+Revised prior 29-scenario catalog to 32 scenarios. Key learning: when a timeout decision is reversed (Branch A: no timeout), it is not just a deletion — it requires a *design flip* in Category 2. Every "auto-deny after Xs" scenario is replaced by an AbortSignal-based scenario with a fundamentally different assertion shape: instead of asserting that a timer fires, you assert that an abort fires **within one event loop turn** of disconnect. The keystone test (C2-01) is the single most load-bearing scenario in the entire catalog — it is the behavioral proof of the no-timeout safety invariant.
+
+New category patterns:
+- **No-timer regression assertion (C5-02):** Spy on `globalThis.setTimeout` and assert zero calls from the prompt's call site. This pattern regression-guards against re-introduction of deleted code. Extracted to `no-timer-regression-assertion` skill.
+- **Friday→Monday durability (C5-01):** `vi.advanceTimersByTime(72 * 60 * 60 * 1000)` + `vi.getTimerCount()` to verify zero leaked timers after 72 simulated hours. Validates that indefinite wait is truly clean at the JavaScript runtime level, not just at the application logic level.
+- **Store isolation (C6-04):** Per-session store contract test — verifies that factory creates a new store instance per session. Critical for multi-session security (cross-session allow-always leakage would be a privilege escalation bug).
+
+New skill extracted: `no-timer-regression-assertion` — the pattern of using `vi.spyOn(globalThis, 'setTimeout')` to assert that a function does NOT create a timer, regression-guarding against re-introduction of deleted timeout logic.
+
+**Phase 6 Day 5 (2026-05-23) — ADR-9 K1–K6 Implementation Complete**
+
+**Status:** Kat's K1–K6 implementation verified (321 tests green). Test file generation UNBLOCKED pending 3 assumption reconciliations.
+
+**What's blocking Jun's vitest generation:**
+
+Kat implemented K1–K6 per ADR-9 spec. Jun's revised 32-scenario catalog assumes 3 implementation details for whitebox factory and classifier tests. Before Jun writes vitest files, Kat must verify:
+
+1. **K2:** `BridgeSession` constructor takes `AbortController` (not self-construct) — required for C2-01/C2-02/C2-03 abort simulation tests
+2. **K4:** `BridgeSessionFactory` creates new `InMemoryAllowAlwaysStore()` per session — required for C6-04 store-isolation security test
+3. **K5:** `extension.mjs` exports `isDestructive()` and `isKnownSafe()` as named functions — required for C4-05/C6-05 classifier unit tests
+
+**Next:** Await Kat's reply in her history.md confirming all 3 points match implementation. Once verified, Jun writes vitest files for all 32 scenarios (Categories 1–7).
+
+
 
 Earlier learnings (Phases 1–5, Phase 6 Spike methodology) in `history-archive.md`.

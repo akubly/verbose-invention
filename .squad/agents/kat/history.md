@@ -70,7 +70,49 @@
 ---
 
 
-## Phase 6+ Roadmap (Future)
+---
+
+### 2026-05-23 — Phase 6 ADR-9 K1–K6 Reconciliation (Jun Flags 3 Implementation Assumptions)
+
+**Status:** Implementation complete and verified. Jun's revised test catalog flagged 3 assumptions for whitebox test compatibility:
+
+**ASSUMES IMPLEMENTATION (reconciliation required before Jun writes vitest files):**
+1. **K2 — Constructor injection of AbortController**  
+   `BridgeSession` must accept `AbortController` at construction (not self-construct). Jun's tests will inject and call `.abort()` directly to simulate session disconnect for C2-01–C2-03 abort tests.
+
+2. **K4 — Per-session store instantiation**  
+   `BridgeSessionFactory` must construct new `InMemoryAllowAlwaysStore()` per `BridgeSession`. Jun's C6-04 multi-session store-isolation test verifies no cross-session leakage (security contract).
+
+3. **K5 — Named function exports**  
+   `extension.mjs` must export `isDestructive(toolName: string): boolean` and `isKnownSafe(toolName: string): boolean` as standalone named functions. Jun's C4-05 and C6-05 tests call these directly for classifier unit tests.
+
+**Action:** Verify implementation against these three points. Reply to Jun in her history.md once verified. Unblocks: Jun writes all 32 vitest scenario files.
+
+---
+
+### 2026-05-22 — Phase 6 Permission Prompting (K1–K6) Complete
+
+**Status:** Complete. All K1–K6 tasks implemented. 321 tests pass / 4 skipped / 0 failed. tsc + lint clean.
+
+**What shipped:**
+
+- **K1 — `src/relay/ports.ts`:** `PermissionPrompter.prompt()` now accepts `signal?: AbortSignal`. Backward compatible — SDK path ignores it. Updated `PermissionPromptCallback` in `factory.ts` to match.
+
+- **K2 — `src/bridge/bridgeSession.ts`:** `BridgeSession` gains optional `BridgeSessionPermOptions` constructor param. Wires `permission.request` / `permission.cancelled` / `session.disconnected` bridge events to the permission control-plane. Per-session `AbortController` aborts all in-flight prompts on disconnect. Per-permission `AbortController` supports `permission.cancelled` abort. `raceAbortSignals()` helper merges both signals without `AbortSignal.any()`. Listeners self-clean on `session.disconnected` to prevent listener accumulation.
+
+- **K3 — `src/bot/prompt.ts`:** Removed `setTimeout`, `timeoutHandle`, `timeoutPromise`, `Promise.race`, `timeoutMs` param. Added `signal?: AbortSignal` wiring. Renamed `'timeout'` outcome → `'aborted'`. Updated prompt text: "Approve or deny — waiting for your decision." Added `createdAt: number` to `PendingPrompt`. Added passive 10-minute stale-prompt scanner (setInterval, `unref()`'d).
+
+- **K4 — `src/bridge/allowAlwaysStore.ts`** (new file): `AllowAlwaysStore` interface + `InMemoryAllowAlwaysStore` class. Injected into `BridgeSessionFactory` constructor and `main.ts` composition root.
+
+- **K5 — `src/bridge/extensionBridge.ts`:** Added `PermissionRequestMessage`, `PermissionCancelledMessage` (inbound), `PermissionResponseMessage` (outbound). Extended `BridgeEmitter` and `ExtensionBridge` with `permission.request` / `permission.cancelled` event overloads. Added `sendPermissionResponse(sessionId, permissionId, decision)` method. Added validation + dispatch in `handleLine()`.
+
+- **K6 — `extension.mjs`:** Added `DESTRUCTIVE_TOOLS` / `SAFE_TOOLS` sets + `isDestructive()` / `isKnownSafe()` (mirrors `permissions.ts`). Registered `session.onPermissionRequest` hook — forwards only destructive tools as `permission.request`. Awaits `waitForPermissionResponse(permissionId)` indefinitely (no timer). `abortPendingPermissions()` denies all in-flight on pipe close. `currentRequestId` tracking for context.
+
+**Test updates:** `prompt.test.ts` updated — removed `timeoutMs` param, replaced timeout test with 2 AbortSignal tests.
+
+**For Jun:** Categories 1, 3, 4, 5 scenarios should pass as-is. Category 2 (formerly timeout) scenarios need updating to use `abortPendingPermissions()` / session disconnect patterns. The new `emitPermissionRequest()`, `emitPermissionCancelled()`, `emitDisconnected()` helpers on `FakeBridge` support new test scenarios directly.
+
+## Learnings
 
 - HUD footer with repo/branch/model metadata
 - Two-tier permissions (auto-approve safe, prompt destructive)

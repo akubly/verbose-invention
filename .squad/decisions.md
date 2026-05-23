@@ -1848,3 +1848,389 @@ Day 2 task: add this type to the `InboundMessage` discriminated union in
 - 296 tests pass, 4 skipped, 0 failed. tsc clean. lint clean.
 
 No action required from Carter, Kat, or Noble Six unless ADR-9 specifies a different `payload` shape.
+
+
+---
+
+# ADR-9 Implementation Notes (Kat)
+
+Sub-decisions and patterns established during K1–K6 implementation.
+Archive as needed; these are factual records, not prescriptive ADRs.
+
+---
+
+## `raceAbortSignals()` instead of `AbortSignal.any()`
+
+**Decision:** Implemented a local `raceAbortSignals(signals: AbortSignal[]): AbortSignal` helper rather than using the built-in `AbortSignal.any()`.
+
+**Why:** `AbortSignal.any()` was added in Node 20.3 / browser baseline 2023-05-16. The project targets `@types/node@^20` but we have no explicit version floor above 20.0. Using the helper avoids a silent runtime crash if deployed on an older Node 20 minor. Also provides explicit code comment documenting why it exists.
+
+**Pattern:**
+```ts
+function raceAbortSignals(signals: AbortSignal[]): AbortSignal {
+  const ac = new AbortController();
+  for (const signal of signals) {
+    if (signal.aborted) { ac.abort(); return ac.signal; }
+    signal.addEventListener('abort', () => ac.abort(), { once: true });
+  }
+  return ac.signal;
+}
+```
+
+Can be replaced with `AbortSignal.any(signals)` once Node floor is pinned ≥ 20.3.
+
+---
+
+## Self-cleaning permission listener pattern in `BridgeSession`
+
+**Decision:** The `session.disconnected` handler removes all three permission-related listeners (`permission.request`, `permission.cancelled`, `session.disconnected` itself) to prevent emitter accumulation when BridgeSessions are reused across reconnects.
+
+**Why not `dispose()`?** The session lifecycle is managed by `BridgeSessionFactory` and callers never call a dispose method. Adding a `dispose()` method would require caller changes. The self-cleaning listener is zero-overhead and correct because disconnect is the only session-end signal.
+
+**Trade-off:** If there are ever scenarios where a session is "recycled" without a disconnect event, this pattern breaks. Accepted because the protocol guarantees disconnect before reconnect.
+
+---
+
+## `currentRequestId` in `extension.mjs` — metadata only
+
+**Decision:** The Copilot extension (Node.js ESM) tracks a module-level `currentRequestId` and forwards it in `permission.request` messages. This is metadata context for the daemon, NOT a correlation ID for response matching.
+
+**Why separate from `permissionId`?** `permissionId` uniquely identifies one permission request and is used to correlate `permission.response`. `requestId` is the broader CLI tool-call request. One `requestId` can generate multiple `permission.request` messages (one per destructive tool in a sequential tool-call). The daemon doesn't need `requestId` for correctness, but it's useful for logging/tracing.
+
+---
+
+## `exactOptionalPropertyTypes: true` — conditional spread pattern
+
+**Issue:** When `strictOptionalProperties: true` is set (via `exactOptionalPropertyTypes`), you cannot pass `T | undefined` where `T` is an optional property typed as `T` (not `T | undefined`). TypeScript treats these differently.
+
+**Pattern used in `BridgeSessionFactory._makeSession()`:**
+```ts
+const permOptions: BridgeSessionPermOptions = {
+  permissionCallback: this.permissionCallback,
+  sendPermissionResponseFn: this.sendPermissionResponseFn,
+  ...(this.allowAlwaysStore !== undefined
+    ? { allowAlwaysStore: this.allowAlwaysStore }
+    : {}),
+};
+```
+
+The conditional spread is the idiomatic workaround when `exactOptionalPropertyTypes` is enabled. Alternative: widen the `BridgeSessionPermOptions` field type to `AllowAlwaysStore | undefined` — but that weakens the type contract for consumers that pass `undefined` explicitly.
+
+---
+
+## AbortSignal timing: pre-aborted signals in `prompt.ts`
+
+**Observation:** When a caller passes an already-aborted signal to `promptUserForPermission`, the `abort` event will not fire (it already fired). The implementation must check `signal.aborted` synchronously after sending the Telegram message.
+
+**Implementation:** After `await bot.api.sendMessage(...)`, the function checks `if (signal?.aborted) { complete('aborted'); return; }` before registering the `signal.addEventListener('abort', ...)` handler. This ensures the prompt resolves immediately without waiting for an event that already fired.
+
+
+---
+
+# ADR-9 Revised Permission Test Scenario Catalog
+
+**Revised per ADR-9 acceptance (commit a9451e2). NO TIMEOUT decision drives most changes.**
+
+**Author:** Jun (Test Engineer)  
+**Date:** 2026-05-22  
+**Replaces:** `jun-adr9-permission-test-scenarios.md` (prior 29-scenario catalog, merged into decisions.md §11)  
+**Status:** CATALOG ONLY — vitest files follow once K1–K6 land. Do not write test files from this document alone.
+
+---
+
+## Revision Summary
+
+| Change | Detail |
+|---|---|
+| **DELETE** | All 5 original Category 2 "auto-deny after Xs" timer scenarios — no auto-deny timer exists anymore |
+| **DELETE** | Dual-timer race scenarios (daemon timer vs. extension timer) — both sides wait indefinitely |
+| **DELETE** | Branch B / SDK-ceiling scenarios — Branch B is permanently struck |
+| **REVISE** | Category 2 entirely redesigned from "Timeout" → "Cancellation & Abort" |
+| **ADD** | 6 new scenarios: Friday→Monday, no-timer regression assertion, AllowAlways, extension classifier, observability scanner, SDK empirical reference |
+| **RETIRE** | Prior Category 6 (8 protocol ambiguities) — all resolved by ADR-9; closed |
+| **NET** | 29 → 32 scenarios across 7 categories |
+
+The no-timeout safety invariant is: **a pending `promptUserForPermission()` resolves ONLY via (a) user tap, (b) session disconnect → AbortSignal, or (c) daemon restart → map cleared.** Every Category 2 and Category 5 scenario tests one of these three paths.
+
+---
+
+## Test Double Contract Updates
+
+### FakeExtensionClient / FakeDaemon — Required Changes for Revised Scenarios
+
+| Requirement | Notes |
+|---|---|
+| `AbortController` injected per session | `FakeDaemon` sessions take an `AbortController`; tests call `.abort()` directly to simulate disconnect |
+| **NO auto-timeout** | Fakes must NOT include any `setTimeout` for prompt lifetime. Match Branch A: real implementation has no timer. |
+| `sendPermissionRequest(permissionId, toolName, args)` | Extension → daemon direction; controllable timing for timing-sensitive tests |
+| `sendPermissionCancelled(permissionId)` | Extension cancels in-flight prompt (extension-side pipe close) |
+| `simulatePipeClose(sessionId)` | Triggers transport disconnect → AbortSignal fires; used in C2-01, C2-02, C2-03 |
+| `pendingPermissions()` | Returns open `permissionId` set; asserts zero-leak post-abort |
+
+**ASSUMES IMPLEMENTATION (flag for Kat):**
+- `BridgeSession` must accept an `AbortController` at construction (K2) — not construct one internally — so tests can trigger abort directly.
+- K5 must export `isDestructive(toolName: string): boolean` and `isKnownSafe(toolName: string): boolean` as named exports for unit testing the classifier in isolation (C4-05, C6-05).
+
+---
+
+## Category 1 — Happy Path
+
+*Unchanged from prior catalog. Scenarios carried forward as-is.*
+
+**C1-01 — Approve flows through**  
+Given a `permission.request` arrives for a destructive tool and the `AllowAlwaysStore` has no entry for it;  
+When Aaron taps ✅ Approve in Telegram;  
+Then `permissionCallback` resolves `true`, `permission.response { decision: "allow" }` is sent to the extension, and `AllowAlwaysStore.add(toolName)` is called.
+
+**C1-02 — Deny flows through**  
+Given a `permission.request` arrives for a destructive tool;  
+When Aaron taps ❌ Deny;  
+Then `permissionCallback` resolves `false`, `permission.response { decision: "deny" }` is sent to the extension, and the store is NOT updated.
+
+**C1-03 — Sequential prompts resolve independently**  
+Given two sequential `permission.request` messages for different tools (different `permissionId`s);  
+When Aaron approves both in order;  
+Then each `permissionCallback` resolves correctly and `pendingByRequestId` is empty after both complete.
+
+**C1-04 — Allow-always shortcut at the session layer**  
+Given `AllowAlwaysStore.has(toolName) === true` for the current session;  
+When a `permission.request` arrives for that tool;  
+Then no Telegram message is sent, `promptUserForPermission()` is NOT called, and `permissionCallback` resolves `true` immediately.  
+*(Full coverage in Category 6. This is the happy-path summary.)*
+
+---
+
+## Category 2 — Cancellation & Abort
+
+*REDESIGNED. All 5 original timeout/auto-deny scenarios deleted. This category now covers AbortSignal-based cancellation — the only legitimate automatic resolution path under Branch A.*
+
+**C2-01 — Session disconnect → AbortSignal fires within one event loop turn** ⭐ *Keystone test for the no-timeout safety invariant*  
+Given a `permission.request` is in flight with no user response (prompt is a pending Promise);  
+When `session.disconnected` fires (simulated via `simulatePipeClose`);  
+Then the `AbortSignal` on `promptUserForPermission()` fires **within one event loop turn** (`await Promise.resolve()` suffices), the Promise resolves with outcome `'aborted'`, `permission.response { decision: "deny" }` is sent to the extension, and zero `pendingByRequestId` entries remain.  
+*This is the single most important test in the catalog. It proves the no-timeout safety invariant: a dead session cannot leave a hanging Promise that consumes a slot in `pendingByRequestId` forever.*
+
+**C2-02 — Pipe-close on extension side → deny fires, no hang**  
+Given a `permission.request` is in flight;  
+When the extension-side pipe closes (simulated via `simulatePipeClose` on `FakeExtensionClient`);  
+Then the extension's `waitForPermissionResponse(permissionId)` coroutine aborts with deny (`{ kind: 'denied' }`), the pending `permissionCallback` on the daemon side also resolves `false`, and no hang occurs.  
+*Assert: no open promise handles remain after pipe-close.*
+
+**C2-03 — Concurrent prompts — session disconnect aborts each independently**  
+Given two prompts (permissionId A, permissionId B) are in flight concurrently for the same session;  
+When `session.disconnected` fires;  
+Then both AbortSignals fire within one event loop turn each, both callbacks resolve `'aborted'`, and `pendingByRequestId` is empty.  
+*Assert: aborting one does NOT affect the other's lifecycle — the abort is per-permissionId, not shared.*
+
+**C2-04 — Late tap after approve — `answerCallbackQuery` returns gracefully**  
+Given a `permission.request` was approved and the prompt Promise has resolved;  
+When Aaron taps the same ✅ Approve button again (stale Telegram button, network delay, or Aaron taps twice);  
+Then `answerCallbackQuery` is called and returns "no longer active" gracefully with no crash, no error throw, and no state mutation.
+
+**C2-05 — Late tap after deny — same graceful handling**  
+Given a `permission.request` was denied and the prompt Promise has resolved;  
+When Aaron later taps ❌ Deny (or ✅ Approve) on the stale message;  
+Then `answerCallbackQuery` returns "no longer active" gracefully.
+
+**C2-06 — Late tap after abort (disconnect) — graceful handling**  
+Given a prompt was aborted by session disconnect before any user response;  
+When Aaron later opens Telegram and taps either button;  
+Then `answerCallbackQuery` returns "no longer active" gracefully. No second `permission.response` is sent to the (already-disconnected) extension.
+
+---
+
+## Category 3 — Correlation & Ordering
+
+*Unchanged from prior catalog.*
+
+**C3-01 — Concurrent prompts: independent requestIds, independent resolution**  
+Given two `permission.request` messages arrive simultaneously with different `permissionId`s;  
+When Aaron approves permissionId-A and denies permissionId-B in any order;  
+Then each `permissionCallback` resolves with the correct decision, with no cross-contamination of state.
+
+**C3-02 — Out-of-order resolution**  
+Given three in-flight prompts (A, B, C) for the same session;  
+When Aaron resolves them in order C → A → B;  
+Then all three callbacks receive the correct decision regardless of resolution order, and `pendingByRequestId` is empty after all three resolve.
+
+**C3-03 — Multi-session prompts multiplexed over one pipe**  
+Given two sessions (sess-1, sess-2) sharing one pipe connection;  
+When each session sends a `permission.request` simultaneously;  
+Then each `BridgeSession` receives only its own request (filtered by `sessionId`), each resolves independently, and neither session receives the other's `permission.response`.
+
+**C3-04 — Data-plane stream continues while permission prompt is in flight**  
+Given an active `stream` sequence is running and a `permission.request` interleaves mid-stream (after chunk 2, before chunk 3);  
+When the stream's `done: true` arrives before the prompt is answered;  
+Then the stream completes correctly, the prompt remains pending (not auto-resolved by stream completion), and the relay's accumulated response is intact.
+
+---
+
+## Category 4 — Adversarial & Edge
+
+*Largely unchanged from prior catalog. Extension classifier scenario added (Q5 resolution).*
+
+**C4-01 — Foreign permissionId: ignore, don't process**  
+Given a `permission.response` arrives for a `permissionId` not in `pendingByRequestId` (forged, late, or from a previous daemon run);  
+When the daemon receives it;  
+Then it is silently discarded with a structured log warning, no state mutation occurs, and the connection is NOT dropped.
+
+**C4-02 — Malformed permission frame: reject, log, don't crash**  
+Given a `permission.request` arrives missing required fields (`permissionId`, `toolName`, or `riskLevel`);  
+When the daemon processes it;  
+Then the frame is rejected with a structured log error, the extension connection is NOT dropped (ADR-8 unknown-field tolerance applies), and all other in-flight sessions are unaffected.
+
+**C4-03 — Duplicate response: at-most-once delivery**  
+Given a `permissionId` has already been resolved (user approved);  
+When a second `permission.response` for the same `permissionId` arrives (e.g., duplicate callback delivery);  
+Then it is discarded, the original resolution is not overwritten, and no double-fire occurs.
+
+**C4-04 — Permission flood: rate-limit guard** *(SKIP until Phase 7)*  
+Given more than N concurrent `permission.request` messages arrive for the same session;  
+When the flood exceeds the cap;  
+Then excess prompts are auto-denied with a log warning and no crash.  
+*Note: ADR-9 §13 defers rate limiting to Phase 7. Mark SKIP for now; scenario reserved.*
+
+**C4-05 — Extension classifier: non-destructive tools bypass bridge permission flow entirely (Q5)**  
+Given a non-destructive tool (`read_file`, `list_files`, or any tool in `isKnownSafe()`) is invoked by the CLI;  
+When the extension's `onPermissionRequest` handler fires;  
+Then `isKnownSafe(toolName)` returns `true`, the handler returns `{ kind: 'approved' }` immediately, and zero `permission.request` frames appear on the pipe.  
+*White-box unit test on extension-side classifier. Mock the pipe; assert frame count = 0.*  
+**ASSUMES IMPLEMENTATION:** K5 must export `isKnownSafe` as a standalone named function for isolation testing.
+
+---
+
+## Category 5 — No-Timeout Behavioral Verification
+
+*ENTIRELY NEW. Prior Category 6 (8 protocol ambiguities) retired — all resolved by ADR-9. This category provides behavioral regression coverage for the Branch A no-timeout decision.*
+
+**C5-01 — Friday → Monday: prompt survives 72+ simulated hours intact**  
+Given a `permission.request` is in flight;  
+When fake timers advance 72 hours (`vi.advanceTimersByTime(72 * 60 * 60 * 1000)`) with no user response;  
+Then the prompt Promise is **still pending** (not resolved), zero auto-deny has fired, `pendingByRequestId` still holds the entry, and `vi.getTimerCount()` shows no surprise queued timers beyond the observability scanner's `setInterval`.  
+When fake timers are reset and Aaron "taps Approve" (callback fires);  
+Then `permissionCallback` resolves `true`, session state is clean, and zero memory growth or leaked timers are present.  
+*Fake timer scope: `toFake: ['setTimeout','setInterval','clearTimeout','clearInterval','Date']`. Omit `setImmediate` — readline compatibility. This validates ADR-9 §7's "Friday → Monday" documented case.*
+
+**C5-02 — No-timer regression assertion** ⭐ *Regression guard against K3 re-introduction*  
+Given `promptUserForPermission()` is called with a live `AbortSignal`;  
+When the call is made and a pending Promise is returned;  
+Then a `vi.spyOn(globalThis, 'setTimeout')` asserts that `setTimeout` was called **zero times** from the prompt's call site (only the pre-existing observability `setInterval` is permitted).  
+*White-box regression test. Guards against accidental re-introduction of the `timeoutHandle` that K3 removes. Run this test in the same file as K3's prompt.ts changes.*
+
+**C5-03 — Observability scanner: 10-minute warning fires, Promise stays pending**  
+Given a `permission.request` is in flight and `PendingPrompt.createdAt` is set;  
+When fake timers advance 11 minutes (`vi.advanceTimersByTime(11 * 60 * 1000)`);  
+Then `console.warn` is called with a message containing the `requestId`, the 11-minute threshold is reflected in the log, and the prompt Promise is **still pending** (the scanner did not resolve it).  
+*Assert: scanner is read-only — it does NOT call `complete()`, does NOT modify `pendingByRequestId`, and does NOT send any `permission.response`.*
+
+**C5-04 — SDK empirical regression reference** *(Reference scenario — not a new test to write)*  
+*Points to:* `tests/exploratory/sdk-permission-timeout.test.ts` (Carter's probe, 4/4 green as of 2026-05-22).  
+This test verifies that `@github/copilot-sdk` v0.2.2 imposes no internal timeout on `onPermissionRequest` by advancing fake timers 60 000 ms and confirming no SDK-imposed rejection occurs.  
+**NOTE:** If `@github/copilot-sdk` is upgraded in `package.json`, re-run this test before merging the bump PR. If any of the 4 cases go red, treat it as a **breaking change to ADR-9** and re-evaluate the no-timeout decision. Also run the §7 grep check:  
+```bash
+grep -n "setTimeout\|Promise\.race\|AbortController" \
+  node_modules/@github/copilot-sdk/dist/session.js \
+  | grep -A2 -B2 "permissionHandler\|executePermissionAndRespond"
+```
+
+---
+
+## Category 6 — AllowAlways Store & Classifier Contracts
+
+*ENTIRELY NEW. Covers ADR-9 Q2 (AllowAlwaysStore) and Q5 (extension classifier) behavioral contracts.*
+
+**C6-01 — Store hit: no prompt, immediate approval**  
+Given `AllowAlwaysStore.has(toolName) === true` for the current session;  
+When `permission.request` arrives for that tool;  
+Then `promptUserForPermission()` is NOT called, no Telegram message is sent, and `permissionCallback` resolves `true` immediately (synchronously from the store check).
+
+**C6-02 — Store miss: normal prompt flow**  
+Given `AllowAlwaysStore.has(toolName) === false`;  
+When `permission.request` arrives for that tool;  
+Then `promptUserForPermission()` IS called, a Telegram inline-keyboard message is sent, and the normal approve/deny flow proceeds.
+
+**C6-03 — Approve adds to store; subsequent call is auto-approved**  
+Given the store is empty and Aaron approves a prompt for `bash`;  
+When a second `permission.request` arrives for `bash` in the same session;  
+Then the second prompt is auto-approved via the store with no Telegram message, and the `promptUserForPermission()` call count is still 1 (from the first invocation only).
+
+**C6-04 — Store is per-session (no cross-session leakage)**  
+Given session-A's store has `bash` approved;  
+When session-B receives a `permission.request` for `bash`;  
+Then session-B's store is empty (independent `InMemoryAllowAlwaysStore` instance), and session-B gets a full prompt.  
+*Assert: `InMemoryAllowAlwaysStore` instances are separate objects; `BridgeSessionFactory` must not share a store across sessions.*  
+**ASSUMES IMPLEMENTATION:** K4's `BridgeSessionFactory` must construct a new `InMemoryAllowAlwaysStore` per `BridgeSession` instantiation.
+
+**C6-05 — Classifier: destructive tool sends permission.request over pipe**  
+Given a destructive tool (`bash`, `write_file`, or any tool matched by `isDestructive()`) is invoked;  
+When the extension's `onPermissionRequest` handler fires;  
+Then `isDestructive(toolName) === true`, the handler sends `permission.request` over the pipe, and awaits a `permission.response` from the daemon.  
+*Pair test with C4-05 (non-destructive path). Both together cover the classifier contract completely.*
+
+---
+
+## Category 7 — Regression Guards
+
+*Kept from prior Category 5. Validates that control-plane additions do not disturb established data-plane contracts.*
+
+**C7-01 — Relay 800ms throttle unaffected by interleaved permission frames**  
+Given an active stream with N chunks and a `permission.request` interleaved between chunk 2 and chunk 3;  
+When the relay processes the full sequence;  
+Then total edit count is far below N (throttle intact), and the final edit content contains all N chunks.
+
+**C7-02 — MarkdownV2 escaping unaffected**  
+Given a relay session with `permission.request` frames on the pipe;  
+When streamed content contains MarkdownV2-sensitive characters (`_`, `*`, `[`, `.`, etc.);  
+Then `escapeMarkdownV2()` output is byte-for-byte identical to the no-permission baseline.
+
+**C7-03 — Message splitter unaffected**  
+Given a relay session and a response that requires splitting into multiple Telegram messages;  
+When a `permission.request` arrives between two split segments;  
+Then `splitForTelegram()` output is identical to the no-permission baseline and numbering is correct.
+
+**C7-04 — Prompt text contains no countdown language**  
+Given `promptUserForPermission()` generates a Telegram message text;  
+When the text is captured from the `sendMessage` call;  
+Then it contains language equivalent to "waiting for your decision", and does NOT match `/\d+\s*(second|minute|s\b)/i` (no countdown text).  
+*Regression guard against re-introduction of timer UX text that K6 removes. Run in prompt.ts unit tests.*
+
+---
+
+## Retired: Protocol Ambiguities (Prior Category 6)
+
+All 8 protocol ambiguity items are resolved by ADR-9. Closed; not carried forward as test scenarios.
+
+| # | Ambiguity | Resolution |
+|---|---|---|
+| 1 | Wire message type | `permission.request` / `permission.response` top-level discriminated types ✅ |
+| 2 | requestId ownership | `permissionId` generated by extension; separate from data-plane `requestId` ✅ |
+| 3 | Timeout owner | No timeout. AbortSignal for session disconnect only (Branch A) ✅ |
+| 4 | Reconnect behavior | Prompts do not survive reconnect; daemon restart clears `pendingByRequestId` ✅ |
+| 5 | Multiplexing on single pipe | Discriminated dispatch in `_handleInbound` switch (ADR-8 pattern) ✅ |
+| 6 | At-most-once delivery | `permissionId` lookup guard in `pendingByRequestId`; duplicate response discarded ✅ |
+| 7 | Post-terminal race | `permission.request` after `done: true` discarded gracefully; see C3-04 ✅ |
+| 8 | Extension-side timeout | No extension timer; pipe-close abort only; see C2-02 ✅ |
+
+---
+
+## Scenario Count Summary
+
+| Category | Count | Change from Prior |
+|---|---|---|
+| 1 — Happy Path | 4 | KEPT (minor wording update) |
+| 2 — Cancellation & Abort | 6 | REDESIGNED; all 5 prior timeout scenarios deleted |
+| 3 — Correlation & Ordering | 4 | KEPT |
+| 4 — Adversarial & Edge | 5 | KEPT + C4-05 classifier added |
+| 5 — No-Timeout Behavioral | 4 | NEW (replaces retired Cat 6) |
+| 6 — AllowAlways & Classifier | 5 | NEW |
+| 7 — Regression Guards | 4 | KEPT from prior Cat 5 |
+| **Total** | **32** | Prior: 29 (net +3) |
+
+**Deleted:**
+- C2-01–C2-05 (prior): "auto-deny after Xs", "dual-timer race", "Branch B ceiling" — 5 deleted
+- Category 6 (prior): 8 protocol ambiguities — retired (all resolved)
+
+**ASSUMES IMPLEMENTATION summary (all for Kat):**
+- K2: `BridgeSession` accepts `AbortController` at construction (not self-constructs)
+- K4: `BridgeSessionFactory` constructs a new `InMemoryAllowAlwaysStore` per session
+- K5: `isDestructive()` and `isKnownSafe()` exported as named functions from `extension.mjs`

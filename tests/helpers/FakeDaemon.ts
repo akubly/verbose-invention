@@ -32,6 +32,8 @@ export type HelloMessage = {
   type: 'hello';
   sessionId: string;
   sessionName: string;
+  /** ADR-10: per-run auth token. Optional so tests that don't set a required token still work. */
+  authToken?: string;
 };
 
 export type PongMessage = {
@@ -172,7 +174,26 @@ export class FakeDaemon {
   /** Monotonically increasing ping counter for generating unique IDs. */
   private pingCounter = 0;
 
+  /**
+   * If set, `hello` messages must carry a matching `authToken`.
+   * Connections with a wrong/missing token are closed without response (no oracle).
+   * Default: null (no auth check — backward-compatible with existing tests).
+   */
+  private _requiredToken: string | null = null;
+
   // ── Connection factory ──────────────────────────────────────────────────────
+
+  /**
+   * Configure a required auth token (ADR-10 test support).
+   * When set, `hello` messages that carry a wrong or missing `authToken` are
+   * silently rejected: the `toClient` stream is closed, no `session.registered`
+   * is sent, and the hello is NOT recorded in `_received`.
+   *
+   * Pass `null` to disable the check (the default — backward-compatible).
+   */
+  setRequiredToken(token: string | null): void {
+    this._requiredToken = token;
+  }
 
   /**
    * Creates a new in-memory connection pair and registers it with the daemon.
@@ -229,6 +250,18 @@ export class FakeDaemon {
   // ── Inbound message handling ─────────────────────────────────────────────────
 
   private _handleInbound(msg: InboundMessage, record: ConnectionRecord, index: number): void {
+    // ADR-10: validate auth token on hello BEFORE recording the message.
+    // Mimic real daemon: close silently, no error frame, do not record.
+    if (
+      msg.type === 'hello' &&
+      this._requiredToken !== null &&
+      msg.authToken !== this._requiredToken
+    ) {
+      record.toClient.end();
+      record.registered = false;
+      return;
+    }
+
     this._received.push({ message: msg, connectionIndex: index });
 
     switch (msg.type) {
@@ -407,6 +440,7 @@ export class FakeDaemon {
     this._received = [];
     this._unreachable.clear();
     this.pingCounter = 0;
+    this._requiredToken = null;
   }
 
   // ── Private ──────────────────────────────────────────────────────────────────

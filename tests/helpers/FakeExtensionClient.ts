@@ -121,13 +121,15 @@ export class FakeExtensionClient {
 
   /**
    * Sends the ADR-2 `hello` registration message (extension → daemon).
-   * Protocol: { type: 'hello', sessionId, sessionName }
+   * Protocol: { type: 'hello', sessionId, sessionName[, authToken] }
+   * Pass `authToken` when testing ADR-10 auth scenarios.
    */
-  sendHello(): void {
+  sendHello(authToken?: string): void {
     const msg: HelloMessage = {
       type: 'hello',
       sessionId: this._sessionId,
       sessionName: this._sessionName,
+      ...(authToken !== undefined && { authToken }),
     };
     this._write(msg);
   }

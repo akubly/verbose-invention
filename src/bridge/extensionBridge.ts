@@ -1,9 +1,9 @@
 /**
  * extensionBridge.ts — Named-pipe server (daemon side).
  *
- * Listens on \\.\pipe\reach-bridge (single pipe, multiplexed by sessionId).
- * Each CLI extension instance connects, sends a `hello` message, and is
- * tracked in a Map<sessionId, ExtensionConnection>.
+ * Listens on a randomised pipe path (ADR-10) supplied via PipeAuthConfig.
+ * Each CLI extension instance connects, sends a `hello` message with an
+ * authToken, and is tracked in a Map<sessionId, ExtensionConnection>.
  *
  * Protocol: UTF-8 JSON-Lines (one JSON object per newline-terminated line).
  *           Max 64 KB per line (ADR-3).
@@ -23,10 +23,10 @@
 import { EventEmitter } from 'node:events';
 import * as net from 'node:net';
 import { randomUUID } from 'node:crypto';
+import type { PipeAuthConfig } from './pipeAuth.js';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-export const PIPE_PATH = '\\\\.\\pipe\\reach-bridge';
 const HEARTBEAT_INTERVAL_MS = 30_000;
 /** ADR-7: pong expected within this many ms after a ping is sent. */
 const PONG_WINDOW_MS = 5_000;
@@ -45,6 +45,8 @@ export interface RegisterMessage {
   sessionId: string;
   /** Human-readable session label. Reads SESSION_NAME env var; falls back to sessionId. */
   sessionName: string;
+  /** ADR-10: per-run CSPRNG token from bridge-auth.json. Required since B3. */
+  authToken: string;
 }
 
 /** Heartbeat reply from extension. `id` must echo the ping's `id`. */
@@ -232,6 +234,8 @@ export class ExtensionBridge implements BridgeEmitter {
   private readonly pendingSockets = new Set<net.Socket>();
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
+  constructor(private readonly _authConfig: PipeAuthConfig) {}
+
   // ── BridgeEmitter implementation ─────────────────────────────────────────
 
   on(event: 'session.registered', listener: (sessionId: string) => void): this;
@@ -293,10 +297,10 @@ export class ExtensionBridge implements BridgeEmitter {
         reject(err);
       });
 
-      server.listen(PIPE_PATH, () => {
+      server.listen(this._authConfig.pipePath, () => {
         this.server = server;
         this.startHeartbeat();
-        console.log(`[bridge] Listening on ${PIPE_PATH}`);
+        console.log(`[bridge] Listening on ${this._authConfig.pipePath}`);
         resolve();
       });
     });
@@ -532,6 +536,14 @@ export class ExtensionBridge implements BridgeEmitter {
 
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
       console.warn('[bridge] register message missing sessionId — closing connection');
+      socket.destroy();
+      return;
+    }
+
+    // ADR-10 Option A: validate auth token before any session interaction.
+    // Close without sending an error frame to avoid acting as an oracle.
+    if (msg.authToken !== this._authConfig.token) {
+      console.warn('[bridge] Auth token mismatch — closing unauthenticated connection');
       socket.destroy();
       return;
     }

@@ -52,10 +52,14 @@
 import { joinSession } from '@github/copilot-sdk/extension';
 import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const PIPE_PATH = '\\\\.\\pipe\\reach-bridge';
+// PIPE_PATH is no longer a constant — it is read from bridge-auth.json at
+// connect time (ADR-10). See readPipeAuth() below.
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_CEILING_MS = 300_000;
 const BACKOFF_MULTIPLIER = 2;
@@ -140,6 +144,15 @@ let reconnectAttempt = 0;
 
 /** True when teardown has been initiated (stop reconnecting). */
 let stopping = false;
+
+/**
+ * Pipe auth config read from bridge-auth.json before each connect attempt.
+ * Holds the dynamic pipe path and per-run token (ADR-10).
+ * Re-read on every connection attempt to pick up daemon restarts.
+ *
+ * @type {{ pipeName: string; pipePath: string; token: string } | null}
+ */
+let pipeAuth = null;
 
 /**
  * In-flight permission requests awaiting a daemon response.
@@ -469,6 +482,43 @@ function wireSessionEvents(session) {
   }
 }
 
+// ─── Pipe authentication (ADR-10) ─────────────────────────────────────────────
+
+/**
+ * Returns the path to the bridge-auth.json file written by the daemon.
+ * Uses %LOCALAPPDATA% on Windows (matches pipeAuth.ts on the daemon side).
+ *
+ * @returns {string}
+ */
+function getAuthFilePath() {
+  const localAppData =
+    process.env['LOCALAPPDATA'] ?? join(homedir(), 'AppData', 'Local');
+  return join(localAppData, 'reach', 'bridge-auth.json');
+}
+
+/**
+ * Read the daemon's bridge-auth.json. Returns null if the file is missing,
+ * unreadable, or malformed (daemon not running yet).
+ *
+ * @returns {Promise<{ pipeName: string; pipePath: string; token: string } | null>}
+ */
+async function readPipeAuthFile() {
+  try {
+    const raw = await readFile(getAuthFilePath(), 'utf-8');
+    const data = JSON.parse(raw);
+    if (typeof data.pipeName !== 'string' || typeof data.token !== 'string') {
+      return null;
+    }
+    return {
+      pipeName: data.pipeName,
+      pipePath: `\\\\.\\pipe\\${data.pipeName}`,
+      token: data.token,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ─── Pipe connection loop ────────────────────────────────────────────────────
 
 /**
@@ -481,7 +531,7 @@ function wireSessionEvents(session) {
  */
 function connectToDaemon() {
   return new Promise((resolve, reject) => {
-    const socket = createConnection(PIPE_PATH);
+    const socket = createConnection(pipeAuth.pipePath);
     pipeSocket = socket;
 
     let lineBuffer = '';
@@ -495,7 +545,8 @@ function connectToDaemon() {
 
       // ADR-2: push-based registration — first thing sent on connect.
       // Re-sent on every reconnect (ADR-6 hello-resend rule, ADR-8 §1).
-      sendToDaemon({ type: 'hello', sessionId: SESSION_ID, sessionName: SESSION_NAME });
+      // ADR-10: include authToken from bridge-auth.json.
+      sendToDaemon({ type: 'hello', sessionId: SESSION_ID, sessionName: SESSION_NAME, authToken: pipeAuth.token });
       registered = true;
     });
 
@@ -566,6 +617,17 @@ function connectToDaemon() {
  */
 async function runConnectionLoop() {
   while (!stopping) {
+    // Re-read bridge-auth.json on every attempt so a daemon restart (which
+    // writes a new pipe name + token) is picked up automatically (ADR-6, ADR-10).
+    pipeAuth = await readPipeAuthFile();
+    if (!pipeAuth) {
+      const delay = backoffDelay(reconnectAttempt);
+      log('warn', `bridge-auth.json not found — daemon not running; retrying in ${delay} ms`);
+      reconnectAttempt++;
+      if (!stopping) await sleep(delay);
+      continue;
+    }
+
     try {
       await connectToDaemon();
     } catch (err) {

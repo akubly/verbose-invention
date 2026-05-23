@@ -17,6 +17,7 @@ import { Bot } from 'grammy';
 import { ExtensionBridge } from './bridge/extensionBridge.js';
 import { BridgeSessionFactory } from './bridge/bridgeSessionFactory.js';
 import { CompositeSessionFactory } from './bridge/compositeSessionFactory.js';
+import { generatePipeAuth } from './bridge/pipeAuth.js';
 import type { CopilotSessionFactory } from './copilot/factory.js';
 
 function getRegistryPath(): string {
@@ -109,7 +110,8 @@ async function main(): Promise<void> {
   // SDK sessions will still work; only extension-attached sessions will be unavailable.
   let bridge: ExtensionBridge | null = null;
   try {
-    bridge = new ExtensionBridge();
+    const pipeAuth = await generatePipeAuth();
+    bridge = new ExtensionBridge(pipeAuth);
     await bridge.start();
     console.log('[reach] Extension bridge: listening on named pipe');
   } catch (err) {

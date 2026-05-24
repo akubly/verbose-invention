@@ -36,8 +36,8 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
   let permissionPrompter: PermissionPrompter | undefined;
   if (permissionPolicy === 'interactiveDestructive') {
     permissionPrompter = {
-      prompt: (chatId, topicId, toolName, args) =>
-        promptUserForPermission(bot, chatId, topicId, toolName, args),
+      prompt: (chatId, topicId, toolName, args, signal) =>
+        promptUserForPermission(bot, chatId, topicId, toolName, args, signal),
     };
   }
 

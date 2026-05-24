@@ -71,6 +71,7 @@ export class Relay {
     // Evict stale cache: if the topic was re-linked to a different session name
     // (e.g. /remove then /new), the cached handle is for the wrong session.
     if (cached && cached.sessionName !== entry.sessionName) {
+      cached.session.dispose?.();
       this.activeSessions.delete(topicId);
       session = undefined;
     }
@@ -88,8 +89,8 @@ export class Relay {
           }
 
           const prompter = this.permissionPrompter;
-          permissionCallback = (toolName: string, args: string) =>
-            prompter.prompt(chatId, topicId, toolName, args);
+          permissionCallback = (toolName: string, args: string, signal?: AbortSignal) =>
+            prompter.prompt(chatId, topicId, toolName, args, signal);
         }
 
         session = await this.factory.resume(entry.sessionName, entry.model, permissionCallback)
@@ -105,11 +106,30 @@ export class Relay {
       }
     }
 
-    // Reset idle timer — evict cached session handle on inactivity
-    this.idleMonitor.reset(topicId, () => {
-      this.activeSessions.delete(topicId);
-      console.log(`[relay] Session handle evicted (idle): topic ${topicId} → "${entry.sessionName}"`);
-    });
+    // Reset idle timer — evict cached session handle on inactivity.
+    // ADR-9: if the session has a pending permission prompt (isBusy), defer
+    // eviction by re-scheduling the timer rather than calling dispose(), which
+    // would abort the session AbortController and deny the in-flight prompt.
+    const scheduleIdle = (): void => {
+      this.idleMonitor.reset(topicId, () => {
+        const evicted = this.activeSessions.get(topicId);
+        if (!evicted) return;
+        if (evicted.session.isBusy?.()) {
+          // Session has pending permissions — defer eviction, re-arm the timer.
+          // Log evicted.sessionName (read from activeSessions at eviction time)
+          // rather than entry.sessionName from the closure: if the topic was
+          // re-linked after relay() returned, the cached value reflects the
+          // session actually being deferred.
+          console.log(`[relay] Session busy (pending permission), deferring idle eviction: topic ${topicId} → "${evicted.sessionName}"`);
+          scheduleIdle();
+          return;
+        }
+        evicted.session.dispose?.();
+        this.activeSessions.delete(topicId);
+        console.log(`[relay] Session handle evicted (idle): topic ${topicId} → "${evicted.sessionName}"`);
+      });
+    };
+    scheduleIdle();
 
     const placeholder = await ctx.reply('…', { message_thread_id: topicId });
 
@@ -183,10 +203,13 @@ export class Relay {
       const isTimeout = err instanceof StreamTimeoutError;
       if (!isTimeout && this.factory.resetForRestart) {
         this.idleMonitor.cancelAll();
+        for (const { session } of this.activeSessions.values()) session.dispose?.();
         this.activeSessions.clear();
         this.factory.resetForRestart();
         console.log(`[relay] SDK error detected — factory marked for restart; cleared cached sessions`);
       } else {
+        const evicted = this.activeSessions.get(topicId);
+        evicted?.session.dispose?.();
         this.activeSessions.delete(topicId); // Only evict current topic for timeouts
       }
       
@@ -300,6 +323,7 @@ export class Relay {
   /** Tear down all active sessions and timers (call on graceful shutdown). */
   dispose(): void {
     this.idleMonitor.cancelAll();
+    for (const { session } of this.activeSessions.values()) session.dispose?.();
     this.activeSessions.clear();
   }
 }

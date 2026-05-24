@@ -1,94 +1,178 @@
-# Kat — History (Summarized 2026-05-02)
+---
 
-## Identity & Role
+### 2026-05-19 — Phase 6 Day 1: install.ts Refactored to User-Account Service (ADR-5)
 
-- **Agent:** Kat (Bot Dev, Sonnet 4.6)
-- **Project:** Reach — TypeScript daemon bridging Telegram to GitHub Copilot CLI
-- **Domain:** Bot wiring, UX, Telegram command surface, message formatting
-- **Joined:** 2026-04-12
+**Task:** Refactor `src/service/install.ts` to install the Reach daemon as the logged-in user, not NetworkService/LocalSystem.
 
-## Key Accomplishments
+**Implementation:**
 
-### Phase 1–4 (2026-04-12 → 2026-05-01)
+- Added `ServiceAccount` interface (`username`, `domain`, `password`).
+- `createService()` now accepts optional `account?: ServiceAccount`. When provided, sets `logOnAs` in the node-windows config with `{ domain, account, password }` and `allowServiceLogon: true`. When omitted (uninstall path), no `logOnAs` is written.
+- Added `resolveCurrentUser()`: uses `os.userInfo().username` + `process.env.USERDOMAIN`. Never calls `LookupAccountName`.
+- Added `promptPassword()`: readline-based with `_writeToOutput` override to suppress echo.
+- `install()` is now `async` — resolves user, prompts password, passes `ServiceAccount` to `createService()`.
+- `main()` is now `async`, wraps top-level call in `.catch()`.
+- README Windows Service section updated to reflect user-account logon and one-time password prompt.
 
-- Implemented `/new <name>`, `/list`, `/remove` command stack
-- Fixed registry crash-safety (atomic `.tmp` → rename pattern)
-- Added schema versioning (version: 1)
-- Implemented session registry with duplicate-name tracking
-- Built message relay handler (catch-all topic → session)
-- Fixed chatId fallback guard
-- Implemented `/resume <name>` command
-- Fixed unit test surface (registry fixtures, mocks)
+**Trade-off:** `node-windows` requires a real Windows password for user accounts (SCM API constraint). Password-less path via Scheduled Task was rejected — different restart semantics and would drop node-windows. ADR-5 pre-accepted this cost.
 
-### Phase 5 (2026-05-02) — Persona Review
+**Tests:** All 22 install tests pass. Full suite: 296 passed, 4 skipped. tsc and lint clean.
 
-- **F2 (Name Uniqueness):** Enforce at registration via `SessionRegistry.register()` guard. Pre-existing on-disk duplicates preserved with warning.
-- **F3 (Atomic Move):** Implemented `move(fromTopicId, toTopicId, sessionName, chatId, model?)` primitive with single `persist()` call and rollback guarantee on failure.
-
-## Current State
-
-- **Files:** `src/bot/index.ts`, `src/bot/handlers.ts`, `src/sessions/registry.ts`
-- **Test coverage:** 245 tests pass; registry module at full coverage
-- **Active commands:** `/new`, `/list`, `/remove`, `/resume`, catch-all relay
-- **Constraints:** Layering clean (no relay imports in bot); atomic operations verified
-
-## Phase 6+ Roadmap
-
-### PR #5 Cycle 4 (2026-05-03) — Production Bug Fixes
-
-- **H-A (Relay cache rekey):** `Relay.activeSessions` was still keyed by the old topic ID after `/resume` moved the registry entry. Added `rekeySession(fromTopicId, toTopicId): void` to `Relay` that pops the cache entry at `fromTopicId`, inserts it at `toTopicId`, and cancels the stale idle timer (whose closure referenced the old key). `/resume` handler now calls `relay.rekeySession(oldTopicId, topicId)` immediately after a successful `registry.move()`. Preserves unflushed in-memory state; no factory call on next message.
-- **H-B (Registry write-first):** `move()` mutated `this.entries` before `await persist()`, letting concurrent reads observe uncommitted state. Replaced the mutate-then-rollback pattern with write-first: build a snapshot `Map`, call `persistSnapshot(snapshot)` (new private method queued via `writeQueue`), only then mutate `this.entries`. On failure, `this.entries` is never touched — no rollback needed. Extracted `doPersistEntries(entries)` shared by both `doPersist()` and `persistSnapshot()`.
-- **Tests:** +7 new tests: `relay.test.ts` (3 — rekeySession happy path, no-op, old topic evicted), `resume.test.ts` (2 — rekeySession called on success, not called on failure), `registry.test.ts` (2 — write-first no mutation on failure, entries untouched during persist). Existing rollback test updated to spy on `doPersistEntries` and reflect write-first semantics. 267 → 274 passing; tsc and lint clean.
+**Decisions:** `kat-service-host.md` dropped to inbox. Carter (pipe server) notified that the named pipe will now be created in user-session context — no protocol changes needed.
 
 
+**Event:** All architectural blockers resolved per Aaron's directive. Phase 6 architecture finalized with seven ADRs (ADR-1 through ADR-7).
 
-- **F-B (`findAllByName` + /resume duplicate guard):** Added `findAllByName(name): SessionEntry[]` to `ISessionRegistry` and `SessionRegistry`. `/resume` now calls `findAllByName`; if >1 match (legacy on-disk duplicates), refuses with a list showing all matching `topic #N (chatId C)` entries and instructs user to `/rename` or `/remove`. `findByName` kept for callers (like `/new`) that want first-match. 
-- **F-C (`move()` atomic destination check):** Added destination-unbound guard at the top of `move()` — before any in-memory mutation — throwing `Destination topic N is already bound to "name"` if bound. Eliminates the TOCTOU window between `/resume`'s UX pre-check and the actual mutation. `/resume` catch block now detects `already bound to` in the error message and emits a clean ⚠️ (not the generic "Failed to resume") telling the user to `/remove` first.
-- **Tests:** 10 new tests added across `registry.test.ts` (move destination-bound, findAllByName) and `resume.test.ts` (legacy duplicate refusal, clean error surfacing). All 245 + new tests pass; tsc and lint clean.
-
-
-- **F2 (Name Uniqueness):** Enforce at registration via `SessionRegistry.register()` guard. Pre-existing on-disk duplicates preserved with warning.
-- **F3 (Atomic Move):** Implemented `move(fromTopicId, toTopicId, sessionName, chatId, model?)` primitive with single `persist()` call and rollback guarantee on failure.
-
-### PR #5 Cycle 5 (2026-05-03) — Registry Full-Transaction Serialization
-
-- **I-A (mutationQueue):** The H-B write-first fix still had an await yield between `persistSnapshot()` and the `this.entries.delete/set` mutations. A concurrent `register()` or `remove()` could mutate `this.entries` during that yield; the move would then apply stale state on top, silently clobbering the concurrent change. Fixed by generalising `writeQueue` into a `mutationQueue` (`Promise<unknown>`) and adding `enqueueMutation<T>(op: () => Promise<T>)` that serialises the entire read→compute→persist→swap transaction. `register()`, `remove()`, and `move()` all go through `enqueueMutation`. Final in-memory update is `this.entries = newEntries` (atomic reference swap) — readers always see a fully-committed state. Removed now-dead `persist()`, `persistSnapshot()`, and `doPersist()` helpers; `doPersistEntries()` is the sole disk-write path.
-- **I-C (JSDoc):** Updated `move()` JSDoc on `ISessionRegistry` to describe the new contract: serialised via mutation queue, builds snapshot, persists, atomic-swaps `this.entries`, no rollback path, throws on missing source / bound dest / persist failure.
-- **Tests:** +3 new tests in `registry.test.ts`: (a) move() vs concurrent register() — execution log asserts serialisation order; (b) move() vs concurrent remove() — same; (c) atomic swap — spy captures state at persist time to prove the old map is still live before the swap, list() confirms complete new state after. 274 → 278 passing; tsc and lint clean.
+**Key points for Kat:**
+- **ADR-5:** Daemon runs as logged-in user (not LocalSystem) — fixes the `LookupAccountName failed: 1332` bug in install.ts
+- **Day 1 task:** Refactor `src/service/install.ts` to prompt for user account + password, use `whoami /upn` primary or `wmic` fallback
+- **Implementation order:** Can start immediately with no blocking data dependencies. Same start time as Carter (named pipe server) and Jun (test doubles)
 
 
-
-- **Files:** `src/bot/index.ts`, `src/bot/handlers.ts`, `src/sessions/registry.ts`
-- **Test coverage:** 245 tests pass; registry module at full coverage
-- **Active commands:** `/new`, `/list`, `/remove`, `/resume`, catch-all relay
-- **Constraints:** Layering clean (no relay imports in bot); atomic operations verified
-
-## Phase 6 Roadmap
-
-**Kat's scope (Phase 6 — Session 0 Control Plane + Data Plane Topics):**
-1. Bot routing refactor (Days 3–5):
-   - Split routing: General topic → `session0.ts`; forum topics → data-plane relay
-   - Enforce mode gates: desktop mode rejects everything except `/afk`
-   - Topic lifecycle: create on `/attach`, auto-archive on `/back` or CLI session death
-   - Implement commands: `/afk`, `/back`, `/attach <session>`, `/kill` wired through mode gates
-2. Registry semantics shift: **attach to existing CLI session**, not create Reach-owned SDK session
-   - Drop name-uniqueness enforcement (CLI names authoritative)
-   - Track lifecycle state (`attached` / `detached`)
-   - Entry shape: `topicId → cliSessionId`
-
-**Design:** Session 0 in General topic (permanent, command-only). Data-plane topics for attached CLI processes. Mode state machine (desktop ↔ AFK). MVP Week 1.
+See `.squad/decisions.md` for full ADRs and implementation sequencing.
 
 ---
 
-## Phase 6+ Roadmap (Future)
+### 2026-05-19 — Phase 6 Day 1: Team Sync — ADR-8 Protocol Reconciliation
 
-- HUD footer with repo/branch/model metadata
-- Two-tier permissions (auto-approve safe, prompt destructive)
-- Session export to Markdown
-- Conversational Session 0 (Phase 7)
+**Event:** Phase 6 Day 1 parallel tasks completed. Noble Six reconciled protocol drift between Carter and Jun via ADR-8.
 
-## Learnings
+**What happened:**
+Carter and Jun designed independently and converged on different message protocols (both valid per ADR-3). ADR-8 resolves this by adopting Jun's streaming schema as canonical.
 
-- Registry needs both atomic writes and post-load duplicate tolerance for backward compatibility
-- Single-purpose command semantics demand unique session names (no disambiguation prompts)
-- Move() primitive critical for session transfer UX (vs two-step remove+register race)
+**Impact on Kat:**
+No changes to `install.ts`. The refactored install.ts (user-account service) is orthogonal to the pipe protocol work and already complete. Kat is now available for Days 2–4 relay integration support if needed.
+
+**Status:** Kat's Day 1 deliverable is complete and verified. No regressions. Ready for Phase 6 continued.
+
+See orchestration logs and `decisions.md` for full ADR-8 technical details.
+
+---
+
+### 2026-05-22 — Phase 6 Days 3–4: Bridge Adapter (BridgeSession / BridgeSessionFactory)
+
+**Status:** Complete. All 296 tests green. tsc + lint clean.
+
+**What was built:**
+
+- **`src/bridge/bridgeSession.ts`** — `BridgeSession implements CopilotSession`. Adapts the bridge's
+  push-event model (`stream` / `stream.error`) into `AsyncIterable<string>` using an async-queue
+  pattern. The key insight: push listeners into a queue + `wake()`, drain queue in generator loop,
+  re-check after setting `signal` to close the race window between empty-queue check and `await`.
+  `try/finally` guarantees `bridge.off()` on normal completion, error, AND early iterator abandonment.
+
+- **`src/bridge/bridgeSessionFactory.ts`** — `BridgeSessionFactory implements CopilotSessionFactory`.
+  `resume()` returns `BridgeSession` if extension has registered the session by name, `null` otherwise.
+  `create()` throws if not registered (bridge sessions are extension-created, not factory-created).
+  `resetForRestart()` is a no-op per ADR-6.
+
+- **`src/bridge/compositeSessionFactory.ts`** — Bridge-first, SDK-fallback composite factory.
+  `resume()` tries bridge first, falls back to SDK. `create()` uses bridge if session is live,
+  SDK otherwise. Enables graceful coexistence of CLI-attached and Reach-spawned sessions.
+
+- **`src/bridge/extensionBridge.ts`** (minor edit) — Added `sessionName` to `InternalConnection`
+  (stored from `hello` message) and `getSessionByName()` method. Required to map relay's
+  human-readable `sessionName` to bridge's internal `sessionId`-keyed sessions map.
+
+- **`src/main.ts`** (wiring) — Starts bridge before relay wiring; gracefully falls back if pipe
+  is unavailable. Composite factory injected. `sdkFactory` kept as separate reference for shutdown.
+
+**Composition decision:** Option A (composite factory) over Option B (env flag). See decisions inbox.
+
+**Async-queue gotchas to remember:**
+1. The race window: between `queue.length === 0` check and `signal = r`, new items can arrive.
+   Fix: after `signal = r`, re-check `queue.length > 0` and immediately resolve if true.
+2. Last-chunk semantics: ADR-8 `done: true` frames can carry a non-empty `chunk`. Handle both
+   in the same listener call (push chunk item then done item).
+3. Listener cast: `bridge.off()` takes `(...args: unknown[]) => void`. Typed listeners must be cast.
+   Store typed aliases and cast only at `off()` callsites.
+4. `sendFn` separation: Constructor takes `sendFn` separate from `bridge` for testability.
+   The factory passes `bridge.sendCommand.bind(bridge)`; tests can pass a simple mock.
+
+**Known gap:** Permission prompting over the bridge is unimplemented (TODO ADR-9?). Bridge sessions
+ignore `permissionCallback` — the CLI extension handles permissions locally. Documented in decisions inbox.
+
+**For Jun:** BridgeSession public API exactly matches K1 spec:
+- Constructor: `(bridge: BridgeEmitter, sessionId: string, sendFn: (sid, text) => string | false)`
+- `send(text: string): AsyncIterable<string>`
+- Listener cleanup via `try/finally` with `bridge.off()` cast
+
+
+
+**Status:** Complete. All bridges migrated to ADR-8 canonical schema. 296 tests green.
+
+**What happened:**
+- **Carter:** 8 mechanical migration changes (extensionBridge.ts + extension.mjs) to ADR-8 schema completed
+- **Jun:** SessionEventMessage type added to InboundMessage union for forward compatibility
+- **Decisions merged:** 2 inbox records (sendCommand API, session.event shape) → decisions.md
+- **Archive:** Old decision entries (>7d) purged from decisions.md per archival threshold
+
+**Impact on Kat:**
+No action required Day 2. `sendCommand()` now returns `requestId` (or `false`) instead of `boolean`. This is internal to the bridge layer; Kat's relay integration (Days 3–4) will consume the `requestId` for correlating incoming `stream` chunks to pending Telegram message edits.
+
+**Key outcome:** Protocol drift is fully resolved. All three code paths (bridge + test doubles + relay) now speak ADR-8 schema. Relay integration can proceed with confidence.
+
+**Baseline preserved:** 296 passed / 4 skipped / 0 failed ✅
+
+---
+
+### 2026-05-22 — Phase 6 Day 5: ADR-9 (Permission Prompting) Drafted — Implementation Gates Pending
+
+**Event:** Noble Six drafted ADR-9 and Jun drafted 29-scenario test catalog. Both deliverables in decisions.md.
+
+**ADR-9 Summary:**
+- **Problem:** `BridgeSession` silently discards `permissionCallback` — destructive tools execute without user consent
+- **Decision:** In-stream interleaving on existing pipe (ADR-3). 3 new message types: `permission.request` (ext→daemon), `permission.response` (daemon→ext), `permission.cancelled` (ext→daemon)
+- **Status:** PROPOSED — awaiting Aaron's decisions on 4 open questions
+
+**4 Open Questions (Aaron must decide):**
+1. Telegram UX shape (reply-keyboard vs. inline buttons vs. free-text commands)
+2. Default `timeoutMs` (30s proposed for dogfooding)
+3. `allow-always` scope (per-session/per-tool in-memory vs. persisted)
+4. Risk classification ownership (extension or daemon)
+
+**Impact on Kat:** Permission-prompting implementation is **GATED** on ADR-9 resolution. Cannot start until Aaron locks these 4 decisions. All implementation work (§10 in ADR-9) is spelled out for when gates open.
+
+**Test scenarios ready:** Jun's 29-scenario catalog + test doubles contract waiting for protocol finalization.
+
+**Blocking:** Production dogfooding cannot proceed without permission prompting. This is the gating issue for Phase 6 MVP completion.
+
+
+
+
+### 2026-05-22 — Review-Cycle 1: I10 toolName Sanitization
+
+**Finding:** I10 (Security persona) — `toolName` from the extension was interpolated unsanitized into the Telegram permission prompt. RTL overrides, null bytes, and homoglyphs could spoof the user about which tool was being approved.
+
+**Decision:** Option (b) — sanitize + warn. Replace disallowed chars with `_`, truncate to 128 chars, emit `console.warn` for observability. Rejected option (a) (hard-deny) to avoid blocking legitimate SDK tools with unusual naming.
+
+**Where:** `BridgeSession._handlePermissionRequest` — daemon-side, before the allow-always store lookup and permissionCallback call. `sanitizeToolName()` added to `bridgeSession.ts`.
+
+**Allowlist regex:** `/^[a-z_][a-z0-9_.:-]{0,127}$/i` — covers all known SDK tool name formats.
+
+**Tests:** 7 new cases in `tests/bridge/permission-toolname-sanitize.test.ts`. Full suite: 363 passed, 4 skipped. tsc + lint clean. Commit: `2c6b63f`.
+
+**Learnings:**
+- For display sanitization, prefer the replace-and-warn pattern over hard-reject when the allowlist might be imperfect — keeps the system operational while making anomalies observable.
+- Place input validation as close to the untrusted source as possible (the bridge handler), not at the rendering layer, so all downstream code always sees clean data.
+
+---
+
+### 2026-05-23 — ADR-9 Reconciliation Complete + Jun's Test Suite Green
+
+**Status:** Jun's 32-scenario vitest suite FULLY SHIPPED against reconciled implementation. 353 tests pass, 4 skipped, 0 failures. All K1–K6 assumptions verified:
+- **K2:** BridgeSession abort controller wiring confirmed
+- **K4:** Per-session AllowAlwaysStore isolation (real bug fixed — was shared)
+- **K5:** extension.mjs named exports added (isDestructive, isKnownSafe)
+- **K6:** Test harness vi.mock side effects documented
+
+**Closes:** Loop on reconciliation. Implementation + test coverage both green. Ready for live dogfooding (Day 5+ per now.md).
+
+---
+
+### 2026-05-22 — Cloud Review Cycle 1: T2/T5 addressed (commit `689a547`)
+
+- **T2** (`src/bot/prompt.ts:183`): Captured abort handler in named variable; `complete()` now calls `signal.removeEventListener` on every settlement path — listener leak closed.
+- **T5** (`README.md:146`): Replaced hardcoded `\\.\pipe\reach-bridge` with ADR-10 description: randomized pipe name + `%LOCALAPPDATA%\reach\bridge-auth.json` discovery.
+- **T8** (`README.md:145`): Removed incorrect "stops when you log off" claim. Windows Services run in Session 0, independent of interactive sessions — corrected to reflect that the daemon persists across logoff until machine shutdown or uninstall.
+- **T10** (`src/bot/prompt.ts:67`): Added `scanHandle` to `PromptRegistry`; exported `disposePromptRegistry(bot)` to clear the interval and evict from WeakMap. Restructured `ensurePromptRegistry` to build map then interval then registry object. Two new tests verify one-interval-per-bot and dispose-clears-all behaviour.

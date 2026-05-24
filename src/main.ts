@@ -14,6 +14,11 @@ import { SessionRegistry } from './sessions/registry.js';
 import { CopilotClientImpl, type PermissionPolicy } from './copilot/impl.js';
 import { loadConfig, saveConfig, getConfigPath, getReachDataDir } from './config/config.js';
 import { Bot } from 'grammy';
+import { ExtensionBridge } from './bridge/extensionBridge.js';
+import { BridgeSessionFactory } from './bridge/bridgeSessionFactory.js';
+import { CompositeSessionFactory } from './bridge/compositeSessionFactory.js';
+import { generatePipeAuth, cleanupPipeAuth } from './bridge/pipeAuth.js';
+import type { CopilotSessionFactory } from './copilot/factory.js';
 
 function getRegistryPath(): string {
   return path.join(getReachDataDir(), 'registry.json');
@@ -99,7 +104,37 @@ async function main(): Promise<void> {
 
   // Normal operation
   const registry = new SessionRegistry(registryPath);
-  const factory = new CopilotClientImpl(model, permissionPolicy);
+
+  // Start the extension bridge (named pipe server). If the pipe is already in use
+  // (e.g. another daemon instance running), log a warning and continue without it —
+  // SDK sessions will still work; only extension-attached sessions will be unavailable.
+  let bridge: ExtensionBridge | null = null;
+  try {
+    const pipeAuth = await generatePipeAuth();
+    bridge = new ExtensionBridge(pipeAuth);
+    await bridge.start();
+    console.log('[reach] Extension bridge: listening on named pipe');
+  } catch (err) {
+    // If generatePipeAuth() succeeded but bridge.start() threw, the auth file
+    // is on disk but no listener is active.  Clean it up so the extension
+    // doesn't try to connect to a dead pipe on the next startup.
+    // cleanupPipeAuth() is ENOENT-safe, so it's also harmless if generatePipeAuth
+    // itself failed before writing the file.
+    await cleanupPipeAuth().catch(() => { /* non-fatal — daemon is failing anyway */ });
+    console.warn(
+      '[reach] Extension bridge unavailable — bridge sessions disabled:',
+      err instanceof Error ? err.message : String(err),
+    );
+    bridge = null;
+  }
+
+  const sdkFactory = new CopilotClientImpl(model, permissionPolicy);
+  // Composite factory: bridge-first, SDK-fallback (Option A — see decisions inbox).
+  // AllowAlwaysStore is created fresh per BridgeSession by the factory (ADR-9 Q2 — per-session).
+  const factory: CopilotSessionFactory = bridge
+    ? new CompositeSessionFactory(new BridgeSessionFactory(bridge), sdkFactory)
+    : sdkFactory;
+
   const bot = createBot(token, chatId);
 
   const relay = registerHandlers({
@@ -122,7 +157,9 @@ async function main(): Promise<void> {
     shuttingDown = true;
     console.log('\n[reach] Shutting down…');
     relay.dispose();
-    Promise.allSettled([bot.stop(), factory.stop()]).finally(() => {
+    const tasks: Promise<unknown>[] = [bot.stop(), sdkFactory.stop()];
+    if (bridge) tasks.push(bridge.stop());
+    Promise.allSettled(tasks).finally(() => {
       console.log('[reach] Bye.');
       process.exit(0);
     });

@@ -7,9 +7,28 @@
 
 export interface CopilotSession {
   send(message: string): AsyncIterable<string>;
+  /**
+   * Optional cleanup hook called when the session handle is evicted from the relay cache
+   * (idle timeout, stale-name replacement, shutdown, or SDK crash recovery).
+   * Implementations that register bridge listeners on construction MUST remove them here
+   * to prevent unbounded listener growth when the same sessionId is re-attached.
+   * SDK-backed sessions may omit this (they hold no long-lived bridge listeners).
+   */
+  dispose?(): void;
+  /**
+   * Optional: returns true when the session has in-flight work that must not be
+   * interrupted by idle eviction (e.g. a pending permission prompt).
+   *
+   * When isBusy() returns true the relay defers idle eviction and re-schedules
+   * the idle timer rather than calling dispose().  This upholds ADR-9's no-timeout
+   * requirement: a permission prompt awaiting a Telegram user response must never
+   * be aborted by the idle-eviction path.
+   */
+  isBusy?(): boolean;
 }
 
-export type PermissionPromptCallback = (toolName: string, args: string) => Promise<boolean>;
+/** K1/ADR-9: signal is optional for backward compatibility; SDK path ignores it. */
+export type PermissionPromptCallback = (toolName: string, args: string, signal?: AbortSignal) => Promise<boolean>;
 
 export interface CopilotSessionFactory {
   /**

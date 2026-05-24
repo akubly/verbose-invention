@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { promptUserForPermission } from '../../src/bot/prompt.js';
+import { promptUserForPermission, disposePromptRegistry } from '../../src/bot/prompt.js';
 
 type PromptOverrides = {
   chatId?: number;
   topicId?: number;
   toolName?: string;
   args?: string;
-  timeoutMs?: number;
+  signal?: AbortSignal;
 };
 
 type CallbackHandler = (ctx: any) => unknown;
@@ -133,7 +133,7 @@ function invokePrompt(bot: any, overrides: PromptOverrides = {}) {
     topicId: 42,
     toolName: 'powershell',
     args: 'Get-ChildItem src',
-    timeoutMs: 30_000,
+    signal: undefined as AbortSignal | undefined,
     ...overrides,
   };
 
@@ -143,7 +143,7 @@ function invokePrompt(bot: any, overrides: PromptOverrides = {}) {
     args.topicId,
     args.toolName,
     args.args,
-    args.timeoutMs,
+    args.signal,
   );
 }
 
@@ -183,16 +183,82 @@ describe('promptUserForPermission', () => {
     await expect(decision).resolves.toBe(false);
   });
 
-  it('times out to false and updates the message', async () => {
+  it('resolves false immediately when signal is already aborted', async () => {
     const { bot, editMessageText } = makeMockBot();
-    const decision = invokePrompt(bot, { timeoutMs: 5_000 });
+    const controller = new AbortController();
+    controller.abort(); // pre-aborted
+
+    const decision = invokePrompt(bot, { signal: controller.signal });
     await flushMicrotasks();
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(decision).resolves.toBe(false);
+    // Message should be updated with aborted status
+    expect(editMessageText).toHaveBeenCalled();
+    expect(String(editMessageText.mock.calls.at(-1)?.[2] ?? '')).toMatch(/aborted/i);
+  });
+
+  it('resolves false and updates the message when signal fires after prompt is shown', async () => {
+    const { bot, editMessageText } = makeMockBot();
+    const controller = new AbortController();
+
+    const decision = invokePrompt(bot, { signal: controller.signal });
+    await flushMicrotasks();
+
+    controller.abort();
+    await flushMicrotasks();
 
     await expect(decision).resolves.toBe(false);
     expect(editMessageText).toHaveBeenCalled();
-    expect(String(editMessageText.mock.calls.at(-1)?.[2] ?? '')).toMatch(/timed?\s*out|timeout/i);
+    expect(String(editMessageText.mock.calls.at(-1)?.[2] ?? '')).toMatch(/aborted/i);
+  });
+
+  it('does not leak an abort listener on the signal after normal completion', async () => {
+    const { bot, sendMessage, click } = makeMockBot();
+    const controller = new AbortController();
+    const signal = controller.signal;
+
+    const addSpy = vi.spyOn(signal, 'addEventListener');
+    const removeSpy = vi.spyOn(signal, 'removeEventListener');
+
+    const decision = invokePrompt(bot, { signal });
+    await flushMicrotasks();
+
+    const abortAddCalls = addSpy.mock.calls.filter(([event]) => event === 'abort');
+    expect(abortAddCalls).toHaveLength(1);
+
+    const approveData = getButtonData(sendMessage).find((value) => /^perm:approve:/.test(value));
+    await click(approveData!);
+    await expect(decision).resolves.toBe(true);
+    await flushMicrotasks();
+
+    const abortRemoveCalls = removeSpy.mock.calls.filter(([event]) => event === 'abort');
+    expect(abortRemoveCalls).toHaveLength(1);
+    // Same handler reference registered and removed — no orphan listener.
+    expect(abortRemoveCalls[0]?.[1]).toBe(abortAddCalls[0]?.[1]);
+  });
+
+  it('does not leak an abort listener on the signal after deny', async () => {
+    const { bot, sendMessage, click } = makeMockBot();
+    const controller = new AbortController();
+    const signal = controller.signal;
+
+    const addSpy = vi.spyOn(signal, 'addEventListener');
+    const removeSpy = vi.spyOn(signal, 'removeEventListener');
+
+    const decision = invokePrompt(bot, { signal });
+    await flushMicrotasks();
+
+    const abortAddCalls = addSpy.mock.calls.filter(([event]) => event === 'abort');
+    expect(abortAddCalls).toHaveLength(1);
+
+    const denyData = getButtonData(sendMessage).find((value) => /^perm:deny:/.test(value));
+    await click(denyData!);
+    await expect(decision).resolves.toBe(false);
+    await flushMicrotasks();
+
+    const abortRemoveCalls = removeSpy.mock.calls.filter(([event]) => event === 'abort');
+    expect(abortRemoveCalls).toHaveLength(1);
+    expect(abortRemoveCalls[0]?.[1]).toBe(abortAddCalls[0]?.[1]);
   });
 
   it('truncates long args in the prompt message', async () => {
@@ -244,5 +310,100 @@ describe('promptUserForPermission', () => {
 
     await click(denyData!);
     await expect(decision).resolves.toBe(false);
+  });
+
+  it('creates exactly one scanner interval per bot instance and disposePromptRegistry clears it', async () => {
+    const { bot: bot1 } = makeMockBot();
+    const { bot: bot2 } = makeMockBot();
+    const ac1 = new AbortController();
+    const ac2 = new AbortController();
+
+    // Trigger registry (and scanner) creation for each bot.
+    const p1 = invokePrompt(bot1, { signal: ac1.signal });
+    const p2 = invokePrompt(bot2, { signal: ac2.signal });
+    await flushMicrotasks();
+
+    // Two distinct bots → two setInterval handles.
+    expect(vi.getTimerCount()).toBe(2);
+
+    // Settle both prompts so the promises resolve cleanly.
+    ac1.abort();
+    ac2.abort();
+    await flushMicrotasks();
+    await Promise.all([p1, p2]);
+
+    // Dispose clears both intervals.
+    disposePromptRegistry(bot1);
+    disposePromptRegistry(bot2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('second call to promptUserForPermission on the same bot reuses the registry, no extra interval', async () => {
+    const { bot, sendMessage, click } = makeMockBot();
+
+    const d1 = invokePrompt(bot);
+    await flushMicrotasks();
+    const timerCountAfterFirst = vi.getTimerCount();
+
+    const d2 = invokePrompt(bot);
+    await flushMicrotasks();
+
+    // Same bot → same registry → no new interval.
+    expect(vi.getTimerCount()).toBe(timerCountAfterFirst);
+
+    // Settle both.
+    const [data1, data2] = sendMessage.mock.calls.map(
+      (_call, i) => sendMessage.mock.calls[i]?.[2] as Record<string, any> | undefined,
+    ).map((opts) => {
+      const kb = opts?.reply_markup?.inline_keyboard as Array<Array<{ callback_data: string }>> | undefined;
+      return kb?.flat().find((b) => /^perm:deny:/.test(b.callback_data))?.callback_data;
+    });
+    if (data1) await click(data1);
+    if (data2) await click(data2);
+    await Promise.all([
+      expect(d1).resolves.toBe(false),
+      expect(d2).resolves.toBe(false),
+    ]);
+
+    disposePromptRegistry(bot);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not register a duplicate callback handler after disposePromptRegistry+re-prompt', async () => {
+    const { bot, sendMessage, callbackHandlers, click } = makeMockBot();
+
+    // First prompt → first (and only) handler attachment.
+    const d1 = invokePrompt(bot);
+    await flushMicrotasks();
+    expect(callbackHandlers).toHaveLength(1);
+
+    // Settle the first prompt cleanly.
+    const firstDeny = getButtonData(sendMessage).find((v) => /^perm:deny:/.test(v));
+    await click(firstDeny!);
+    await expect(d1).resolves.toBe(false);
+
+    // Dispose the registry (clears the interval, removes the WeakMap entry).
+    disposePromptRegistry(bot);
+
+    // Second prompt on the SAME bot must NOT add a second listener — otherwise
+    // a callback would be processed twice (and the first listener, holding a
+    // stale registry, would respond "no longer active").
+    const d2 = invokePrompt(bot);
+    await flushMicrotasks();
+    expect(callbackHandlers).toHaveLength(1);
+
+    // Trigger a callback and assert pending.complete ran exactly once: the
+    // result resolves and a single editMessageText update for the new prompt.
+    const secondApprove = sendMessage.mock.calls
+      .at(-1)?.[2]?.reply_markup?.inline_keyboard
+      ?.flat()
+      .find((b: { callback_data: string }) => /^perm:approve:/.test(b.callback_data))
+      ?.callback_data as string | undefined;
+    expect(secondApprove).toBeTruthy();
+
+    await click(secondApprove!);
+    await expect(d2).resolves.toBe(true);
+
+    disposePromptRegistry(bot);
   });
 });

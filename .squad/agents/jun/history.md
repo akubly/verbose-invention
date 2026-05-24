@@ -2,99 +2,124 @@
 
 ## Core Context
 
-- **Project:** Reach — a TypeScript daemon bridging Telegram to GitHub Copilot CLI sessions on a personal Windows machine via named session registry and bidirectional streaming.
+- **Project:** Reach — a TypeScript daemon bridging Telegram to GitHub Copilot CLI sessions.
 - **Role:** Test Engineer
-- **Joined:** 2026-04-12T06:02:10.441Z
+- **Joined:** 2026-04-12
 
-## Current Phase: Phase 5 — Telegram UX QoL Testing (2026-05-01–2026-05-02)
+## Current Status
 
-### What I'm Testing
+**Phase 6 Days 3–4 complete:** Shipped 20 bridge adapter tests (BridgeSession, factory, relay-integration). Test suite: 316 passed / 4 skipped / 0 failed ✅.
 
-**Feature 1: MarkdownV2 Escaping**
-- 22 new unit tests in `tests/relay/markdownV2.test.ts`
-- Real-world Copilot output tests: code review, HUD footer, mixed identifiers
-- All tests GREEN ✅
-- Contract locked: `escapeMarkdownV2(text: string): string`
+---
 
-**Feature 2: Message Splitting**
-- 21 new contract-locking tests in `tests/relay/messageSplitter.test.ts`
-- Tests define: boundary preferences, code block protection, spanning blocks, two-pass numbering, footer overhead
-- All tests RED (expected — awaiting Carter's Wave 2 implementation)
-- Contract locked: `splitForTelegram(text, opts?): string[]`
+## Phase 5 (2026-05-01–2026-05-02) — Summary
 
-**Feature 3: /resume Command**
-- 13 new tests in `tests/bot/resume.test.ts`
-- All 7 edge cases covered: forum topic requirement, name validation, move semantics, model carry-forward, conflicts
-- All tests GREEN ✅ (Kat's implementation complete)
+Wrote contract-locking test suites for three features:
+- **MarkdownV2 escaping:** 22 tests (escapeMarkdownV2 contract)
+- **Message splitting:** 21 tests (splitForTelegram contract with boundary preferences, code block protection, two-pass numbering)
+- **/resume command:** 13 tests (forum topic requirement, name validation, move semantics, model carry-forward)
 
-### Testing Strategy
+Total: 56 new tests. All MarkdownV2 + /resume GREEN ✅. Message splitter tests RED (waiting for implementation).
 
-**TDD Approach:** Write contract tests first; tests define implementation requirements.
+**Key learning:** TDD approach (write tests before implementation) locked contracts with clarity and reduced implementation ambiguity.
 
-**Real-world cases:** Beyond unit tests, include actual Copilot output patterns (code blocks, formatting, escaping edge cases).
+See `history-archive.md` for full Phase 1–5 test infrastructure details.
 
-**No brittleness:** Tests are stable, resistant to minor refactoring, and focus on behavior not implementation details.
+---
 
-### Current Status
+## Phase 6 Days 1–2 (2026-05-19–2026-05-20) — Summary
 
-- Total Phase 5: 56 tests added (22 + 21 + 13)
-- 235 tests pass overall (up from 198)
-- All MarkdownV2 + /resume tests GREEN ✅
-- All message splitter tests RED (contract ready for Wave 2)
-- tsc clean, lint clean
+**Day 1:** Built `FakeDaemon.ts` and `FakeExtensionClient.ts` test doubles to support bridge testing. Passed smoke tests (296 green → all maintained).
 
-## Recent Learnings (Active)
+**Day 2:** Added `SessionEventMessage` to `FakeDaemon` for forward compatibility with ADR-8 canonical schema. Baseline maintained.
 
-### 2026-05-01 — Phase 5: Contract-Locking Tests
+**Key learning:** Synchronous transport in PassThrough streams requires careful timer registration order to avoid race conditions. Fake-timer scope must exclude `setImmediate` to preserve readline.
 
-Wrote comprehensive test suites for all three Phase 5 features before implementation.
+---
 
-**MarkdownV2 tests** (22 tests):
-- Plain text escaping, inline code, code blocks, unclosed fences, mixed content
-- Real-world Copilot output: code review with escaped headings, HUD footer, mixed identifiers
-- Helper test: `needsEscaping()` boolean checker
+## Phase 6 Days 3–4 (2026-05-22) — Bridge Adapter Testing
 
-**Message splitting tests** (21 tests):
-- Boundary preference order: `\n\n` > `\n` > whitespace > hard cut
-- Code block never split mid-block; split at line boundaries
-- Spanning block detection and handling
-- Two-pass numbering: `[n/total]\n` only when total > 1
-- Footer overhead reserved from last chunk
-- No empty chunks produced
+**Deliverables:**
+- `tests/helpers/FakeBridge.ts` — BridgeEmitter double with on/off tracking for cleanup assertions
+- `tests/bridge/bridgeSession.test.ts` — 10 unit tests (J1)
+- `tests/bridge/relay-with-bridge.test.ts` — 4 relay-integration tests (J2, scoped from 1 complex throttle test to 4 content+bound tests)
+- `tests/bridge/bridgeSessionFactory.test.ts` — 6 factory tests (J3)
 
-**Resume tests** (13 tests):
-- Must be in forum topic; usage errors
-- Name validation and lookup (with fuzzy matching)
-- Already bound, conflict detection, move semantics
-- Model carry-forward from original entry
+**Key learning:** `vi.useFakeTimers()` without `now` option freezes `Date.now()` at the real epoch (large number), not 0. Relay throttle fires on first chunk, blocks on subsequent chunks, fires again on completion → exactly 2 edits. Tests assuming `Date.now() = 0` were incorrect.
 
-### 2026-05-02 — Phase 5 Complete (Team Update by Scribe)
+**Contract gap noted:** `BridgeSession` filters by `requestId` only (not `sessionId`). Low risk in practice; documented for ADR awareness.
 
-Phase 5 testing complete. All decisions merged to `decisions.md`; inbox cleared. 235 tests pass, tsc clean, lint clean.
+---
 
-**Jun's contributions:**
-1. MarkdownV2 real-world tests (3 added to Carter's base suite) — all GREEN
-2. Message splitter contract tests (21, all RED as expected) — locking implementation requirements
-3. /resume tests (13, all GREEN) — Kat's implementation complete
+## Phase 6 Day 5 (2026-05-22) — ADR-9 Scenario Catalog Revision Required
 
-**Coordination:** TDD approach ensured contract clarity before implementation. All three feature tests integrated smoothly.
+**Status:** ADR-9 ACCEPTED. All 5 open questions settled. Scenario catalog needs revision.
 
-**Next phase:** Ready for production. Monitor test suite as features stabilize.
+**Revisions required (Category 2 — Timeout/Cancellation):**
 
-## Phase 6 Roadmap
+The 5 scenarios in Category 2 all assume a `timeoutMs`-based auto-deny after N seconds. ADR-9 Q4 settled to **Branch A: NO TIMEOUT**. Permission prompts wait indefinitely for explicit human decision (approve/deny) or session disconnect (AbortSignal).
 
-**Jun's scope (Phase 6 — Session 0 Control Plane + Data Plane Topics):**
-1. Integration tests (Days 3–5):
-   - Mode transitions: desktop ↔ AFK ↔ data-plane
-   - Attach/detach cycles: CLI session discovery, topic creation, cleanup on death
-   - Graceful degradation: failure paths when discovery unavailable, CLI session dies mid-conversation
-   - State machine coverage: all transitions tested
-2. Test-first approach (Days 1–2):
-   - Write test skeletons for proposed interfaces (discovery, session0 router, attach/detach)
-   - Lock contracts before implementation
+**Scenario revisions (5 affected):**
+1. Replace "user never replies → auto-deny after timeoutMs" with "user never replies → waits indefinitely; disconnect fires → auto-deny via AbortSignal"
+2. "Session ends mid-prompt" scenario now tests **AbortSignal path**, not timer expiry
+3. All Category 2 assertions shift from timing-based to abort-based
 
-**Design:** Test state machine + failure paths. MVP Week 1.
+**New scenarios to add (3 total):**
+1. **Friday → Monday (weekend wait):** No response for 72 simulated hours. Heartbeat maintains session (ADR-7 verified). User taps Approve after weekend. `permissionCallback` resolves. Tool executes. Session state clean throughout.
+2. **Late callback tap:** User taps Approve after prompt message has scrolled away. Returns to message hours/days later, taps. Telegram's `answerCallbackQuery` window is from tap (not send). Verify this works indefinitely.
+3. **Concurrent prompts with abort:** Two prompts in flight. Session disconnects. Both AbortSignals fire simultaneously within one event loop turn. Both prompts clean up. No leaks.
 
-## Archive
+**Categories unaffected:** 1 (happy path), 3 (correlation/ordering), 4 (adversarial/edge), 5 (regression hooks), 6 (protocol) — all valid as written.
 
-Earlier learnings (before 2026-05-01) are archived in `history-archive.md` for reference.
+**Task:** Revise `jun-adr9-permission-test-scenarios.md` with above changes. Finalizes at 29 scenarios (3 Category 2 scenarios replaced, 3 new scenarios added in categories as indicated).
+
+---
+
+**Verification:** 316 passed / 4 skipped / 0 failed ✅
+
+---
+
+## Learnings
+
+**Architecture:** Streaming UX requires request correlation via `requestId` (not single-shot response). ADR-8 canonical schema locks this shape.
+
+**Testing patterns:** Async iterable adapters are testable via fake event emitters + listener tracking. Throttle contracts are verifiable via edit counts without precise timing (when ceiling tests already exist at unit level).
+
+**Edge cases:** EC-08 (extension crash impairs all CLI sessions) requires fail-silent pattern in extension.mjs. TC-03 (foreign requestId filtering) is low-risk but worth documenting in ADR for reader awareness.
+
+**Phase 6 Day 5 (2026-05-22) — ADR-9 Permission Test Scenario Catalog:**
+
+Drafted 29 test scenarios across 5 categories (happy path, timeout/cancellation, correlation/ordering, adversarial/edge, regression hooks) anticipating the permission-prompting wire protocol before ADR-9 is locked. Key learning: control-plane messages (permission.request/response) are a *direction inversion* from the normal data-plane flow — the extension initiates, the daemon responds. This creates a new class of concurrency hazards (in-flight prompts vs. stream completion, pipe drops mid-prompt, multi-session cross-talk) that do not exist in the existing inject/stream path.
+
+Identified 8 protocol ambiguities that Noble Six must resolve before implementation, including: wire message type (new top-level vs session.event discriminator), requestId ownership, timeout owner/deadline, and reconnect behavior for in-flight prompts. Flagged these explicitly so they do not silently become implementation divergences (the ADR-3 / Day 1 divergence lesson applied to ADR-9).
+
+New skill extracted: `interleaved-control-plane-testing` — the pattern for testing bidirectional control-plane messages that interleave with active data streams.
+
+**Phase 6 Day 5 (2026-05-22) — ADR-9 Catalog Revision (this task):**
+
+Revised prior 29-scenario catalog to 32 scenarios. Key learning: when a timeout decision is reversed (Branch A: no timeout), it is not just a deletion — it requires a *design flip* in Category 2. Every "auto-deny after Xs" scenario is replaced by an AbortSignal-based scenario with a fundamentally different assertion shape: instead of asserting that a timer fires, you assert that an abort fires **within one event loop turn** of disconnect. The keystone test (C2-01) is the single most load-bearing scenario in the entire catalog — it is the behavioral proof of the no-timeout safety invariant.
+
+New category patterns:
+- **No-timer regression assertion (C5-02):** Spy on `globalThis.setTimeout` and assert zero calls from the prompt's call site. This pattern regression-guards against re-introduction of deleted code. Extracted to `no-timer-regression-assertion` skill.
+- **Friday→Monday durability (C5-01):** `vi.advanceTimersByTime(72 * 60 * 60 * 1000)` + `vi.getTimerCount()` to verify zero leaked timers after 72 simulated hours. Validates that indefinite wait is truly clean at the JavaScript runtime level, not just at the application logic level.
+- **Store isolation (C6-04):** Per-session store contract test — verifies that factory creates a new store instance per session. Critical for multi-session security (cross-session allow-always leakage would be a privilege escalation bug).
+
+New skill extracted: `no-timer-regression-assertion` — the pattern of using `vi.spyOn(globalThis, 'setTimeout')` to assert that a function does NOT create a timer, regression-guarding against re-introduction of deleted timeout logic.
+
+**Phase 6 Day 5 (2026-05-23) — ADR-9 K1–K6 Implementation Complete**
+
+**Status:** Kat's K1–K6 implementation verified (321 tests green). Test file generation UNBLOCKED pending 3 assumption reconciliations.
+
+**What's blocking Jun's vitest generation:**
+
+Kat implemented K1–K6 per ADR-9 spec. Jun's revised 32-scenario catalog assumes 3 implementation details for whitebox factory and classifier tests. Before Jun writes vitest files, Kat must verify:
+
+1. **K2:** `BridgeSession` constructor takes `AbortController` (not self-construct) — required for C2-01/C2-02/C2-03 abort simulation tests
+2. **K4:** `BridgeSessionFactory` creates new `InMemoryAllowAlwaysStore()` per session — required for C6-04 store-isolation security test
+3. **K5:** `extension.mjs` exports `isDestructive()` and `isKnownSafe()` as named functions — required for C4-05/C6-05 classifier unit tests
+
+**Next:** Await Kat's reply in her history.md confirming all 3 points match implementation. Once verified, Jun writes vitest files for all 32 scenarios (Categories 1–7).
+
+
+
+Earlier learnings (Phases 1–5, Phase 6 Spike methodology) in `history-archive.md`.

@@ -540,6 +540,28 @@ describe('Relay', () => {
       await relay.relay(makeMockCtx('after move', NEW_TOPIC) as any);
       expect(factory.resume).toHaveBeenCalledTimes(2);
     });
+
+    it('idle-eviction log reflects the cached sessionName at eviction time', async () => {
+      // Regression: the eviction callback must log evicted.sessionName (read
+      // from activeSessions when the timer fires) rather than entry.sessionName
+      // from the relay() closure. The two can drift if the topic is re-linked
+      // to a different session between scheduleIdle and the timer firing.
+      const factory = makeMockFactory();
+      const registry = makeStubRegistry([SESSION_ENTRY]);
+      const relay = new Relay(registry, factory, 'test-model');
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      await relay.relay(makeMockCtx('hello', 42) as any);
+
+      // Advance past the idle timeout to trigger the eviction callback.
+      vi.advanceTimersByTime(400_000);
+
+      const evictionLog = logSpy.mock.calls
+        .map((args) => args.join(' '))
+        .find((line) => line.includes('Session handle evicted'));
+      expect(evictionLog).toBeDefined();
+      expect(evictionLog).toContain(`"${SESSION_ENTRY.sessionName}"`);
+    });
   });
 
   describe('SDK crash recovery', () => {

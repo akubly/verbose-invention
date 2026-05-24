@@ -1,136 +1,109 @@
-# Noble Six — History
+# Noble Six — History (Summarized 2026-05-19)
 
-## Core Context
+## Identity & Role
 
-- **Project:** Reach — a TypeScript daemon bridging Telegram to GitHub Copilot CLI sessions on a personal Windows machine via named session registry and bidirectional streaming.
-- **Role:** Lead / Architect
-- **Joined:** 2026-04-12T06:02:10.439Z
+- **Agent:** Noble Six (Lead/Architect, Opus 4.6)
+- **Project:** Reach — TypeScript daemon bridging Telegram to GitHub Copilot CLI
+- **Domain:** Architecture, design decisions, protocol reconciliation, ADR documentation
+- **Joined:** 2026-04-12
 
-## Current Phase: Phase 5 — Telegram UX QoL Scoping & Prioritization (2026-05-01)
+## Current Status
 
-### What I Delivered
+**Phase 6 Day 1 Complete.** All 8 ADRs locked (ADRs 1–7 architectural + ADR-8 protocol reconciliation). Protocol drift reconciled. Day 2 migration tasks assigned.
 
-**Phase 5 Scope Definition** (`decisions.md`):
+---
 
-1. **Message Splitting** — Telegram's 4096-char limit handling with semantic boundary preservation
-   - Boundary preference: `\n\n` > `\n` > whitespace > hard cut
-   - Code block protection: never split mid-block, re-open/close fences on sub-chunks
-   - Multi-chunk delivery: first via edit, rest via reply with 100ms delay
+## Recent Context
 
-2. **MarkdownV2 Parse Mode** — Legacy Markdown upgrade
-   - Escape-only strategy (no AST parsing): 18 special chars + `\` in plain text
-   - Code region protection: only `\` and `` ` `` escaped inside code
-   - Plain-text fallback on rejection
+### Phase 6 Architecture Decision (2026-05-09 to 2026-05-19)
 
-3. **/resume <name> Command** — Session mobility
-   - Move semantics: unbind old topic, bind to new
-   - Registry enhancement: `findByName()` for reverse lookup
-   - Model carry-forward from original entry
+**Spike Outcome (2026-05-09):**
+Aaron chose Option B (extension-bridge) for Phase 6 MVP. This circumvents the port-discovery gap by using the Copilot CLI extension API (@github/copilot-sdk/extension) for push-based session registration over a named pipe.
 
-### Dependency Analysis & Wave Sequencing
+**ADRs 1–7 Finalized (2026-05-19T22:13:42Z):**
+- **ADR-1:** Copilot CLI Extension API for session attach (push-based registration, no port discovery)
+- **ADR-2:** Push-based discovery with listSessions() fallback
+- **ADR-3:** Single named pipe \\.\pipe\reach-bridge, JSON-Lines, multiplexed by sessionId
+- **ADR-4:** Extension crash = session unreachable (no auto-recovery)
+- **ADR-5:** Daemon runs as logged-in user (fixes LookupAccountName bug)
+- **ADR-6:** Extension reconnect = exponential backoff
+- **ADR-7:** Heartbeat = ping/pong (30s/5s/15s) + pipe-teardown detection
 
-**Dependency Graph:**
-```
-MarkdownV2 ──┐
-             ├─ Integration (relay.ts)
-Splitting   ──┘
-/resume     ─── Independent (handlers.ts + registry.ts)
-```
+**Key Insight:** Aaron's single-user scope decision simplified three architectural problems into one: pipe security, session scoping, and install.ts bug all collapse when daemon runs as logged-in user.
 
-**Rationale:** MarkdownV2 before splitting because escaping changes text length; splitting must account for post-escape length.
+### Phase 6 Day 1 Implementation (2026-05-19)
 
-**Recommended Sequencing:**
-- Wave 1 (parallel): MarkdownV2 (Carter) + /resume (Kat)
-- Wave 2 (after V2): Message Splitting (Carter, depends on V2 length calculations)
-- Tests: Jun writes all three test suites in parallel (pure functions + TDD)
+**Parallel Task Delivery:**
+- **Carter:** src/bridge/extensionBridge.ts (pipe server), xtension.mjs (skeleton) — both compile, tests green
+- **Jun:** 	ests/helpers/FakeDaemon.ts, FakeExtensionClient.ts, 15-test smoke suite — all green
+- **Kat:** src/service/install.ts refactored to user-account install per ADR-5 — all 22 install tests green
+- **Full test suite:** 296 passed, 4 skipped, 0 failed ✅
 
-### Aaron's 6 Open Questions (ANSWERED)
+**Protocol Drift & ADR-8 Reconciliation:**
+Carter and Jun independently designed different message protocols (both valid per ADR-3 framing spec). ADR-8 systematically reconciles:
+- **Decision:** Adopt Jun's streaming schema as canonical (inject/stream/equestId/chunk/done)
+- **Rationale:** 
+  1. Preserves Phase 5 streaming UX (Telegram placeholder real-time edits at 800ms intervals)
+  2. equestId correlation is critical for daemon-relay message routing
+  3. Terminology consistency (Jun's hello aligns with ADR-2/ADR-6)
+  4. Forward compatibility (retaining session.event for future event types)
+- **Consequences:** Carter Day 2 migration (~8 changes), Jun Day 2 addition (1 type), both pass full test suite
 
-| Q | Answer | Implementation |
-|---|--------|-----------------|
-| Chunk numbering `[n/total]`? | No | Two-pass omits on single-chunk; never `[1/1]` |
-| Max chunks cap? | 10 chunks, truncate | Acceptable (typical responses shorter) |
-| Max chunks cap? | 25 chunks, truncate | Acceptable (DoS-guard hard cap in relay) |
-| HTML fallback? | No | MarkdownV2 → plain text only |
-| Accept degradation? | Yes | Fallback chain allows graceful fallback |
-| `/resume` move semantics? | Option A (move) | Unbind old, bind new; SDK cache handles stale |
-| `/resume --model`? | Defer | Model carried forward, no override flag |
+---
 
-### Current Status
+## Key Design Principles
 
-- Scope locked and documented in `decisions.md`
-- All 4 decisions inbox files merged
-- Inbox cleared
-- Wave 1 & 2 agents (Carter, Kat, Jun) ready to execute
+1. **Early reconciliation beats late refactor.** Detecting and resolving protocol drift on Day 1 is cheaper than discovering incompatibilities after the relay refactor depends on three code paths.
 
-## Recent Learnings (Active)
+2. **Systematic comparison over gut calls.** Each of the 6 protocol divergences was analyzed independently (edge cases, performance impact, UX consequences, forward compatibility). The decision wasn't "streaming is better" — it was "streaming is required for Phase 5 UX AND request correlation AND self-describing messages AND forward compatibility."
 
-### 2026-05-01 — Phase 5: Scope Design & Coordination
+3. **Constrain scope to simplify architecture.** Single-user scope (Aaron's decision) eliminated the need for cross-integrity-level pipe security tricks, multi-user session isolation, and install.ts account resolution complexity.
 
-Delivered comprehensive phase scope covering three interconnected UX features:
+---
 
-**Design decisions made:**
-1. Wave sequencing based on dependency analysis
-2. Move semantics for `/resume` (simpler invariant: 1 session = 1 topic always)
-3. Escape-only strategy for MarkdownV2 (covers 95% of real output, avoids AST brittleness)
-4. Boundary preference ordering (preserves semantic structure)
+## Next Steps (Day 2+)
 
-**Coordination patterns:**
-- Scoped multiple agents in parallel (Carter Waves 1&2, Kat, Jun)
-- Locked contracts early (test-first approach)
-- Documented all edge cases and risk mitigations
+**Day 2:** Carter migration (~8 changes, ~2 hours) + Jun addition (1 change, ~15 min) + full test suite green
 
-### 2026-05-02 — Phase 5 Complete (Team Update by Scribe)
+**Days 3–4:** Relay integration — ridge.on('stream', ...) feeds Telegram placeholder edits, equestId correlation for in-flight responses, 800ms throttle window applied unchanged
 
-Phase 5 complete. All decisions merged to `decisions.md`; inbox cleared. 235 tests pass, tsc clean, lint clean.
+**Day 5+:** End-to-end testing, dogfooding, production readiness
 
-**Noble Six's contributions:**
-- Scoped and prioritized Phase 5 (3 UX improvements)
-- Analyzed dependencies and recommended wave sequencing
-- Answered 6 of Aaron's open questions
-- All scope decisions successfully applied by implementation agents
+---
 
-**Team coordination:** Wave-based execution enabled parallel work (Wave 1: MarkdownV2 + /resume); Wave 2 (message splitting) built on Wave 1 foundations.
+---
 
-**Next phase:** Ready for production. Phase 5 UX improvements provide foundation for future features.
+## Phase 6 Day 2 (2026-05-20)
+
+**Status:** ADR-8 operationalization complete. Protocol migration validated.
+
+**Outcomes:**
+- ✅ **Carter:** 8 mechanical migration changes (extensionBridge.ts + extension.mjs) → ADR-8 canonical schema
+- ✅ **Jun:** SessionEventMessage type added to InboundMessage union (forward-compat)
+- ✅ **Verification:** 296 passed / 4 skipped / 0 failed | tsc + lint clean
+- ✅ **Decision records:** 2 inbox entries (sendCommand API, session.event shape) merged into decisions.md
+- ✅ **Archive:** Old decisions (>7 days) purged from decisions.md; baseline preserved
+
+**Key Insight:** Day 1 protocol reconciliation (ADR-8) proves out on Day 2 with zero regressions. All bridges now speak canonical schema. Ready for relay integration (Days 3–4).
+
+---
 
 ## Learnings
 
-### 2026-05-04 — Dogfood Readiness Assessment
+**2026-05-21 — Triage: extension-side work can leap ahead of the spec.**  
+Phase 6 Day 2 triage revealed that `extension.mjs` had already implemented full per-chunk streaming (`handleInject`) — originally spec'd as a stub until Days 3–4. The code was complete, self-contained, and green. Lesson: when a deliverable is "ahead of plan" and passes tests, commit it. The completed extension-side streaming reduced Kat's Days 3–4 scope to relay/daemon-side only, not both sides. **Don't revert work that already passes — triage it and update the plan.**
 
-**Assessed by:** Noble Six  
-**Trigger:** Aaron asked "What's left, or are we ready to dogfood?"
+**2026-05-21 — Adapter > rewrite when the abstraction already fits.**  
+Days 3–4 relay integration choice: `relay.ts` was already written against `CopilotSession.send() → AsyncIterable<string>`. The bridge emits `stream` events. A `BridgeSession` adapter (~60 LOC) bridges the gap and inherits 140+ LOC of throttle/edit/fallback logic at zero cost. The principle: when an existing abstraction's shape matches the new integration point, use an adapter before considering a rewrite.
 
-**Verdict: Ship it.** Reach is feature-complete and ready for personal use today.
+**2026-05-22 — Review Cycle 1: safety-parity regressions hide at abstraction boundaries.**  
+The bridge (`extension.mjs`) auto-approved unknown tools because the condition combined `isKnownSafe || !isDestructive` — logically correct for "safe or non-destructive" but semantically wrong for "unknown." The SDK in-process path (`impl.ts`) had the stricter three-branch logic. Lesson: when duplicating classification logic across a process boundary, match the branch structure exactly, not just the intended behavior for known inputs. Unknown inputs are the adversarial case.
 
-**Evidence:**
-- 278 tests pass (15 test files), 4 are intentional placeholder stubs — not gaps
-- Clean tsc + ESLint
-- Full command surface functional: /new, /list, /remove, /resume, /help, /pair
-- Windows Service install with auto-restart
-- Message splitting + MarkdownV2 + /resume all live in Phase 5
-
-**Only gaps found (none blocking):**
-1. No `/status`/`/ping` command — can't verify liveness from Telegram. Carter task, post-dogfood Week 1.
-2. Phase 4 Wave 3 (operator runbook, logging polish) was never scoped. Real use will drive what actually matters.
-
-**Architecture note:** Port injection (F7 from Carter's Phase 5 review) was applied — `relay.ts` has zero direct deps on `bot/` or `sessions/`. Layering is clean.
-
-**Recommendation filed:** `.squad/decisions/inbox/noble six-dogfood-readiness.md`
+**2026-05-22 — Defense-in-depth for IPC: randomize + authenticate + verify.**  
+Named pipe security requires all three layers: (1) randomized pipe name to prevent blind connection, (2) token exchange to authenticate the client, (3) SID verification to bind to the expected user. Any single layer can be bypassed; all three together make local exploitation impractical for the single-user threat model.
 
 ---
 
 ## Archive
 
-Earlier work (before 2026-05-01) is archived in `history-archive.md` for reference.
-
----
-
-## Phase 6 Planning (Post-Dogfood)
-
-**Noble Six's role:** Monitor dogfood feedback during Week 1–2. Convene team for Phase 6 scope definition based on real-world usage patterns.
-
-**Watch areas:**
-- MarkdownV2 fallback frequency (log: `[relay] MarkdownV2 rejected`)
-- Session eviction timing (5-min default; may need tuning)
-- Service stability (crash rate in Event Viewer)
+Full Phases 1–5 + detailed Phase 6 spike documentation in history-archive.md.

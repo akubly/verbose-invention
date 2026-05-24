@@ -72,22 +72,38 @@ const MAX_STREAM_QUEUE_SIZE = 1000;
 /**
  * Create an AbortSignal that fires as soon as any of the supplied signals fires.
  * Equivalent to AbortSignal.any() but explicit for clarity and Node 20 compat.
+ *
+ * Returns the combined `signal` plus a `cleanup` function that explicitly removes
+ * the 'abort' listeners from each input signal. Callers MUST invoke `cleanup()`
+ * in a `finally` block when the consumer no longer needs the combined signal —
+ * otherwise the listeners remain attached to long-lived input signals (e.g. the
+ * session-level AbortSignal) for the lifetime of the session, leaking one
+ * listener per call (Cycle5 Thread A).
+ *
+ * If any input signal is already aborted at entry, no listeners are attached
+ * and `cleanup` is a no-op.
  */
-function raceAbortSignals(signals: AbortSignal[]): AbortSignal {
+function raceAbortSignals(signals: AbortSignal[]): { signal: AbortSignal; cleanup: () => void } {
   const controller = new AbortController();
   for (const sig of signals) {
     if (sig.aborted) {
       controller.abort(sig.reason);
-      return controller.signal;
+      return { signal: controller.signal, cleanup: (): void => {} };
     }
-    // {once: true} auto-removes after first fire; {signal: controller.signal} auto-removes
-    // the remaining listeners when the controller itself aborts (prevents listener buildup).
-    sig.addEventListener('abort', () => { controller.abort(sig.reason); }, {
-      once: true,
-      signal: controller.signal,
-    });
   }
-  return controller.signal;
+  // Track each (signal, handler) pair so cleanup() can remove them explicitly.
+  const handlers: Array<{ sig: AbortSignal; handler: () => void }> = [];
+  for (const sig of signals) {
+    const handler = (): void => { controller.abort(sig.reason); };
+    sig.addEventListener('abort', handler, { once: true });
+    handlers.push({ sig, handler });
+  }
+  const cleanup = (): void => {
+    for (const { sig, handler } of handlers) {
+      sig.removeEventListener('abort', handler);
+    }
+  };
+  return { signal: controller.signal, cleanup };
 }
 
 export class BridgeSession implements CopilotSession {
@@ -232,7 +248,7 @@ export class BridgeSession implements CopilotSession {
     this._pendingByPermId.set(permId, permAbortController);
 
     // Combined signal: fires on session disconnect OR extension cancellation.
-    const combinedSignal = raceAbortSignals([
+    const { signal: combinedSignal, cleanup: cleanupRace } = raceAbortSignals([
       this._sessionAbortController.signal,
       permAbortController.signal,
     ]);
@@ -245,6 +261,10 @@ export class BridgeSession implements CopilotSession {
       sendPermissionResponseFn(this.sessionId, permId, 'deny');
     } finally {
       this._pendingByPermId.delete(permId);
+      // Cycle5 Thread A: explicitly remove the 'abort' listeners attached by
+      // raceAbortSignals from the session-level signal — otherwise listeners
+      // accumulate one per permission request for the lifetime of the session.
+      cleanupRace();
     }
   }
 

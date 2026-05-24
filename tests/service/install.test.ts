@@ -98,9 +98,12 @@ describe('Service installer', () => {
       REACH_MODEL: process.env.REACH_MODEL,
       USERDOMAIN: process.env.USERDOMAIN,
       COMPUTERNAME: process.env.COMPUTERNAME,
+      REACH_SERVICE_PASSWORD: process.env.REACH_SERVICE_PASSWORD,
     };
     // Deterministic user-resolution values for all install() tests
     process.env.USERDOMAIN = 'TESTDOMAIN';
+    // Ensure no inherited env-var fallback contaminates the TTY-prompt tests
+    delete process.env.REACH_SERVICE_PASSWORD;
     vi.clearAllMocks();
     constructedConfig = undefined;
     eventHandlers.clear();
@@ -314,6 +317,36 @@ describe('Service installer', () => {
         expect.stringContaining('requires your Windows password'),
       );
       expect(mockSvcInstall).not.toHaveBeenCalled();
+    });
+
+    it('uses REACH_SERVICE_PASSWORD env var and skips the TTY prompt when set', async () => {
+      // Drop the TTY so any call to promptPassword() would throw; the env-var
+      // fallback must take precedence and avoid prompting altogether.
+      const originalIsTTY = process.stdin.isTTY;
+      Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false });
+
+      const { createInterface } = await import('readline');
+      const createInterfaceSpy = createInterface as ReturnType<typeof vi.fn>;
+      createInterfaceSpy.mockClear();
+
+      const originalPassword = process.env.REACH_SERVICE_PASSWORD;
+      process.env.REACH_SERVICE_PASSWORD = 'env-supplied-pw';
+
+      try {
+        await install();
+
+        expect(createInterfaceSpy).not.toHaveBeenCalled();
+        expect(mockSvcInstall).toHaveBeenCalledOnce();
+        expect(constructedConfig!.logOnAs).toEqual({
+          domain: 'TESTDOMAIN',
+          account: 'TestUser',
+          password: 'env-supplied-pw',
+        });
+      } finally {
+        if (originalPassword === undefined) delete process.env.REACH_SERVICE_PASSWORD;
+        else process.env.REACH_SERVICE_PASSWORD = originalPassword;
+        Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: originalIsTTY });
+      }
     });
   });
 

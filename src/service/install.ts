@@ -260,10 +260,18 @@ export async function install(): Promise<void> {
   console.log('[reach] Your password is passed directly to the Windows Service Control Manager');
   console.log('[reach] and is not stored by Reach.');
 
-  const password = await promptPassword(`[reach] Password for ${accountDisplay}: `);
+  // Prefer the REACH_SERVICE_PASSWORD env var when set (CI / automated installs);
+  // fall back to the interactive TTY prompt only when it is absent. promptPassword()
+  // requires a TTY and will throw otherwise — the env-var path is the supported
+  // non-interactive route advertised in that error message.
+  const envPassword = process.env.REACH_SERVICE_PASSWORD;
+  const password = envPassword && envPassword.length > 0
+    ? envPassword
+    : await promptPassword(`[reach] Password for ${accountDisplay}: `);
 
   if (!password) {
     console.error('[reach] ERROR: Service install requires your Windows password to run as your account.');
+    console.error('[reach] Provide it interactively or via the REACH_SERVICE_PASSWORD environment variable.');
     process.exit(1);
   }
 

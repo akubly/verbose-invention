@@ -277,7 +277,7 @@ export class FakeExtensionClient {
       );
     }
     this._sent.push(msg);
-    this.toServer.push(JSON.stringify(msg) + '\n');
+    this.toServer.write(JSON.stringify(msg) + '\n');
   }
 
   private _handleInbound(msg: OutboundMessage): void {

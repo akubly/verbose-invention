@@ -296,7 +296,7 @@ export class FakeDaemon {
 
   private _writeTo(record: ConnectionRecord, msg: OutboundMessage): void {
     const line = JSON.stringify(msg) + '\n';
-    record.toClient.push(line);
+    record.toClient.write(line);
   }
 
   /**

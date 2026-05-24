@@ -368,4 +368,42 @@ describe('promptUserForPermission', () => {
     disposePromptRegistry(bot);
     expect(vi.getTimerCount()).toBe(0);
   });
+
+  it('does not register a duplicate callback handler after disposePromptRegistry+re-prompt', async () => {
+    const { bot, sendMessage, callbackHandlers, click } = makeMockBot();
+
+    // First prompt → first (and only) handler attachment.
+    const d1 = invokePrompt(bot);
+    await flushMicrotasks();
+    expect(callbackHandlers).toHaveLength(1);
+
+    // Settle the first prompt cleanly.
+    const firstDeny = getButtonData(sendMessage).find((v) => /^perm:deny:/.test(v));
+    await click(firstDeny!);
+    await expect(d1).resolves.toBe(false);
+
+    // Dispose the registry (clears the interval, removes the WeakMap entry).
+    disposePromptRegistry(bot);
+
+    // Second prompt on the SAME bot must NOT add a second listener — otherwise
+    // a callback would be processed twice (and the first listener, holding a
+    // stale registry, would respond "no longer active").
+    const d2 = invokePrompt(bot);
+    await flushMicrotasks();
+    expect(callbackHandlers).toHaveLength(1);
+
+    // Trigger a callback and assert pending.complete ran exactly once: the
+    // result resolves and a single editMessageText update for the new prompt.
+    const secondApprove = sendMessage.mock.calls
+      .at(-1)?.[2]?.reply_markup?.inline_keyboard
+      ?.flat()
+      .find((b: { callback_data: string }) => /^perm:approve:/.test(b.callback_data))
+      ?.callback_data as string | undefined;
+    expect(secondApprove).toBeTruthy();
+
+    await click(secondApprove!);
+    await expect(d2).resolves.toBe(true);
+
+    disposePromptRegistry(bot);
+  });
 });

@@ -21,6 +21,13 @@ interface PromptRegistry {
 }
 
 const promptRegistries = new WeakMap<Bot<Context>, PromptRegistry>();
+/**
+ * Tracks bots that already have the `callback_query:data` listener attached.
+ * The listener is installed at most once per bot lifetime and looks up the
+ * current registry via `promptRegistries.get(bot)` at callback time, so
+ * disposing and recreating a registry does NOT add a second listener.
+ */
+const handlerInstalled = new WeakSet<Bot<Context>>();
 
 function truncateArgs(args: string, maxLength = 200): string {
   if (args.length <= maxLength) {
@@ -66,37 +73,45 @@ function ensurePromptRegistry(bot: Bot<Context>): PromptRegistry {
   const registry: PromptRegistry = { pendingByRequestId, scanHandle };
   promptRegistries.set(bot, registry);
 
-  // One callback middleware per bot; individual prompts clean themselves up via the pending map.
-  bot.on('callback_query:data', async (ctx, next) => {
-    const data = ctx.callbackQuery.data;
-    if (!data.startsWith('perm:')) {
-      await next();
-      return;
-    }
+  // Install the callback_query:data listener at most once per bot lifetime.
+  // The handler resolves the current registry via promptRegistries.get(bot)
+  // on every callback, so a dispose-then-recreate cycle reuses the same
+  // listener with the fresh registry — no duplicate handlers, no closure
+  // over a stale registry.
+  if (!handlerInstalled.has(bot)) {
+    handlerInstalled.add(bot);
+    bot.on('callback_query:data', async (ctx, next) => {
+      const data = ctx.callbackQuery.data;
+      if (!data.startsWith('perm:')) {
+        await next();
+        return;
+      }
 
-    const match = /^perm:(approve|deny):(.+)$/.exec(data);
-    const action = match?.[1];
-    const requestId = match?.[2];
-    if (!requestId || (action !== 'approve' && action !== 'deny')) {
-      await next();
-      return;
-    }
+      const match = /^perm:(approve|deny):(.+)$/.exec(data);
+      const action = match?.[1];
+      const requestId = match?.[2];
+      if (!requestId || (action !== 'approve' && action !== 'deny')) {
+        await next();
+        return;
+      }
 
-    const pending = registry.pendingByRequestId.get(requestId);
-    if (!pending) {
-      await ctx.answerCallbackQuery({ text: 'This permission prompt is no longer active.' });
-      return;
-    }
+      const currentRegistry = promptRegistries.get(bot);
+      const pending = currentRegistry?.pendingByRequestId.get(requestId);
+      if (!pending) {
+        await ctx.answerCallbackQuery({ text: 'This permission prompt is no longer active.' });
+        return;
+      }
 
-    const callbackChatId = ctx.chat?.id;
-    const callbackMessageId = ctx.callbackQuery.message?.message_id;
-    if (callbackChatId !== pending.chatId || callbackMessageId !== pending.messageId) {
-      await ctx.answerCallbackQuery({ text: 'This permission prompt is not active here.' });
-      return;
-    }
+      const callbackChatId = ctx.chat?.id;
+      const callbackMessageId = ctx.callbackQuery.message?.message_id;
+      if (callbackChatId !== pending.chatId || callbackMessageId !== pending.messageId) {
+        await ctx.answerCallbackQuery({ text: 'This permission prompt is not active here.' });
+        return;
+      }
 
-    await pending.complete(action, ctx);
-  });
+      await pending.complete(action, ctx);
+    });
+  }
 
   return registry;
 }

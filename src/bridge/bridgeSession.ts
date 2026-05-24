@@ -318,11 +318,11 @@ export class BridgeSession implements CopilotSession {
     };
 
     const errorListener = (
-      _sId: string,
+      sId: string,
       rId: string,
       error: string,
     ): void => {
-      if (rId !== requestId) return;
+      if (sId !== this.sessionId || rId !== requestId) return;
       queue.push({ kind: 'error', err: new Error(error) });
       wake();
     };

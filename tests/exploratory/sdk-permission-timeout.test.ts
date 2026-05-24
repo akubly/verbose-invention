@@ -23,15 +23,16 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { createRequire } from 'node:module';
 
-const SDK_SESSION_PATH = path.join(
-  process.cwd(),
-  'node_modules',
-  '@github',
-  'copilot-sdk',
-  'dist',
-  'session.js',
-);
+// Resolve the SDK source via Node's module resolution so the test works under
+// any install layout (npm, pnpm, workspaces, `--prefix`, hoisted, nested).
+// Hard-coding `process.cwd()/node_modules/...` is brittle across package
+// managers and repo layouts. The SDK's `exports` field only exposes the
+// package root, so we resolve the main entry (`dist/index.js`) and locate
+// `session.js` as a sibling in the same dist directory.
+const SDK_MAIN_PATH = createRequire(import.meta.url).resolve('@github/copilot-sdk');
+const SDK_SESSION_PATH = path.join(path.dirname(SDK_MAIN_PATH), 'session.js');
 
 /**
  * Extract the body of an async method by name from a JS source string.

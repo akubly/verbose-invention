@@ -285,14 +285,15 @@ export class BridgeSession implements CopilotSession {
       s?.();
     };
 
-    // Filter by requestId to ignore events from other concurrent sessions/sends.
+    // Filter by sessionId AND requestId so events for unrelated sessions/sends
+    // are ignored even if a requestId is ever reused across sessions (Cycle5 Thread B).
     const streamListener = (
-      _sId: string,
+      sId: string,
       rId: string,
       chunk: string,
       done: boolean,
     ): void => {
-      if (rId !== requestId) return;
+      if (sId !== this.sessionId || rId !== requestId) return;
       // I5: guard against unbounded queue growth when the consumer is slow.
       if (queue.length >= MAX_STREAM_QUEUE_SIZE) {
         queue.push({

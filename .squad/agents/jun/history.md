@@ -10,6 +10,8 @@
 
 **Phase 6 Days 3–4 complete:** Shipped 20 bridge adapter tests (BridgeSession, factory, relay-integration). Test suite: 316 passed / 4 skipped / 0 failed ✅.
 
+**2026-05-24 Dogfooding Kickoff:** I3 drift-detection tests + I8 FakeDaemon reconciliation merged into canonical decisions. Jun's 32 vitest scenarios unblocked per Kat reconciliation.
+
 ---
 
 ## Phase 5 (2026-05-01–2026-05-02) — Summary

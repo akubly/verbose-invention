@@ -21,6 +21,15 @@ Reach is Aaron's personal mobile bridge for Copilot CLI. I'm Scribe — I keep `
 - Log session summaries to `.squad/log/`
 - Keep agent histories current (coordinate with leads on what's worth capturing)
 
+## Session Work
+
+**2026-05-24 Dogfooding Kickoff:**
+- Drained 8 pending decisions from inbox into canonical decisions.md (+28263 bytes)
+- Merged review dispositions (Carter, Jun, Kat, Noble Six) and reconciliation notes
+- ADR-10 finalized (pipe authentication — token + SID)
+- Orchestration logs written; session log captured
+- Noble Six dogfooding checklist generation spawned in parallel
+
 ## Learnings
 
 <!-- Append learnings below -->

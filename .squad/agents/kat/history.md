@@ -1,5 +1,11 @@
 ---
 
+### 2026-05-24 — Dogfooding Kickoff: ADR-9 Reconciliation Finalized
+
+K2, K4, K5 reconciliation notes merged into canonical decisions.md. K4 per-session AllowAlwaysStore bug fixed (code changed). Jun's 32 vitest scenarios now unblocked for Phase 7 test writing.
+
+---
+
 ### 2026-05-19 — Phase 6 Day 1: install.ts Refactored to User-Account Service (ADR-5)
 
 **Task:** Refactor `src/service/install.ts` to install the Reach daemon as the logged-in user, not NetworkService/LocalSystem.

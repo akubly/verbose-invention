@@ -17,6 +17,8 @@
 
 Test suite: 358 passed / 4 skipped / 0 failed ✅
 
+**2026-05-24 Dogfooding Kickoff:** Inbox decisions merged (Carter's 2 reviews consolidated into canonical decisions.md). ADR-10 finalized. Awaiting Noble Six dogfooding checklist for go-live assessment.
+
 ---
 
 ## Phases 1–5 Summary

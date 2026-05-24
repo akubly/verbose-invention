@@ -11,6 +11,8 @@
 
 **Phase 6 Day 1 Complete.** All 8 ADRs locked (ADRs 1–7 architectural + ADR-8 protocol reconciliation). Protocol drift reconciled. Day 2 migration tasks assigned.
 
+**2026-05-24 Dogfooding Kickoff:** ADR-10 (pipe auth) finalized and merged into canonical decisions.md. Review 1 dispositions consolidated. Spawned background for dogfooding go-live checklist (Option A from now.md).
+
 ---
 
 ## Recent Context

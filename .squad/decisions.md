@@ -2234,3 +2234,527 @@ All 8 protocol ambiguity items are resolved by ADR-9. Closed; not carried forwar
 - K2: `BridgeSession` accepts `AbortController` at construction (not self-constructs)
 - K4: `BridgeSessionFactory` constructs a new `InMemoryAllowAlwaysStore` per session
 - K5: `isDestructive()` and `isKnownSafe()` exported as named functions from `extension.mjs`
+
+---
+
+# Carter — Cloud Review Cycle 1 Disposition Notes
+
+**Date:** 2026-05-23  
+**Branch:** `squad/review1-phase6-adr9-fixes`  
+**Commit:** `949269b`  
+**PR:** #6  
+**Test result:** 372 passed / 4 skipped / 0 failed ✅ (12 new tests added)
+
+---
+
+## T1 — `relay.ts:114` — ADR-9 Regression (ACCEPTED + FIXED)
+
+**Disposition:** Accepted. This is a real regression. Option A chosen (reference-count pending permissions in BridgeSession; relay defers eviction when `isBusy()` returns true).
+
+**Why Option A over Option B:** Option A keeps a single `dispose()` contract and requires no knowledge of "which kind of dispose" at the relay call site. The `isBusy()` predicate is a clean capability query that any consumer can use. Option B (split dispose paths) would require callers to track which variant to call, coupling the relay more deeply to bridge internals.
+
+**What changed:**
+- `CopilotSession` interface: added `isBusy?(): boolean` (optional — SDK sessions omit it).
+- `BridgeSession`: added `isBusy(): boolean { return this._pendingByPermId.size > 0; }`.
+- `relay.ts` idle eviction: replaced the inline callback with a named `scheduleIdle()` closure. If `evicted.session.isBusy?.()` returns true, logs and re-arms the timer instead of calling `dispose()`.
+- **ADR-9 compliance:** A Telegram user answering a permission prompt now has unlimited time; idle eviction will never fire while the prompt is pending.
+
+**Tests added (T1, 5 tests):** `isBusy()` false/true/reset unit tests; `dispose NOT called while busy`; `dispose called once no longer busy`.
+
+---
+
+## T3 — `pipeAuth.ts:71` — Windows Rename (ACCEPTED + FIXED)
+
+**Disposition:** Accepted. On Windows `fs.rename(tmp, dst)` throws `EPERM` when `dst` already exists. The original code had no fallback, so a second daemon startup could crash in `generatePipeAuth()`.
+
+**Fix chosen:** `try { rename } catch (EPERM|EEXIST) { unlink dst; rename }`. The outer `try/catch` also cleans up the `.tmp` file on any hard failure so stale temporaries don't accumulate.
+
+**Why not `fs.writeFile` with `flag: 'w'`:** Direct write to the final path sacrifices the atomic "never see a partial file" guarantee. A reader could observe a half-written token if it reads between the truncation and the new content being flushed. The write-to-tmp + rename pattern is the right approach; we just needed the Windows-compat fallback.
+
+**Note on mock-based tests:** `node:fs/promises` ESM bindings are non-configurable; `vi.spyOn` cannot wrap them (throws "Cannot redefine property"). Kept two real-filesystem behavioral tests instead: first-write creates file, second-write-over-existing succeeds. On Windows this actually exercises the fallback path.
+
+**Tests added (T3, 2 tests):** first write creates file; second write over existing succeeds.
+
+---
+
+## T4 — `main.ts:123` — Auth File Cleanup on Bridge Start Failure (ACCEPTED + FIXED)
+
+**Disposition:** Accepted. Straightforward lifecycle fix: if `generatePipeAuth()` succeeds but `bridge.start()` throws, the catch block now calls `cleanupPipeAuth()` before logging and falling back to SDK-only mode. `cleanupPipeAuth()` is ENOENT-safe so it's harmless if `generatePipeAuth` itself failed before writing the file.
+
+**Tests added (T4, 2 tests):** `cleanupPipeAuth` removes file; `cleanupPipeAuth` is a no-op when file is already gone (ENOENT). These test the operation that `main.ts` now performs in the catch block.
+
+---
+
+## T6 — `bridgeSession.ts:276` — Stream Queue Overflow Latch (ACCEPTED + FIXED)
+
+**Disposition:** Accepted. The original I5 fix capped the queue at 1000 items but left the listener registered, so a sustained misbehaving extension could keep adding error items to the queue indefinitely.
+
+**Fix:** After pushing the first overflow error item, immediately call `this.bridge.off('stream', streamListener)` and `this.bridge.off('stream.error', errorListener)`. This latches into a terminal state. The generator's `finally` block will call `off()` again when the consumer unwinds — which is a safe no-op on an already-removed listener.
+
+**Tests added (T6, 3 tests):** All synchronous (FakeBridge emitter is synchronous; the overflow path calls `off()` synchronously so we can check `bridge.offCalls` without awaiting anything): `stream` listener removed on overflow; `stream.error` listener removed on overflow; post-overflow frames trigger no new `off()` calls.
+
+---
+
+## Threads not assigned to Carter
+
+T2 and T5 were not in Carter's assignment list.
+
+
+---
+
+# Cloud Review Cycle 3 — Carter (T9 Test Methodology Fix)
+
+**Date:** 2026-05-23  
+**Commit:** `1d027da`  
+**Branch:** `squad/review1-phase6-adr9-fixes`
+
+---
+
+## Thread
+
+**T9** — `tests/bridge/permission-prompting.test.ts:279`  
+Copilot flagged that C7-03 uses two `BridgeSession` instances sharing the same
+`FakeBridge` + `SESSION_ID`, with the second session's permission callback set
+to `mockResolvedValue(true)`. Since both sessions listen for `permission.request`
+on the same emitter, the second auto-resolving session could handle the event
+before the first session's hanging callback was ever needed. The stream completing
+proved nothing about data-plane / control-plane independence.
+
+## Fix
+
+Consolidated to a single `BridgeSession` created via `makePermSession` with the
+hanging callback (`new Promise<boolean>((r) => { resolvePermission = r; })`).
+
+The test now:
+1. Creates one session with a hanging permission callback.
+2. Starts a stream on that same session (`session.send('hello')`).
+3. Emits `permission.request` while the stream is open.
+4. Emits two stream chunks — they arrive normally while permission is unresolved.
+5. Awaits `streamDone` and asserts `chunks === ['chunk-1', 'chunk-2']`.
+6. Resolves the permission, awaits `flush()`, asserts `sendResponseFn` called with `'allow'`.
+
+This correctly tests the invariant: the data plane (stream) is not blocked by a
+pending control-plane permission prompt.
+
+## Disposition
+
+✅ **Accepted and fixed.** No design decision required. Pure test correctness.
+
+Test results: **374 passed / 4 skipped / 0 failed** (unchanged count — test
+replacement, not addition).
+
+
+---
+
+# Carter — Review Cycle 1 Dispositions
+
+**Date:** 2026-05-22  
+**Branch:** `squad/review1-phase6-adr9-fixes`  
+**Worktree:** `D:\git\verbose-invention-review1`  
+
+---
+
+## Summary
+
+Processed all 14 findings assigned to Carter's domain. 12 accepted+fixed, 0 escalated, 2 deferred (minor — net-safe as-is).
+
+---
+
+## Findings
+
+### BLOCKING
+
+| ID | Disposition | Summary |
+|----|------------|---------|
+| B1 | ✅ ACCEPT | Added `dispose()` to `BridgeSession`; relay calls it on idle eviction, stale-name eviction, crash recovery, and graceful shutdown |
+| B2 | ✅ ACCEPT | Added `session.disconnected` listener inside `_generateStream`; pushes error into queue and calls `wake()` |
+| B3 | ✅ ACCEPT | ADR-10 implemented: random pipe name + per-run token in `bridge-auth.json` (Option A primary auth); owner-only file ACL via `icacls` (Option B partial). Extension reads auth file on every connect. Token validated in `handleHello`; mismatch closes silently (no oracle). |
+
+**B1 detail:**  
+- `BridgeSession` stores listener refs in `_permListeners: Array<{event, listener}>`.  
+- `dispose()` iterates the array, calls `bridge.off()` for each, sets array to `null`, and aborts `_sessionAbortController`.  
+- `onDisconnected` now calls `this.dispose()` instead of inline `bridge.off()` calls — same cleanup path for both triggers.  
+- `CopilotSession` interface gains optional `dispose?(): void`.  
+- `relay.ts` calls `session.dispose?.()` at: idle eviction callback, stale-name eviction, SDK crash recovery `activeSessions.clear()`, single-topic timeout eviction, and `relay.dispose()`.
+
+**B2 detail:**  
+- `disconnectListener` registered via `bridge.on('session.disconnected', ...)` inside `_generateStream`.  
+- On fire: pushes `{kind:'error', err: new Error('Session … disconnected mid-stream')}` into the queue and calls `wake()`.  
+- Cleaned up in the same `finally` block as `stream` and `stream.error` listeners.
+
+**B3 implementation:**  
+- New `src/bridge/pipeAuth.ts`: `generatePipeAuth()` generates random pipe name (`reach-bridge-{16hex}`) + 32-byte CSPRNG token, writes `%LOCALAPPDATA%\reach\bridge-auth.json` atomically, sets owner-only ACL via `icacls`.  
+- `ExtensionBridge` constructor now takes `PipeAuthConfig`; `start()` listens on `config.pipePath`. Token validated in `handleHello`: mismatch destroys socket without sending any error frame (no oracle).  
+- `main.ts`: calls `generatePipeAuth()` before `ExtensionBridge` creation.  
+- `extension.mjs`: reads `bridge-auth.json` before each connect attempt (picks up daemon restarts); includes `authToken` in `hello` message.  
+- Option B SID verification (full `GetNamedPipeClientProcessId` + SID comparison) deferred — requires a native addon (`koffi` or equivalent); `%LOCALAPPDATA%` directory ACL provides equivalent protection in ADR-5 single-user deployment.  
+- `permissionId` hijack concern: moot per ADR-10 — any attacker connecting to the pipe must read `bridge-auth.json`, which requires being the same OS user.  
+- 6 new tests in `tests/bridge/b3-pipe-auth.test.ts`.
+
+**B3 escalation note (superseded):**  
+Noble Six inbox checked at 2026-05-22T22:47 — no `noble-six-pipe-auth.md` found at that time. ADR-10 filed and implemented in follow-up commit.
+
+---
+
+### IMPORTANT
+
+| ID | Disposition | Summary |
+|----|------------|---------|
+| I1 | ✅ ACCEPT | Replaced `currentRequestId` global with `activeInjectIds: Set<string>`. `getActiveRequestId()` returns insertion-order last. |
+| I2 | ✅ ACCEPT (partial) | Added `req.signal` AbortSignal handler in `onPermissionRequest`: sends `permission.cancelled` and resolves the pending promise on abort. |
+| I5 | ✅ ACCEPT | `MAX_STREAM_QUEUE_SIZE = 1000` — overflow pushes error item and wakes generator. Extension streaming path awaits `drain` when `socket.write()` returns false. |
+| I6 | ✅ ACCEPT | `handleHello` rejects a new connection whose `sessionName` is already held by a different `sessionId`. |
+| I9 | ✅ ACCEPT | `MAX_PENDING_PERMISSIONS = 5` cap in `_wirePermissionHandlers`. Overflow auto-denies with warn log. |
+
+**I1 note:** The `requestId` field in `permission.request` is "context only" per ADR-9 §3.1. For concurrent injects (rare in single-user operation), the last-in-flight requestId is used — acceptable per spec.
+
+**I2 partial:** The finding also mentions emitting `permission.cancelled` when the SDK session terminates mid-inject. That scenario (SDK terminates but pipe stays up) is handled by `abortPendingPermissions()` on pipe close. The `req.signal` path covers the SDK's explicit abandonment signal. Full coverage deferred if SDK exposes richer lifecycle hooks in future versions.
+
+---
+
+### MINOR
+
+| ID | Disposition | Summary |
+|----|------------|---------|
+| raceAbortSignals listener growth | ✅ ACCEPT | Added `signal: controller.signal` to `addEventListener` options — auto-removes remaining listeners when the first signal fires. |
+| handlePong unreachable branch | ✅ ACCEPT | Added explanatory comment: session deleted from map before grace expires; `findConnectionBySocket` returns undefined. |
+| pendingSockets slow-loris | ✅ ACCEPT | Added 10-count cap and 10-second auth timeout on pre-hello sockets. |
+| waitForPermissionResponse fallback | ✅ ACCEPT | Added 10-minute fallback `setTimeout` that resolves deny and logs a warning. |
+| `void _model;` idiom | ✅ ACCEPT | Replaced with `// _model unused: bridge sessions are model-agnostic` comment in `bridgeSessionFactory.ts`. |
+| Duplicate section header | ✅ ACCEPT | Renamed second `// ─── Session event forwarding ─────` to `// ─── SDK permission hook (ADR-9) ──────────────`. |
+| `allowAlwaysStore?` optional | ⏸️ DEFER | Making it required would require updating 4+ test helper functions across the test suite. The current `?.` optional-chain usage is type-safe and correct. Deferred — low risk. |
+| permissionId hijack defense | ⏸️ DEFER | Coupled to B3 (pipe ACL/auth). Will implement alongside B3 once Noble Six's decision lands. |
+
+---
+
+## Files Changed
+
+| File | Changes |
+|------|---------|
+| `src/copilot/factory.ts` | Added optional `dispose?(): void` to `CopilotSession` |
+| `src/bridge/bridgeSession.ts` | B1 dispose, B2 stream disconnect, I5 queue cap, I9 rate limit, raceAbortSignals minor |
+| `src/bridge/extensionBridge.ts` | I6 duplicate sessionName, pendingSockets slow-loris, handlePong comment |
+| `src/bridge/bridgeSessionFactory.ts` | `void _model` → comment |
+| `src/relay/relay.ts` | B1 — `dispose?.()` on all eviction paths |
+| `extension.mjs` | I1 activeInjectIds, I2 permission.cancelled, I5 drain, duplicate header, 10-min fallback |
+| `tests/bridge/review1-fixes.test.ts` | **NEW** — 8 tests: B1 (4), B2 (3), I9 (1) |
+
+## Test Results
+
+- TypeScript: ✅ clean (`npx tsc --noEmit`)
+- Lint: ✅ clean (`npm run lint`)
+- Tests: ✅ **371 passed, 4 skipped** (was 363 + 8 new)
+
+---
+
+## Coordination Notes
+
+- **Noble Six**: B3 (pipe ACL) and permissionId hijack defense are waiting on you. When your decision lands in the inbox, Carter will implement.
+- **Kat**: `CopilotSession` interface now has `dispose?(): void` — if `SdkCopilotSession` or any other factory implementer caches bridge listeners, implement it there too. SDK sessions (no bridge listeners) can safely omit it.
+
+
+---
+
+# Jun — Review Cycle 1 Dispositions
+
+**Date:** 2026-05-22  
+**Branch:** `squad/review1-phase6-adr9-fixes`  
+**Commit:** 328f48a
+
+---
+
+## I3 — DESTRUCTIVE_TOOLS / SAFE_TOOLS drift detection missing
+
+**Disposition:** ACCEPT and fix.
+
+**Reasoning:** The concern is real and material. `extension.mjs` carries hardcoded copies of both sets with a "MUST be mirrored" comment that relies entirely on author discipline. Any tool added to `permissions.ts` without a matching update in `extension.mjs` would silently bypass risk classification — the extension's `isDestructive()` call would return false and the tool would execute without a Telegram approval prompt. That is a privilege escalation bug, and there is currently zero automation preventing it.
+
+**Approach chosen:** (b) — keep two sources, add a drift-detection test. Faster to land and avoids rearchitecting the extension's module format just for this concern. The test parses `extension.mjs` as raw text via regex and compares to the TypeScript exports. If the sets drift, the test fails at CI time before the branch can merge.
+
+**Current state:** Sets are **in sync** today. Both assertions pass green. The third assertion (no overlap between DESTRUCTIVE and SAFE) also passes and guards against a different category of classification error.
+
+**Fix delivered:** `tests/copilot/permissions-drift.test.ts` (3 tests, all green).
+
+---
+
+## I8 — FakeDaemon ships unresolved TODO + missing PermissionResponseMessage
+
+**Disposition:** ACCEPT and fix.
+
+**Reasoning:** The stale TODO was valid during initial construction (Carter hadn't merged the pipe protocol). As of Phase 6, ADR-8 is final and ADR-9 is accepted — the canonical types are locked in `src/bridge/extensionBridge.ts`. The TODO is now false advertising, and the missing ADR-9 types (`PermissionRequestMessage`, `PermissionCancelledMessage`, `PermissionResponseMessage`) mean the FakeDaemon cannot be used to write ADR-9 integration tests without casting. That blocks Category 2 and 3 permission test scenarios.
+
+**Audit result (InboundMessage — extension → daemon):**
+| Type | In FakeDaemon before | Status |
+|---|---|---|
+| `hello` (HelloMessage) | ✅ | OK |
+| `pong` (PongMessage) | ✅ | OK |
+| `stream` (StreamChunkMessage) | ✅ | OK |
+| `stream.error` (StreamErrorMessage) | ✅ | OK |
+| `session.event` (SessionEventMessage) | ✅ | OK (added Phase 6 Day 2) |
+| `permission.request` (PermissionRequestMessage) | ❌ | **ADDED** |
+| `permission.cancelled` (PermissionCancelledMessage) | ❌ | **ADDED** |
+
+**Audit result (OutboundMessage — daemon → extension):**
+| Type | In FakeDaemon before | Status |
+|---|---|---|
+| `ping` (PingMessage) | ✅ | OK |
+| `session.registered` (SessionRegisteredMessage) | ✅ | OK |
+| `inject` (InjectMessage) | ✅ | OK |
+| `permission.response` (PermissionResponseMessage) | ❌ | **ADDED** |
+
+**Wire shapes confirmed** to match `extensionBridge.ts` field-for-field. Types defined locally in FakeDaemon (not imported from production) — maintains test isolation, consistent with existing pattern.
+
+**TODO removed.** The contracts are now aligned; the TODO was no longer describing open work.
+
+**Fix delivered:** `tests/helpers/FakeDaemon.ts` updated (+3 types, +3 union members, TODO removed).
+
+---
+
+## Integration test hang — discovery
+
+**Not a finding I was assigned**, but surfaced during `npx vitest run` (full suite): `tests/integration/pairing-flow.test.ts` hangs indefinitely. This is pre-existing — nothing in my changes touches integration test infrastructure or the pairing flow. All 340 non-integration tests pass cleanly.
+
+**Recommendation:** Escalate to Carter or Noble Six. The pairing-flow integration test is likely blocking on a real named-pipe connection that cannot be established in the CI environment.
+
+---
+
+## Verification Summary
+
+| Check | Result |
+|---|---|
+| `npx tsc --noEmit` | ✅ clean |
+| `npm run lint` | ✅ clean (0 warnings) |
+| `npx vitest run` (excluding integration) | ✅ 340 passed / 4 skipped / 0 failed |
+| New I3 drift tests | ✅ 3/3 green |
+| Existing FakeDaemon-dependent tests | ✅ all green (no regressions) |
+
+
+---
+
+# ADR-9 Implementation Reconciliation — Kat → Jun
+
+**Date:** 2026-05-22  
+**From:** Kat (Bot Dev)  
+**To:** Jun (Test Author)  
+**Re:** 3 ASSUMES IMPLEMENTATION flags from Jun's revised test catalog (merged cb7f5fc)
+
+---
+
+## K2 — Constructor Injection of AbortController
+
+**Verdict: Implementation correct. Catalog assumption overstated — no code change.**
+
+The shipped `BridgeSession` self-constructs `_sessionAbortController` as a private `readonly` field. Jun assumed direct injection was required for C2-01–C2-03 abort tests. It is not. The `_wirePermissionHandlers` method attaches a `session.disconnected` listener that calls `_sessionAbortController.abort()` internally. Jun's `FakeBridge` already has (per the test doubles contract) `emitDisconnected(sessionId)` — emitting `session.disconnected` on the fake bridge triggers the abort within one event loop turn, exactly as C2-01 requires. The test doubles contract is sufficient; direct AbortController injection would be white-box overreach and is not needed.
+
+**Action for Jun:** Revise the C2-01–C2-03 test setup. Use `fakeBridge.emitDisconnected(sessionId)` (or the equivalent `bridge.emit('session.disconnected', sessionId)` call) instead of `abortController.abort()`. Remove the "accepts AbortController at construction" assumption from the test catalog summary.
+
+---
+
+## K4 — Per-Session AllowAlwaysStore Instantiation
+
+**Verdict: Real bug. Catalog correct. Code changed — minimal diff.**
+
+The shipped implementation created a single `InMemoryAllowAlwaysStore` in `main.ts` and passed it to `BridgeSessionFactory`, which reused the same instance for every `BridgeSession`. This violated ADR-9 §Q2 ("per-session in-memory") and the C6-04 store-isolation security contract. Jun's test would have caught cross-session leakage correctly.
+
+**Fix applied:**
+- `src/bridge/bridgeSessionFactory.ts`: Removed `allowAlwaysStore?: AllowAlwaysStore` constructor param. `_makeSession()` now creates `new InMemoryAllowAlwaysStore()` per session when wiring permission options. Also updated the import (removed `AllowAlwaysStore` type import; added `InMemoryAllowAlwaysStore` concrete import).
+- `src/main.ts`: Removed the shared `allowAlwaysStore` constant and its `InMemoryAllowAlwaysStore` import. `BridgeSessionFactory` now takes only `bridge`.
+
+**Tests:** 321 passed / 4 skipped / 0 failed. tsc clean. lint clean.
+
+**Note for Phase 7:** The per-session seam is now inside `_makeSession`. When Phase 7 introduces a persisted store, refactor `BridgeSessionFactory` to accept a `storeFactory: () => AllowAlwaysStore` parameter (factory-of-factories pattern) rather than a shared instance.
+
+---
+
+## K5 — Named Classifier Exports from extension.mjs
+
+**Verdict: Real gap. Catalog correct. Code changed — minimal diff.**
+
+`isDestructive(toolName)` and `isKnownSafe(toolName)` were defined as module-private functions in `extension.mjs` — no `export` keyword. Jun cannot import them in C4-05 and C6-05 classifier unit tests without named exports.
+
+**Fix applied:**
+- `extension.mjs`: Added `export` keyword to both `isDestructive` and `isKnownSafe`.
+
+**Tests:** Full suite still 321 passed / 4 skipped / 0 failed. tsc and lint clean.
+
+---
+
+## 4th Issue — Surfaced: Top-Level Side Effects in extension.mjs
+
+**Not flagged by Jun, but will block test writing if unaddressed.**
+
+`extension.mjs` calls `main().catch(...)` at the module top level (line ~583). When Jun does `import { isDestructive, isKnownSafe } from '../extension.mjs'` in a vitest test, the module executes: `joinSession()` is called (throws or hangs without CLI context), `runConnectionLoop()` fires (attempts named pipe connect), and process signal handlers are registered.
+
+**Required test setup pattern for Jun:**  
+Before any `import` of `extension.mjs` in test files, use `vi.mock` to stub the side-effecting modules:
+
+```js
+// At the top of the test file — hoisted by vitest
+vi.mock('@github/copilot-sdk/extension', () => ({
+  joinSession: vi.fn().mockResolvedValue({ onPermissionRequest: vi.fn(), log: vi.fn() }),
+}));
+vi.mock('node:net', () => ({
+  createConnection: vi.fn(() => ({
+    setEncoding: vi.fn(),
+    on: vi.fn(),
+    write: vi.fn(),
+    destroy: vi.fn(),
+    destroyed: false,
+  })),
+}));
+```
+
+With these mocks in place, `main()` completes without error and `runConnectionLoop()` is neutered (the mock socket never fires `connect`). The classifier functions (`isDestructive`, `isKnownSafe`) are then importable and testable in isolation.
+
+If this setup is too noisy, an alternative is to extract the two classifier functions into a separate `src/bridge/extensionClassifier.mjs` (no side effects, no SDK imports) and have `extension.mjs` import from there. That extraction is out of scope for this reconciliation pass — surfacing it here for Jun and Noble Six to decide.
+
+---
+
+## Summary for Jun
+
+| Flag | Verdict | Code Change | Jun Action Required |
+|---|---|---|---|
+| K2 constructor injection | Implementation correct | None | Revise C2-01–C2-03: use `fakeBridge.emitDisconnected()` not `.abort()` |
+| K4 per-session store | Bug — catalog correct | ✅ Fixed | None — C6-04 will pass as written |
+| K5 named exports | Gap — catalog correct | ✅ Fixed | Add vi.mock setup for side effects (see §4 above) |
+| Side-effects (4th) | New issue — unblocks C4-05/C6-05 | None | Adopt mock setup pattern OR request classifier extraction |
+
+**All 32 vitest scenarios are unblocked.** Jun may proceed writing the test files.
+
+
+---
+
+# ADR-10: Named Pipe Authentication (Pipe ACL + Per-Install Token)
+
+**Status:** PROPOSED  
+**Author:** Noble Six (Lead / Architect)  
+**Date:** 2026-05-22  
+**Relates to:** ADR-3 (pipe), ADR-5 (daemon runs as logged-in user), ADR-8 (wire protocol)
+
+## Problem
+
+`\\.\pipe\reach-bridge` is created with default Windows pipe security. Any
+local-user process can connect, impersonate a sessionId, intercept or forge
+bridge messages. Single-user scope (ADR-5) limits blast radius but does not
+eliminate local-privilege-escalation vectors from malicious local software.
+
+## Decision: Option A+B (Token + SID Verification)
+
+Combine both defenses for defense-in-depth:
+
+1. **Pipe name randomization + token file** (Option A) — primary auth.
+2. **Client SID verification** (Option B) — belt-and-suspenders.
+
+## Token File Schema
+
+Path: `%LOCALAPPDATA%\reach\bridge-auth.json`  
+ACL: Owner-only read/write (inherited from `%LOCALAPPDATA%` or set explicitly).
+
+```json
+{
+  "pipeName": "reach-bridge-a1b2c3d4e5f6a7b8",
+  "token": "hex-encoded-32-bytes",
+  "createdAt": "2026-05-22T22:47:00Z"
+}
+```
+
+- `pipeName`: random suffix (16 hex chars). Full path: `\\.\pipe\{pipeName}`.
+- `token`: 32-byte crypto-random, hex-encoded (64 chars).
+- File is regenerated on every daemon startup. Stale file = stale pipe.
+
+## Pipe Name Format
+
+`\\.\pipe\reach-bridge-{16-hex-random}`
+
+## Hello Message Schema Change
+
+Existing `hello` gains a required `authToken` field:
+
+```json
+{
+  "type": "hello",
+  "sessionId": "abc-123",
+  "authToken": "64-char-hex-token"
+}
+```
+
+Daemon MUST validate `authToken` against the in-memory token before sending
+`session.registered`. On mismatch: log warning, close the pipe connection
+immediately (no error message sent — avoid oracle).
+
+## Daemon Validation Logic
+
+1. On startup: generate 32 random bytes → hex-encode → write `bridge-auth.json`
+   with restrictive ACL. Create pipe with randomized name.
+2. On client connect: call `GetNamedPipeClientProcessId` → `OpenProcessToken`
+   → compare token user SID to daemon's own user SID. Reject if mismatch.
+3. On `hello` message: compare `authToken` field to in-memory token.
+   Reject (close connection) if missing or mismatched.
+4. Only after both checks pass → proceed with `session.registered` flow.
+
+## Consequences
+
+- Extension must read `bridge-auth.json` on startup to discover pipe name + token.
+- Reconnect (ADR-6) must re-read file if pipe name changed (daemon restarted).
+- `permissionId` hijack concern becomes moot — unauthenticated connections are
+  rejected before any session interaction.
+- Test helpers (FakeDaemon) need updated to generate/consume token file.
+
+
+---
+
+# Review Cycle 1 — Noble Six Dispositions
+
+**Author:** Noble Six  
+**Date:** 2026-05-22
+
+## B3: Named pipe has no ACL or authentication — RESOLVED
+
+Decision: Option A+B (token + SID verification). Written as ADR-10 in
+`noble-six-pipe-auth.md`. Carter is unblocked to implement.
+
+## I4: Safety parity regression (bridge auto-approves unknown tools) — FIXED
+
+Root cause: `extension.mjs` line 385 used `isKnownSafe(tool) || !isDestructive(tool)`
+which auto-approved any tool NOT in the destructive list, including unknowns.
+The SDK (`impl.ts:65-66`) denies unknowns. Fixed to match SDK: only known-safe
+auto-approves; unknowns get `denied`; destructive goes to daemon prompt.
+
+## I7: install.ts scope concern — ACKNOWLEDGED
+
+No code action. Process note written to `noble-six-review1-process.md`.
+
+## Minor: BridgeSessionFactory coupling to concrete ExtensionBridge — DEFERRED (YAGNI)
+
+No second transport exists or is planned for Phase 6/7. Extracting a
+`BridgeTransportPort` interface now adds indirection without a consumer.
+Decision: defer until a second transport materializes. If Phase 7+ adds
+TCP/WebSocket, extract the port at that time.
+
+## Minor: permissionId hijack defense-in-depth — SUBSUMED BY B3
+
+Once ADR-10 pipe auth is implemented, unauthenticated connections are rejected
+before any session interaction. The permissionId hijack vector is eliminated
+at the transport layer. No additional application-layer defense needed.
+
+
+---
+
+# Review Cycle 1 — Process Improvement Note
+
+**Author:** Noble Six  
+**Date:** 2026-05-22  
+**Finding:** I7 — `install.ts` service-account refactor mixed in with Phase 6
+
+## Disposition
+
+The `install.ts` refactor (Kat, ADR-5) was correctly scoped to ADR-5's decision
+but shipped in the same branch as Phase 6 bridge work. This made the diff larger
+than necessary for reviewers.
+
+## Process Improvement (Future PRs)
+
+- Orthogonal refactors that serve an ADR but don't depend on other Phase 6 code
+  should ship in a separate PR, merged first, so the main Phase 6 PR is smaller.
+- Not actionable retroactively — the code is correct, tested, and merged.
+

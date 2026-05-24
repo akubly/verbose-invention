@@ -79,6 +79,26 @@ The 5 scenarios in Category 2 all assume a `timeoutMs`-based auto-deny after N s
 
 ---
 
+## Phase 6 Day 6 (2026-05-22) — ADR-9 32-Scenario Test Suite (this task)
+
+**Deliverables (all 4 files, all 32 tests passing):**
+- `tests/bridge/permission-prompting.test.ts` — 11 tests (Categories 1, 3, 7)
+- `tests/bridge/permission-abort.test.ts` — 6 tests (Category 2; C2-01 is no-timeout keystone)
+- `tests/bridge/permission-edge.test.ts` — 8 tests (Categories 4, 5; classifier unit + no-timer regression)
+- `tests/bridge/permission-bypass.test.ts` — 7 tests (Category 6; AllowAlwaysStore, bypass, scanner)
+
+**Total suite:** 353 passed / 4 skipped / 0 failed ✅
+
+**Key learning — sinon fake-timer `>` vs `>=` boundary:**
+When a `setInterval` fires at exactly its scheduled tick `T`, sinon sets `Date.now() = T` inside the callback. If the warning condition is `now - createdAt > TEN_MINUTES_MS` (strict `>`), a prompt registered at `createdAt = 0` will NOT warn on the first interval tick (T = TEN_MINUTES_MS), because `TEN_MINUTES_MS > TEN_MINUTES_MS` is false. The scanner warns on the **second** tick (T = 2 × TEN_MINUTES_MS). Fix: advance `2 * TEN_MINUTES_MS + 1` ms (not `TEN_MINUTES_MS + 1`).
+
+**Key learning — microtask ordering with fake timers:**
+`await Promise.resolve(); await Promise.resolve()` before `vi.advanceTimersByTimeAsync(ms)` is the correct pattern to ensure async mocks (e.g., `vi.fn().mockResolvedValue(...)`) have resolved and populated shared state before the interval callback fires. The microtask queue drains in FIFO order, so two `await Promise.resolve()` calls are sufficient for one `await sendMessage()` hop with an already-resolved mock.
+
+**K2 pattern confirmed:** Driving session abort via `fakeBridge.emitDisconnected(sessionId)` (not by injecting the private `_sessionAbortController`) is the correct approach. The `session.disconnected` listener calls `_sessionAbortController.abort()` internally; tests verify externally observable effects (callbacks resolving false, pending map clearing).
+
+---
+
 ## Learnings
 
 **Architecture:** Streaming UX requires request correlation via `requestId` (not single-shot response). ADR-8 canonical schema locks this shape.
@@ -120,6 +140,26 @@ Kat implemented K1–K6 per ADR-9 spec. Jun's revised 32-scenario catalog assume
 
 **Next:** Await Kat's reply in her history.md confirming all 3 points match implementation. Once verified, Jun writes vitest files for all 32 scenarios (Categories 1–7).
 
+---
 
+## Phase 6 Review Cycle 1 (2026-05-22) — I3 drift detection + I8 FakeDaemon schema
+
+**Deliverables:**
+- `tests/copilot/permissions-drift.test.ts` — 3 drift-detection assertions (I3)
+- `tests/helpers/FakeDaemon.ts` — PermissionRequestMessage, PermissionCancelledMessage, PermissionResponseMessage added; TODO removed (I8)
+
+**Commit:** 328f48a on branch `squad/review1-phase6-adr9-fixes`
+
+**Verification:** tsc clean, lint clean, 340 passed / 4 skipped ✅
+
+**Key learnings:**
+
+**Drift detection pattern for dual-source constants:** When two files (one TypeScript, one plain JS) must maintain identical sets, the fastest enforcement is a regex-parse test — not a shared module. Parse the JS file as raw text, extract quoted string literals between the `new Set([...])` brackets, compare to the TypeScript export. The test lives in the TypeScript test suite and fails at `vitest run` time if the sets diverge. This pattern applies anywhere a `.mjs`/`.js` file must mirror a `.ts` constant.
+
+**FakeDaemon completeness audit:** A fake that's missing union members from the real type is not just incomplete — it's actively misleading. Tests that call `sendTo(sessionId, { type: 'permission.response', ... })` would have required an `as OutboundMessage` cast to compile, hiding the gap. The rule: when new wire message types land in production, audit ALL test doubles in the same commit. The FakeDaemon's `OutboundMessage` and `InboundMessage` unions must mirror `extensionBridge.ts` exactly.
+
+**Discovery — integration test hang:** `tests/integration/pairing-flow.test.ts` hangs on a real named-pipe connection in the CI environment. Pre-existing; not caused by any Phase 6 changes. Escalated via dispositions inbox.
+
+---
 
 Earlier learnings (Phases 1–5, Phase 6 Spike methodology) in `history-archive.md`.

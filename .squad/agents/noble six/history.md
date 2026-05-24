@@ -90,17 +90,50 @@ Carter and Jun independently designed different message protocols (both valid pe
 
 ## Learnings
 
+**2026-05-22 — Protocol v3 uses fire-and-forget notifications for permission requests; there is no CLI-side clock ticking.**  
+In Copilot SDK v3, the CLI dispatches `void this._executePermissionAndRespond(...)` — a fire-and-forget broadcast notification. No open JSON-RPC request is held on the CLI side. There is no RPC-level deadline for the daemon to beat. The SDK awaits `handlePendingPermissionRequest` asynchronously after the handler resolves, however long that takes. This is architecturally significant: v2 used `connection.onRequest` (synchronous RPC), which in theory could have a CLI-imposed RPC timeout. v3 eliminated that risk. When verifying SDK timeout behavior, the protocol dispatch pattern (notification vs. synchronous RPC) is the first thing to check.
+
+**2026-05-22 — SDK regression check pattern: grep near the handler call site, not for a constant.**  
+The absence of a `permissionTimeout` constant doesn't guarantee absence of a timeout — the timeout could be inlined. The correct check is: `grep -n "setTimeout\|Promise.race\|AbortController" session.js | grep -A2 -B2 "permissionHandler\|executePermissionAndRespond"`. If nothing matches near the handler invocation, no timeout exists. Carter's probe test (`tests/exploratory/sdk-permission-timeout.test.ts`) is the regression harness — run it against new SDK versions to catch any introduced timeout before it reaches production.
+
+**2026-05-22 — No-timeout is architecturally valid for permission prompts; the timeout is a proxy for uncertainty, not a technical requirement.**  
+A `permissionCallback` Promise that resolves in 3 days is semantically identical to one that resolves in 3 seconds — the SDK awaits both. During the wait: event loop runs, heartbeat fires, other sessions unaffected. The auto-deny-on-timeout failure mode (wrong decision made without the user) is worse than indefinite wait for async users. One concrete blocker: Copilot SDK's internal `onPermissionRequest` timeout, if any. `setTimeout(fn, Infinity)` fires immediately in Node.js (coercion to 0) — no-timeout requires removing the timer entirely, not passing Infinity. AbortSignal on disconnect (Q3) is mandatory infrastructure for no-timeout mode.
+
+**2026-05-22 — Telegram inline keyboard buttons work indefinitely; the 15-second window is for `answerCallbackQuery` FROM THE TAP, not from message send.**  
+A prompt sent Friday is fully functional Monday. Each button tap generates a fresh `callback_query_id`. `answerCallbackQuery` (loading indicator dismissal) has a ~15s window from the tap, but our code wraps it in `.catch(() => {})` anyway. The button routing and `callback_query:data` event are not affected by message age. This means no-timeout works at the Telegram layer with no modifications.
+
+**2026-05-22 — Inline keyboard (A) beats reply keyboard (B) on concurrent-prompt architecture, not implementation cost.**  
+Reply keyboard is one keyboard per conversation. N concurrent permission prompts require N independently resolvable affordances — inline keyboard scales trivially (each message has its own buttons + requestId); reply keyboard cannot support this at all. The crash-recovery failure mode (leaked keyboard on process death with no automatic recovery) is a second disqualifier. B has one genuine advantage (overlay visibility regardless of scroll position) that doesn't outweigh these structural problems. When evaluating UX options, check data model compatibility with N-concurrent use cases before evaluating single-prompt ergonomics.
+
+**2026-05-22 — "Allow-always" store should be an injectable interface from day one, even when Phase 6 ships in-memory.**  
+The right eventual answer for real users is per-tool-global-persisted (survives daemon restarts). The cost of designing an `AllowAlwaysStore` interface at the start is ~10 extra LOC; the cost of retrofitting it later (after `BridgeSession` has a hardcoded `Set<string>`) is medium. Design for replaceability when you know the upgrade path exists.
+
+**2026-05-22 — Post-timeout behavior determines whether a generous timeout is safe.**  
+A clean post-timeout outcome (auto-deny, session continues, Telegram prompt edits in-place, late taps gracefully rejected) means timeout duration is a pure UX tuning knob — there is no "stuck state" risk from a longer timeout. Establish the post-timeout invariants before debating the number. The right timeout (120s) follows from Aaron's actual usage pattern (multitasking, async), not from the default in the existing implementation (60s was set without this knowledge).
+
+**2026-05-22 — `allow-always` scope: per-session in-memory is the right default for solo dogfooding.**  
+A `Set<toolName>` on `BridgeSession` instance is the correct Phase 6 default: zero disk I/O, natural expiry on session boundary, upgrade path to persisted (per-tool-global) is medium cost when the user actually asks for it. Do not persist until Aaron explicitly requests it.
+
+**2026-05-22 — Wire protocol should be UX-agnostic; daemon owns UX shape.**  
+`permission.request` on the pipe needs only `{toolName, args, permissionId}`. The daemon decides whether to show inline buttons, reply keyboard, or free-text. This means ADR-9's bridge path can reuse `promptUserForPermission()` from `prompt.ts` with zero UX changes — the function already handles correlation, cleanup, and timeout-to-outcome.
+
+**2026-05-22 — `AbortSignal` on `PermissionPrompter.prompt()` should be added before Kat ships BridgeSession.**  
+It's a non-breaking optional parameter (~15 LOC across 3 files). Without it, a pending `promptUserForPermission()` stays open in `pendingByRequestId` for up to `timeoutMs` after session disconnect, even if BridgeSession races against it internally. The cost of retrofitting it after the interface is shipped is medium (all callers must update). Add it now.
+
+**2026-05-22 — The timeout discrepancy between ADR-9 (30s) and the existing `prompt.ts` (60s) is a real inconsistency to fix.**  
+ADR-9 was drafted with 30s; `promptUserForPermission()` already defaults to 60s. Bridge sessions and SDK sessions sharing a topic should behave identically on timeout. ADR-9 must be amended to `timeoutMs = 60_000` daemon / `65_000` extension before Kat implements. Always check the existing implementation's defaults before proposing new timeout values in an ADR.
+
+**2026-05-22 — Permission prompting is a two-sided async protocol.**  
+The extension holds the SDK `permissionCallback` open as a suspended `Promise`; the daemon must resolve it remotely via a request/response pair over the existing pipe. Key insight: the extension's local timeout (e.g., 30s) must be slightly longer than the daemon's user-facing grace period (25s), so `permission.response` always beats the extension's auto-fire. The daemon abort-on-disconnect invariant is critical: any pending `PermissionPrompter.prompt()` must be cancelled when `session.disconnected` fires, or the Telegram prompter can remain open for a dead session indefinitely.
+
+**2026-05-22 — In-stream interleaving is the right pattern for control-plane messages.**  
+Interleaving `permission.request`/`permission.response` with `stream` chunks on the same pipe (Alt C) preserves ADR-3's ordering guarantee at the cost of BridgeSession complexity. The ordering guarantee is the deciding factor: `permission.request` for tool N is guaranteed to arrive before stream output from tool N, because the SDK's `permissionCallback` is synchronous-before-execution. A separate pipe (Alt A) loses this guarantee and doubles reconnect complexity.
+
 **2026-05-21 — Triage: extension-side work can leap ahead of the spec.**  
 Phase 6 Day 2 triage revealed that `extension.mjs` had already implemented full per-chunk streaming (`handleInject`) — originally spec'd as a stub until Days 3–4. The code was complete, self-contained, and green. Lesson: when a deliverable is "ahead of plan" and passes tests, commit it. The completed extension-side streaming reduced Kat's Days 3–4 scope to relay/daemon-side only, not both sides. **Don't revert work that already passes — triage it and update the plan.**
 
 **2026-05-21 — Adapter > rewrite when the abstraction already fits.**  
 Days 3–4 relay integration choice: `relay.ts` was already written against `CopilotSession.send() → AsyncIterable<string>`. The bridge emits `stream` events. A `BridgeSession` adapter (~60 LOC) bridges the gap and inherits 140+ LOC of throttle/edit/fallback logic at zero cost. The principle: when an existing abstraction's shape matches the new integration point, use an adapter before considering a rewrite.
-
-**2026-05-22 — Review Cycle 1: safety-parity regressions hide at abstraction boundaries.**  
-The bridge (`extension.mjs`) auto-approved unknown tools because the condition combined `isKnownSafe || !isDestructive` — logically correct for "safe or non-destructive" but semantically wrong for "unknown." The SDK in-process path (`impl.ts`) had the stricter three-branch logic. Lesson: when duplicating classification logic across a process boundary, match the branch structure exactly, not just the intended behavior for known inputs. Unknown inputs are the adversarial case.
-
-**2026-05-22 — Defense-in-depth for IPC: randomize + authenticate + verify.**  
-Named pipe security requires all three layers: (1) randomized pipe name to prevent blind connection, (2) token exchange to authenticate the client, (3) SID verification to bind to the expected user. Any single layer can be bypassed; all three together make local exploitation impractical for the single-user threat model.
 
 ---
 

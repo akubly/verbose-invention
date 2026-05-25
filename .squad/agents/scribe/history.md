@@ -32,4 +32,4 @@ Reach is Aaron's personal mobile bridge for Copilot CLI. I'm Scribe — I keep `
 
 ## Learnings
 
-<!-- Append learnings below -->
+**2026-05-25 — Agent folder naming:** Agent folder paths use the casting registry KEY (e.g., 'noble six' with space), NOT a slugified persistent_name. Always look up `.squad/casting/registry.json` keys before writing to `.squad/agents/{name}/`.

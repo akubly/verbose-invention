@@ -139,6 +139,68 @@ Days 3–4 relay integration choice: `relay.ts` was already written against `Cop
 
 ---
 
+## Phase 6 Live Dogfooding Preparation (2026-05-24)
+
+**Date:** 2026-05-24T04:10:11Z  
+**Outcome:** Checklist prepared; ready for live phone dogfooding tonight.
+
+**Status before dogfooding:**
+- ✅ All 410 tests green (32 test files, 4 skipped)
+- ✅ Build succeeds, tsc clean, lint clean
+- ✅ Phase 6 merged to main (commit c2c347f), workflows activated
+- ✅ ADR-9 hardened against 11 edge cases (eviction, TTY, backpressure, etc.)
+- ✅ Named pipe bridge listening, no startup errors
+
+**Critical Findings for Dogfooding:**
+1. **No production blockers identified.** Code is ready for end-to-end validation.
+2. **ADR-10 (pipe auth) is documented but not yet implemented.** Current code uses randomized pipe name only, no token validation. Not a blocker for solo dogfooding, but marks the pre-production gap.
+3. **Inbox has 9 unmerged files** awaiting Scribe (cloud-review findings, reconciliation notes). No new issues surfaced; all are pre-dogfood housekeeping.
+4. **Dogfood gate criteria (implicit):** After tonight's end-to-end test, success = permission prompting works over real pipe, no-timeout verified, concurrent prompts don't interfere, safe/destructive tool classification correct in extension.
+
+**Dogfooding Artifacts:**
+- `.copilot/reach-dogfood-checklist.md` — 14.7 KB, 250-line checklist with 8 sections:
+  1. Pre-flight checks (env vars, Telegram setup, bridge auth)
+  2. Build & startup sequence (copy-pasteable commands)
+  3. Phone-side validation (chat-ID guard, session lookup, prompt round-trip)
+  4. ADR-9 scenarios (6 concrete prompts: safe tool, destructive allow, deny, allow-always, no-timeout, concurrent)
+  5. Known gaps & risks (9 inbox items, ADR-10 not yet impl'd, runtime surprises)
+  6. Rollback & diagnostics (clean kill, inspect state, hard reset)
+  7. Success criteria (8-point validation checklist)
+  8. Appendix (command reference)
+
+**Next Session Actions (if dogfooding succeeds):**
+1. Append findings to history.md under "## Dogfooding Results"
+2. Decide on Phase 7 scope (extend classifier? implement persistent store? ship ADR-10?)
+3. Scribe drains 9 inbox files into decisions.md
+4. Plan for production readiness (telemetry, monitoring, rollback procedure)
+
+---
+
+## /afk Realignment Analysis (2026-05-24)
+
+**Date:** 2026-05-24T20:12:39-07:00  
+**Outcome:** Gap analysis of CLI-initiated `/afk`/`/back` story vs. current Telegram-initiated architecture. Identified 4 missing capabilities, 3 open architectural questions. Recommended pausing Phase 6 tail work to spike ADR-11 and pivot to Phase 7 = `/afk` MVP. Written to `decisions/inbox/noble-six-afk-realignment.md`.
+
+**2026-05-24T22:19-07:00:** Surfaced 16 remaining opens after Aaron's /afk answers — 3 need his call, 1 needs a research spike, 12 have recommendations. Written to `decisions/inbox/noble-six-afk-mode-opens.md`.
+
+**2026-05-24T22:40-07:00:** Drafted ADR-11 (/afk Mode + Multi-Session Mirror Bridge) — 12 sections, 8 new message types, full protocol spec. Written to `decisions/inbox/noble-six-adr11-afk-mode.md`.
+
+**2026-05-24T22:50-07:00:** Amended ADR-11 §3 and §12 Q1 — skill spike resolved: SKILL.md infeasible (prompt-augmentation only), entry point is SDK `commands` field on `JoinSessionConfig` in extension.mjs.
+
+---
+
+## 2026-05-25T06:19:14Z — Phase 7 Orchestration Complete
+
+**Session:** Phase 7 implementation kickoff (Carter-4 + Kat-3 + Jun-1)
+
+**Outcome:** Phase 7 protocol + implementation complete across all three agents. ADR-11 §3–4 decisions locked and validated. Orchestration logs written. Decisions merged to canonical decisions.md.
+
+**Decisions merged:** Carter (pipe types), Kat (mode state), Jun (test cases).
+
+**Status:** All ADR-11 §3–4 protocol decisions locked. Ready for Phase 7 code review + Noble Six validation gate. Decision logs: `.squad/orchestration-log/{2026-05-25T06-19-14Z-carter-4, kat-3, jun-1}.md`.
+
+---
+
 ## Archive
 
 Full Phases 1–5 + detailed Phase 6 spike documentation in history-archive.md.

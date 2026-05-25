@@ -26,7 +26,7 @@
  *     { "type": "relay.command", "sessionId": "...", "command": "/clear", "args": [] }
  *
  *   Outbound (extension → daemon):
- *     { "type": "hello", "sessionId": "...", "sessionName": "..." }
+ *     { "type": "hello", "sessionId": "...", "sessionName": "...", "cwd": "...", "authToken": "..." }
  *     { "type": "pong", "id": "<uuid>", "sessionId": "..." }
  *     { "type": "afk.request", "sessionId": "..." }
  *     { "type": "back.request", "sessionId": "..." }
@@ -479,6 +479,14 @@ async function handleMirrorInput(msg) {
     return;
   }
 
+  /** ADR-11: daemon caps mirror.input at 4096 chars; extension enforces the same limit
+   *  so a rogue or legacy daemon cannot flood the SDK stream pipeline. */
+  const MIRROR_INPUT_MAX_CHARS = 4096;
+  if (text.length > MIRROR_INPUT_MAX_CHARS) {
+    log('warn', `mirror.input: text exceeds ${MIRROR_INPUT_MAX_CHARS} chars (${text.length}) — dropping`);
+    return;
+  }
+
   showCliMessage(`📱 Telegram: ${text}`);
   await streamSdkResponse(text, `mirror-${randomUUID()}`, 'mirror.input');
 }
@@ -671,7 +679,7 @@ function connectToDaemon() {
       // ADR-2: push-based registration — first thing sent on connect.
       // Re-sent on every reconnect (ADR-6 hello-resend rule, ADR-8 §1).
       // ADR-10: include authToken from bridge-auth.json.
-      sendToDaemon({ type: 'hello', sessionId: SESSION_ID, sessionName: SESSION_NAME, authToken: pipeAuth.token });
+      sendToDaemon({ type: 'hello', sessionId: SESSION_ID, sessionName: SESSION_NAME, cwd: process.cwd(), authToken: pipeAuth.token });
       registered = true;
     });
 
@@ -783,11 +791,11 @@ function sendModeRequest(type) {
   try {
     const sent = sendToDaemon({ type, sessionId: SESSION_ID });
     if (!sent) {
-      showCliMessage('⚠ Reach daemon not running', 'warning');
+      showCliMessage('⚠ Reach daemon not running — start it first.', 'warning');
     }
   } catch (err) {
     log('error', `mode request failed: ${err instanceof Error ? err.message : String(err)}`);
-    showCliMessage('⚠ Reach daemon not running', 'warning');
+    showCliMessage('⚠ Reach daemon not running — start it first.', 'warning');
   }
 }
 

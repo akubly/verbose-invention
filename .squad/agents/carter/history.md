@@ -181,3 +181,25 @@ Audited bridge and pipe protocol for /afk user story; identified 4 new message t
 
 **[2026-05-24] Scribe log entry:** Skill-spike verdict: NO (HIGH). SDK commands field is correct surface for /afk. Authored protocol gap analyses. Permission prompt diagnostics deployed. Await Aaron rerun.
 
+---
+
+## 2026-05-24T23:19:14-07:00 — Phase 7 Pipe Types + Extension Commands
+
+- Protocol union owner: `src/bridge/extensionBridge.ts` (`InboundMessage` / `OutboundMessage`); test mirrors are `tests/helpers/FakeDaemon.ts` and `tests/helpers/FakeExtensionClient.ts`.
+- Added ADR-11 pipe surface: `afk.request`, `back.request`, `afk.activated`, `back.confirmed`, `mode.changed`, `mirror.input`, `relay.command`, and amended `session.registered` with optional `mode` + `topicId`.
+- New `BridgeEmitter` channels for Kat: `afk.request(sessionId)` and `back.request(sessionId)`. Dispatcher validates the frame `sessionId` against the registered pipe session before emitting.
+- `extension.mjs` registers SDK slash commands `/afk` and `/back` via `joinSession({ commands })`; disconnected pipe path shows `⚠ Reach daemon not running`.
+- `extension.mjs` handles `mirror.input` by logging `📱 Telegram: {text}` and feeding text through the existing SDK send/ADR-8 stream path with generated `mirror-${uuid}` requestIds.
+- Full wire-schema rationale and Kat/Jun handoff notes are in `.squad/decisions/inbox/carter-phase7-pipe-types.md`.
+- Validation: `npx tsc --noEmit`, `npx vitest run`, and `npm run lint` all passed after persona-review fixes.
+
+## 2026-05-25T06:19:14Z — Phase 7 Orchestration Complete
+
+**Session:** Phase 7 implementation kickoff (Carter-4 + Kat-3 + Jun-1)
+
+**Outcome:** Protocol pipe types (ADR-11 §4) + extension.mjs slash command infrastructure complete. Full suite + lint green. Orchestration log: `.squad/orchestration-log/2026-05-25T06-19-14Z-carter-4.md`.
+
+**Decisions merged to `.squad/decisions.md`:** `carter-phase7-pipe-types.md` — protocol locations, event channels, scope boundaries.
+
+**Ready for:** Kat integration (daemon-side AFK state machine consumes BridgeEmitter events) + Jun testing (contract tests verify round-trip message flow).
+

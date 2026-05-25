@@ -2739,3 +2739,92 @@ If NO-PASS:
 **Next:** Scribe merges this into decisions.md post-dogfood with outcome notes.
 
 
+
+---
+
+# ADR-11 Phase 7 Implementation: Pipe Types, AFK Mode, Tests
+
+## Carter Phase 7 — Pipe Types + Slash Commands
+
+# Carter Phase 7 — Pipe Types + Slash Commands
+
+**Date:** 2026-05-24T23:19:14-07:00
+
+## Protocol locations
+
+- Canonical daemon-side wire protocol union lives in `src/bridge/extensionBridge.ts` (`InboundMessage` / `OutboundMessage`).
+- Test-double protocol mirrors live in `tests/helpers/FakeDaemon.ts` and `tests/helpers/FakeExtensionClient.ts` so Jun's pipe contract tests can round-trip the same shapes without real named pipes.
+
+## Event channels exposed for Kat
+
+- `BridgeEmitter` now exposes `afk.request` with listener shape `(sessionId: string) => void`.
+- `BridgeEmitter` now exposes `back.request` with listener shape `(sessionId: string) => void`.
+- `ExtensionBridge` validates that the request frame `sessionId` matches the registered pipe session before emitting either event.
+- `afk.activated`, `back.confirmed`, and `mode.changed` are typed in `OutboundMessage`; Kat can send those through existing `ExtensionConnection.send(...)` without redefining the shapes.
+
+## Carter scope boundary
+
+- Daemon-side mode state machine, topic creation, and mirror generation remain Kat's scope.
+- `relay.command` is an extension-side log-only stub as planned.
+- `mirror.input` handling generates an internal `mirror-${uuid}` requestId so the existing ADR-8 `stream` path can carry the assistant response without changing the `mirror.input` envelope.
+
+
+---
+
+## Kat Phase 7 Mode State Notes
+
+# Kat Phase 7 Mode State Notes
+
+Date: 2026-05-24T23:19:14-07:00
+
+## Decisions
+
+- Mode state lives in `AfkModeController` as daemon memory only: `{ active, since }`, plus in-memory `sessionId -> topic` and `topicId -> sessionId` maps. `SessionRegistry` only reflects mode fields and keeps `lastTopicId` for reuse.
+- Topic create/reopen/close calls are serialized through one promise queue. Each operation waits 250ms after completion; Telegram 429 responses retry with `retry_after` when present or exponential backoff otherwise.
+- Late joiners are handled during bridge registration via `setRegistrationAugmenter()`: if AFK is active, the daemon creates/reopens that session topic before `session.registered` is sent and includes `{ mode, topicId }`.
+- Telegram topic text during AFK bypasses normal SDK relay and emits `mirror.input` to the owning extension. Slash-command text is ignored here so `/back` stays CLI-only.
+- Telegram-origin input is sender-gated by the paired/allowed user IDs and is blocked when `REACH_PERMISSION_POLICY=approveAll`; remote AFK input requires `interactiveDestructive` so destructive tools still prompt.
+
+## For Jun Fixtures
+
+- `SessionEntry.cwd` is now required; legacy persisted entries default to `process.cwd()` on load.
+- Contract fixtures should include `cwd`, `mode`, `afkSince`, and `lastTopicId` when seeding AFK state.
+- The controller exports `AfkModeController` from `src/bot/afkMode.ts`; tests can inject a fake bridge with `listSessions`, `getSessionInfo`, `sendToSession`, `broadcastToSessions`, and `setRegistrationAugmenter`.
+
+
+---
+
+## Jun Phase 7 Test Cases — ADR-11 AFK Contract
+
+# Jun Phase 7 Test Cases — ADR-11 AFK Contract
+
+**Date:** 2026-05-24T23:19:14-07:00  
+**Author:** Jun (Test Engineer)  
+**Status:** Tests written; convergence red/green recorded
+
+## Deliverables
+
+- Added `tests/integration/afk-mode.contract.test.ts` covering T1–T8 from the round-1 audit.
+- Extended `tests/helpers/FakeDaemon.ts` with ADR-11 message types and helpers: `afk.request`, `back.request`, `afk.activated`, `back.confirmed`, `mode.changed`, `mirror.input`, `relay.command`, amended `session.registered`, `expectAfkRequest()`, `expectBackRequest()`, `sendAfkActivated()`, `sendModeChanged()`, `sendMirrorInput()`.
+- Extended `tests/helpers/FakeExtensionClient.ts` with `sendAfkRequest()`, `sendBackRequest()`, `sendSessionEvent()`, `expectAfkActivated()`, `expectModeChanged()`, and `expectMirrorInput()`.
+- Added `tests/helpers/afkContract.ts` for Telegram API spies, relay-target spy, and SessionEntry fixtures with/without `lastTopicId`, `mode`, and varied `cwd`.
+
+## Protocol Clarifications Captured
+
+- **T4:** Rewritten as a negative test. ADR-11 §2 says `/back` is CLI-only and never honored from Telegram, so Telegram topic text `/back` must not emit `back.confirmed`, must not change mode, must not close the topic, and must not re-target relay.
+- **T6:** Updated to ADR-11 §10. `/afk` with daemon unreachable errors immediately with `⚠ Reach daemon not running — start it first.` and creates no retry/backoff timers.
+
+## Verification Results
+
+- `npx tsc --noEmit`: GREEN.
+- `npm run lint`: GREEN.
+- `npx vitest run tests/helpers/fakePipe.smoke.test.ts --reporter=dot`: GREEN, 18 passed.
+- `npx vitest run tests/integration/ --reporter=dot`: 30 passed, 1 failed.
+  - GREEN: T1, T2, T3, T5, T6, T7, T8 plus existing integration tests.
+  - RED: T4.
+    - T4: `/back` typed in a Telegram topic is currently mirrored to CLI by the AFK controller path, changing the relay target to CLI. The ADR-11 §2 contract expects Telegram `/back` to be ignored with no relay re-target.
+
+## Notes for Carter/Kat
+
+The tests are contract-level and intentionally exercise the externally observable ADR-11 surface: bridge messages, Telegram API calls, registry reflection, and relay target changes. The remaining red tests are useful convergence signals, not test harness load failures.
+

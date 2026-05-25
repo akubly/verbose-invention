@@ -18,36 +18,11 @@ K2, K4, K5 reconciliation notes merged into canonical decisions.md. K4 per-sessi
 
 ---
 
-### 2026-05-19 — Phase 6 Day 1: install.ts Refactored to User-Account Service (ADR-5)
+---
 
-**Task:** Refactor `src/service/install.ts` to install the Reach daemon as the logged-in user, not NetworkService/LocalSystem.
+### 2026-05-19 — Phase 6 Day 1: install.ts Refactored (Summary)
 
-**Implementation:**
-
-- Added `ServiceAccount` interface (`username`, `domain`, `password`).
-- `createService()` now accepts optional `account?: ServiceAccount`. When provided, sets `logOnAs` in the node-windows config with `{ domain, account, password }` and `allowServiceLogon: true`. When omitted (uninstall path), no `logOnAs` is written.
-- Added `resolveCurrentUser()`: uses `os.userInfo().username` + `process.env.USERDOMAIN`. Never calls `LookupAccountName`.
-- Added `promptPassword()`: readline-based with `_writeToOutput` override to suppress echo.
-- `install()` is now `async` — resolves user, prompts password, passes `ServiceAccount` to `createService()`.
-- `main()` is now `async`, wraps top-level call in `.catch()`.
-- README Windows Service section updated to reflect user-account logon and one-time password prompt.
-
-**Trade-off:** `node-windows` requires a real Windows password for user accounts (SCM API constraint). Password-less path via Scheduled Task was rejected — different restart semantics and would drop node-windows. ADR-5 pre-accepted this cost.
-
-**Tests:** All 22 install tests pass. Full suite: 296 passed, 4 skipped. tsc and lint clean.
-
-**Decisions:** `kat-service-host.md` dropped to inbox. Carter (pipe server) notified that the named pipe will now be created in user-session context — no protocol changes needed.
-
-
-**Event:** All architectural blockers resolved per Aaron's directive. Phase 6 architecture finalized with seven ADRs (ADR-1 through ADR-7).
-
-**Key points for Kat:**
-- **ADR-5:** Daemon runs as logged-in user (not LocalSystem) — fixes the `LookupAccountName failed: 1332` bug in install.ts
-- **Day 1 task:** Refactor `src/service/install.ts` to prompt for user account + password, use `whoami /upn` primary or `wmic` fallback
-- **Implementation order:** Can start immediately with no blocking data dependencies. Same start time as Carter (named pipe server) and Jun (test doubles)
-
-
-See `.squad/decisions.md` for full ADRs and implementation sequencing.
+Refactored `src/service/install.ts` for user-account service per ADR-5. Full details archived in `history-archive.md`. **Summary:** User-account service working, 22 tests pass, unblocked Phase 6 parallel work.
 
 ---
 
@@ -67,53 +42,11 @@ See orchestration logs and `decisions.md` for full ADR-8 technical details.
 
 ---
 
-### 2026-05-22 — Phase 6 Days 3–4: Bridge Adapter (BridgeSession / BridgeSessionFactory)
+### 2026-05-22 — Phase 6 Days 3–4: Bridge Adapter (BridgeSession / BridgeSessionFactory) (Summary)
 
-**Status:** Complete. All 296 tests green. tsc + lint clean.
+Complete. All 296 tests green. tsc + lint clean. Full Phase 6 Days 3-4 details archived in `history-archive.md`.
 
-**What was built:**
-
-- **`src/bridge/bridgeSession.ts`** — `BridgeSession implements CopilotSession`. Adapts the bridge's
-  push-event model (`stream` / `stream.error`) into `AsyncIterable<string>` using an async-queue
-  pattern. The key insight: push listeners into a queue + `wake()`, drain queue in generator loop,
-  re-check after setting `signal` to close the race window between empty-queue check and `await`.
-  `try/finally` guarantees `bridge.off()` on normal completion, error, AND early iterator abandonment.
-
-- **`src/bridge/bridgeSessionFactory.ts`** — `BridgeSessionFactory implements CopilotSessionFactory`.
-  `resume()` returns `BridgeSession` if extension has registered the session by name, `null` otherwise.
-  `create()` throws if not registered (bridge sessions are extension-created, not factory-created).
-  `resetForRestart()` is a no-op per ADR-6.
-
-- **`src/bridge/compositeSessionFactory.ts`** — Bridge-first, SDK-fallback composite factory.
-  `resume()` tries bridge first, falls back to SDK. `create()` uses bridge if session is live,
-  SDK otherwise. Enables graceful coexistence of CLI-attached and Reach-spawned sessions.
-
-- **`src/bridge/extensionBridge.ts`** (minor edit) — Added `sessionName` to `InternalConnection`
-  (stored from `hello` message) and `getSessionByName()` method. Required to map relay's
-  human-readable `sessionName` to bridge's internal `sessionId`-keyed sessions map.
-
-- **`src/main.ts`** (wiring) — Starts bridge before relay wiring; gracefully falls back if pipe
-  is unavailable. Composite factory injected. `sdkFactory` kept as separate reference for shutdown.
-
-**Composition decision:** Option A (composite factory) over Option B (env flag). See decisions inbox.
-
-**Async-queue gotchas to remember:**
-1. The race window: between `queue.length === 0` check and `signal = r`, new items can arrive.
-   Fix: after `signal = r`, re-check `queue.length > 0` and immediately resolve if true.
-2. Last-chunk semantics: ADR-8 `done: true` frames can carry a non-empty `chunk`. Handle both
-   in the same listener call (push chunk item then done item).
-3. Listener cast: `bridge.off()` takes `(...args: unknown[]) => void`. Typed listeners must be cast.
-   Store typed aliases and cast only at `off()` callsites.
-4. `sendFn` separation: Constructor takes `sendFn` separate from `bridge` for testability.
-   The factory passes `bridge.sendCommand.bind(bridge)`; tests can pass a simple mock.
-
-**Known gap:** Permission prompting over the bridge is unimplemented (TODO ADR-9?). Bridge sessions
-ignore `permissionCallback` — the CLI extension handles permissions locally. Documented in decisions inbox.
-
-**For Jun:** BridgeSession public API exactly matches K1 spec:
-- Constructor: `(bridge: BridgeEmitter, sessionId: string, sendFn: (sid, text) => string | false)`
-- `send(text: string): AsyncIterable<string>`
-- Listener cleanup via `try/finally` with `bridge.off()` cast
+**Summary:** `BridgeSession`, `BridgeSessionFactory`, `CompositeSessionFactory` built per K1 spec. Key patterns: async-queue push-to-pull adapter, composition over config flags, typed event emitters via overloads.
 
 
 
@@ -214,4 +147,26 @@ No action required Day 2. `sendCommand()` now returns `requestId` (or `false`) i
 - **T10** (`src/bot/prompt.ts:67`): Added `scanHandle` to `PromptRegistry`; exported `disposePromptRegistry(bot)` to clear the interval and evict from WeakMap. Restructured `ensurePromptRegistry` to build map then interval then registry object. Two new tests verify one-interval-per-bot and dispose-clears-all behaviour.
 
 **[2026-05-24] Scribe log entry:** Telegram-side UX opens merged into decisions. Registry schema additions defined (mode, afkSince, cwd, lastTopicId). Pre-implementation review complete.
+
+---
+
+### 2026-05-24T23:19:14-07:00 — Phase 7 AFK Mode State + Telegram Topics
+
+Implemented daemon-owned AFK mode in `src/bot/afkMode.ts`: memory-only `{ active, since }`, session/topic maps, serialized topic create/reopen/close with 250ms gaps and 429 retry, General summary pin/edit, back banners, late-join registration augmentation, Telegram→CLI `mirror.input`, and stream routing to AFK topics.
+
+Updated `SessionEntry` with required `cwd` plus `mode`, `afkSince`, and `lastTopicId`; registry registration defaults `cwd` to `process.cwd()`, legacy loads backfill it, and upsert persists AFK reflections. Added registry tests for cwd defaults/explicit values and AFK field round-trip.
+
+Persona review follow-up: remote Telegram input is now gated to paired/allowed user IDs, blocked under `approveAll`, slash commands are ignored on the mirror path, stream cleanup is hardened, and topic queue/retry logic is clearer.
+
+Validation: `npx tsc --noEmit`, `npm run lint`, targeted AFK contract tests, targeted registry tests, and full `npx vitest run --reporter=dot` all pass.
+
+## 2026-05-25T06:19:14Z — Phase 7 Orchestration Complete
+
+**Session:** Phase 7 implementation kickoff (Carter-4 + Kat-3 + Jun-1)
+
+**Outcome:** Daemon-side AFK mode state machine (memory + schema updates) complete. Typecheck/lint/vitest green. Orchestration log: `.squad/orchestration-log/2026-05-25T06-19-14Z-kat-3.md`.
+
+**Decisions merged to `.squad/decisions.md`:** `kat-phase7-mode-state.md` — session/topic maps, 250ms topic burst gap + 429 retry, registration augmentation, mirror.input routing, SessionEntry schema.
+
+**Ready for:** Jun testing (contract tests bind to live AfkModeController) + Carter/Jun validation.
 

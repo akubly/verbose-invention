@@ -4,7 +4,7 @@ import type { CopilotSessionFactory } from '../copilot/factory.js';
 import type { ISessionRegistry } from '../sessions/registry.js';
 import type { SessionLookup, PermissionPrompter } from '../relay/ports.js';
 import { Relay } from '../relay/relay.js';
-import { promptUserForPermission } from './prompt.js';
+import { promptUserForPermission, ensurePromptRegistry } from './prompt.js';
 
 /** DNS-label style: lowercase alphanumeric + hyphens, 1–63 chars, no leading hyphen. */
 export const SESSION_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -15,6 +15,7 @@ export interface HandlerOptions {
   factory: CopilotSessionFactory;
   globalModel: string;
   permissionPolicy?: PermissionPolicy;
+  telegramMirror?: { handleTelegramMessage(ctx: Context): Promise<boolean> };
 }
 
 /**
@@ -30,11 +31,16 @@ export interface HandlerOptions {
  *
  * All other text messages in forum topics are relayed to the linked session.
  */
-export function registerHandlers({ bot, registry, factory, globalModel, permissionPolicy }: HandlerOptions): Relay {
+export function registerHandlers({ bot, registry, factory, globalModel, permissionPolicy, telegramMirror }: HandlerOptions): Relay {
   const sessionLookup: SessionLookup = { resolve: (topicId) => registry.resolve(topicId) };
 
   let permissionPrompter: PermissionPrompter | undefined;
   if (permissionPolicy === 'interactiveDestructive') {
+    // Install the callback_query:data listener EAGERLY here, before bot.start()
+    // begins polling. grammY forbids bot.on() registration from within active
+    // handlers (memory-leak guard), so we must register during the setup phase
+    // alongside the other bot.command() / bot.on() calls.
+    ensurePromptRegistry(bot);
     permissionPrompter = {
       prompt: (chatId, topicId, toolName, args, signal) =>
         promptUserForPermission(bot, chatId, topicId, toolName, args, signal),
@@ -262,6 +268,7 @@ Commands:
   bot.on('message:text', async (ctx) => {
     if (!ctx.message.message_thread_id) return;
     if (ctx.message.text.startsWith('/')) return;
+    if (await telegramMirror?.handleTelegramMessage(ctx)) return;
     await relay.relay(ctx);
   });
 

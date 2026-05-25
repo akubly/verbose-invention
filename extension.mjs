@@ -16,13 +16,20 @@
  * BRIDGE PROTOCOL (JSON-Lines, UTF-8, max 64 KB per line, ADR-8 canonical schema):
  *
  *   Inbound  (daemon → extension):
- *     { "type": "session.registered", "sessionId": "..." }
+ *     { "type": "session.registered", "sessionId": "...", "mode": { ... }, "topicId": 123 }
  *     { "type": "ping", "id": "<uuid>", "sessionId": "..." }
  *     { "type": "inject", "sessionId": "...", "requestId": "...", "text": "..." }
+ *     { "type": "afk.activated", "sessionId": "...", "topicId": 123, "topicUrl": "..." }
+ *     { "type": "back.confirmed", "sessionId": "..." }
+ *     { "type": "mode.changed", "active": true, "since": "..." }
+ *     { "type": "mirror.input", "sessionId": "...", "text": "...", "source": "telegram", "topicId": 123 }
+ *     { "type": "relay.command", "sessionId": "...", "command": "/clear", "args": [] }
  *
  *   Outbound (extension → daemon):
  *     { "type": "hello", "sessionId": "...", "sessionName": "..." }
  *     { "type": "pong", "id": "<uuid>", "sessionId": "..." }
+ *     { "type": "afk.request", "sessionId": "..." }
+ *     { "type": "back.request", "sessionId": "..." }
  *     { "type": "stream", "sessionId": "...", "requestId": "...", "chunk": "...", "done": false }
  *     { "type": "stream.error", "sessionId": "...", "requestId": "...", "error": "..." }
  *     { "type": "session.event", "sessionId": "...", "payload": { ... } }  (future use)
@@ -104,6 +111,8 @@ const SAFE_TOOLS = new Set([
   'memory-read_graph',
   'memory-open_nodes',
   'memory-search_nodes',
+  // SDK kind: 'memory' — Copilot CLI memory storage (store_memory). Non-destructive.
+  'memory',
 ]);
 
 /**
@@ -236,17 +245,55 @@ function sleep(ms) {
 
 /**
  * Send a JSON-Lines frame to the daemon.
- * Silently drops the message if the socket is not connected.
+ * Returns false if the socket is not connected or the write fails.
  *
  * @param {object} msg - The message object to serialise.
+ * @returns {boolean} True when the frame was handed to the socket.
  */
 function sendToDaemon(msg) {
-  if (pipeSocket === null || pipeSocket.destroyed) return;
+  if (pipeSocket === null || pipeSocket.destroyed) return false;
   try {
     pipeSocket.write(JSON.stringify(msg) + '\n', 'utf-8');
+    return true;
   } catch (err) {
     log('warn', `sendToDaemon failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
   }
+}
+
+/**
+ * Surface a user-facing one-line message in the CLI session when possible.
+ *
+ * @param {string} message
+ * @param {'info' | 'warning' | 'error'} [level]
+ */
+function sanitizeForCliLine(value) {
+  return String(value)
+    .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '')
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
+}
+
+function showCliMessage(message, level = 'info') {
+  const safeMessage = sanitizeForCliLine(message);
+  if (sdkSession !== null && typeof sdkSession.log === 'function') {
+    Promise.resolve(sdkSession.log(safeMessage, { level })).catch((err) => {
+      process.stderr.write(`${safeMessage}\n`);
+      log('warn', `session.log failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+    return;
+  }
+  process.stderr.write(`${safeMessage}\n`);
+}
+
+/**
+ * @param {{ sessionId?: unknown }} msg
+ * @param {string} type
+ * @returns {boolean}
+ */
+function isForCurrentSession(msg, type) {
+  if (msg.sessionId === SESSION_ID) return true;
+  log('warn', `${type} for different sessionId "${String(msg.sessionId)}" — ignoring`);
+  return false;
 }
 
 // ─── Inbound message handling ────────────────────────────────────────────────
@@ -260,6 +307,7 @@ function handleMessage(msg) {
   switch (msg.type) {
     case 'session.registered':
       log('info', `Registered with daemon (session: ${msg.sessionId})`);
+      handleSessionRegistered(msg);
       break;
 
     case 'ping':
@@ -268,15 +316,84 @@ function handleMessage(msg) {
       break;
 
     case 'inject':
-      handleInject(msg);
+      if (isForCurrentSession(msg, 'inject')) handleInject(msg);
       break;
 
     case 'permission.response':
-      handlePermissionResponse(msg);
+      if (isForCurrentSession(msg, 'permission.response')) handlePermissionResponse(msg);
+      break;
+
+    case 'afk.activated':
+      if (isForCurrentSession(msg, 'afk.activated')) handleAfkActivated(msg);
+      break;
+
+    case 'back.confirmed':
+      if (isForCurrentSession(msg, 'back.confirmed')) handleBackConfirmed(msg);
+      break;
+
+    case 'mode.changed':
+      handleModeChanged(msg);
+      break;
+
+    case 'mirror.input':
+      if (isForCurrentSession(msg, 'mirror.input')) handleMirrorInput(msg);
+      break;
+
+    case 'relay.command':
+      if (isForCurrentSession(msg, 'relay.command')) {
+        const command = typeof msg.command === 'string' ? sanitizeForCliLine(msg.command) : '<unknown>';
+        const args = Array.isArray(msg.args) ? msg.args.map(sanitizeForCliLine).join(' ') : '';
+        log('info', `relay.command received (stub): ${command} ${args}`.trim());
+      }
       break;
 
     default:
       log('warn', `Unknown message type from daemon: "${msg.type}" — ignoring`);
+  }
+}
+
+/**
+ * Run text through the SDK session and stream the assistant response back to the daemon.
+ *
+ * @param {string} text
+ * @param {string} requestId
+ * @param {string} label
+ */
+async function streamSdkResponse(text, requestId, label) {
+  activeInjectIds.add(requestId);
+
+  try {
+    let chunkCount = 0;
+    for await (const chunk of sdkSession.send(text)) {
+      const frame = JSON.stringify({
+        type: 'stream',
+        sessionId: SESSION_ID,
+        requestId,
+        chunk: String(chunk),
+        done: false,
+      }) + '\n';
+      if (pipeSocket !== null && !pipeSocket.destroyed) {
+        const canWriteMore = pipeSocket.write(frame, 'utf-8');
+        if (!canWriteMore) {
+          await new Promise((resolve) => {
+            if (pipeSocket !== null) {
+              pipeSocket.once('drain', resolve);
+            } else {
+              resolve(undefined);
+            }
+          });
+        }
+      }
+      chunkCount++;
+    }
+    sendToDaemon({ type: 'stream', sessionId: SESSION_ID, requestId, chunk: '', done: true });
+    log('info', `${label} complete: requestId=${requestId} chunks=${chunkCount}`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log('error', `${label} error: ${message}`);
+    sendToDaemon({ type: 'stream.error', sessionId: SESSION_ID, requestId, error: message });
+  } finally {
+    activeInjectIds.delete(requestId);
   }
 }
 
@@ -305,57 +422,65 @@ async function handleInject(msg) {
     return;
   }
 
-  // Track inject as active so onPermissionRequest can include its requestId in permission.request.
-  activeInjectIds.add(msg.requestId);
+  await streamSdkResponse(text, msg.requestId, 'inject');
+}
 
-  try {
-    // Forward each SDK chunk immediately — do NOT buffer (ADR-8 §5).
-    let chunkCount = 0;
-    for await (const chunk of sdkSession.send(text)) {
-      const frame = JSON.stringify({
-        type: 'stream',
-        sessionId: SESSION_ID,
-        requestId: msg.requestId,
-        chunk: String(chunk),
-        done: false,
-      }) + '\n';
-      // I5: respect TCP backpressure — await drain if the write buffer is full.
-      if (pipeSocket !== null && !pipeSocket.destroyed) {
-        const canWriteMore = pipeSocket.write(frame, 'utf-8');
-        if (!canWriteMore) {
-          await new Promise((resolve) => {
-            if (pipeSocket !== null) {
-              pipeSocket.once('drain', resolve);
-            } else {
-              resolve(undefined);
-            }
-          });
-        }
-      }
-      chunkCount++;
+/**
+ * @param {{ mode?: { active?: boolean, since?: string }, topicId?: number }} msg
+ */
+function handleSessionRegistered(msg) {
+  if (msg.mode?.active === true) {
+    showCliMessage('🛰️ AFK mode active');
+    if (typeof msg.topicId === 'number') {
+      log('info', `AFK topic already assigned on registration: ${msg.topicId}`);
     }
-    // Final chunk with done:true signals completion (ADR-8 §5).
-    sendToDaemon({
-      type: 'stream',
-      sessionId: SESSION_ID,
-      requestId: msg.requestId,
-      chunk: '',
-      done: true,
-    });
-    log('info', `inject complete: requestId=${msg.requestId} chunks=${chunkCount}`);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log('error', `inject error: ${message}`);
-    sendToDaemon({
-      type: 'stream.error',
-      sessionId: SESSION_ID,
-      requestId: msg.requestId,
-      error: message,
-    });
-  } finally {
-    // Clear active inject tracking when inject completes (success or error).
-    activeInjectIds.delete(msg.requestId);
   }
+}
+
+/**
+ * @param {{ topicId?: number, topicUrl?: string }} msg
+ */
+function handleAfkActivated(msg) {
+  const suffix = typeof msg.topicUrl === 'string' && msg.topicUrl.length > 0
+    ? ` — ${msg.topicUrl}`
+    : '';
+  showCliMessage(`🛰️ AFK mode active${suffix}`);
+  if (typeof msg.topicId === 'number') {
+    log('info', `AFK activated for topic ${msg.topicId}`);
+  }
+}
+
+function handleBackConfirmed(_msg) {
+  showCliMessage('🖥️ Back at desk');
+}
+
+/**
+ * @param {{ active?: boolean, since?: string }} msg
+ */
+function handleModeChanged(msg) {
+  showCliMessage(msg.active === true ? '🛰️ AFK mode active' : '🖥️ Back at desk');
+  if (typeof msg.since === 'string') {
+    log('info', `mode.changed since=${msg.since}`);
+  }
+}
+
+/**
+ * @param {{ text?: string, topicId?: number }} msg
+ */
+async function handleMirrorInput(msg) {
+  if (sdkSession === null) {
+    log('warn', 'mirror.input received but no SDK session — ignoring');
+    return;
+  }
+
+  const text = typeof msg.text === 'string' ? msg.text : '';
+  if (text.length === 0) {
+    log('warn', 'mirror.input: empty text — ignoring');
+    return;
+  }
+
+  showCliMessage(`📱 Telegram: ${text}`);
+  await streamSdkResponse(text, `mirror-${randomUUID()}`, 'mirror.input');
 }
 
 // ─── Session event forwarding ─────────────────────────────────────────────────
@@ -647,6 +772,43 @@ async function runConnectionLoop() {
   }
 }
 
+// ─── Extension slash commands (ADR-11) ───────────────────────────────────────
+
+/**
+ * Send an extension-level slash command request to the daemon.
+ *
+ * @param {'afk.request' | 'back.request'} type
+ */
+function sendModeRequest(type) {
+  try {
+    const sent = sendToDaemon({ type, sessionId: SESSION_ID });
+    if (!sent) {
+      showCliMessage('⚠ Reach daemon not running', 'warning');
+    }
+  } catch (err) {
+    log('error', `mode request failed: ${err instanceof Error ? err.message : String(err)}`);
+    showCliMessage('⚠ Reach daemon not running', 'warning');
+  }
+}
+
+/**
+ * @returns {import('@github/copilot-sdk').CommandDefinition[]}
+ */
+function createReachCommands() {
+  return [
+    {
+      name: 'afk',
+      description: 'Mirror this Copilot session through Telegram',
+      handler: () => sendModeRequest('afk.request'),
+    },
+    {
+      name: 'back',
+      description: 'Return this Copilot session to local-only mode',
+      handler: () => sendModeRequest('back.request'),
+    },
+  ];
+}
+
 // ─── Extension entry point ────────────────────────────────────────────────────
 
 /**
@@ -670,7 +832,7 @@ async function main() {
   }
 
   try {
-    sdkSession = await joinSession();
+    sdkSession = await joinSession({ commands: createReachCommands() });
     log('info', `SDK session joined (id: ${SESSION_ID})`);
     wireSessionEvents(sdkSession);
   } catch (err) {

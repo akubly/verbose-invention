@@ -11,7 +11,9 @@ interface RegistryData {
 
 export interface ISessionRegistry {
   load(): Promise<void>;
-  register(topicId: number, chatId: number, sessionName: string, model?: string): Promise<void>;
+  register(topicId: number, chatId: number, sessionName: string, model?: string, cwd?: string): Promise<void>;
+  /** Upserts an AFK-managed entry; if the session name moved topics, replaces the prior topic binding. */
+  upsert(entry: SessionEntry): Promise<void>;
   resolve(telegramTopicId: number): SessionEntry | undefined;
   findByName(sessionName: string): SessionEntry | undefined;
   /** Returns every entry whose sessionName matches — may be >1 when legacy duplicates exist on disk. */
@@ -70,10 +72,26 @@ export class SessionRegistry implements ISessionRegistry {
           console.warn(`[registry] Skipping entry for key ${key}: key does not match topicId ${value.topicId}`);
           continue;
         }
+        if (typeof value.cwd !== 'string' || value.cwd.length === 0) {
+          console.warn(`[registry] Entry for key ${key} missing cwd; defaulting to daemon cwd`);
+          value.cwd = process.cwd();
+        }
         // Strip invalid model field (must be string if present)
         if (value.model !== undefined && typeof value.model !== 'string') {
           console.warn(`[registry] Stripping invalid model for key ${key}`);
           delete value.model;
+        }
+        if (value.mode !== undefined && value.mode !== 'afk' && value.mode !== 'back') {
+          console.warn(`[registry] Stripping invalid mode for key ${key}`);
+          delete value.mode;
+        }
+        if (value.afkSince !== undefined && typeof value.afkSince !== 'string') {
+          console.warn(`[registry] Stripping invalid afkSince for key ${key}`);
+          delete value.afkSince;
+        }
+        if (value.lastTopicId !== undefined && typeof value.lastTopicId !== 'number') {
+          console.warn(`[registry] Stripping invalid lastTopicId for key ${key}`);
+          delete value.lastTopicId;
         }
         this.entries.set(Number(key), value);
       }
@@ -101,7 +119,7 @@ export class SessionRegistry implements ISessionRegistry {
     }
   }
 
-  async register(topicId: number, chatId: number, sessionName: string, model?: string): Promise<void> {
+  async register(topicId: number, chatId: number, sessionName: string, model?: string, cwd = process.cwd()): Promise<void> {
     return this.enqueueMutation(async () => {
       const duplicate = this.findByName(sessionName);
       if (duplicate && duplicate.topicId !== topicId) {
@@ -114,6 +132,7 @@ export class SessionRegistry implements ISessionRegistry {
         topicId,
         chatId,
         createdAt: new Date().toISOString(),
+        cwd,
         ...(model !== undefined && { model }),
       };
       const newEntries = new Map(this.entries);
@@ -121,6 +140,21 @@ export class SessionRegistry implements ISessionRegistry {
       await this.doPersistEntries(newEntries);
       this.entries = newEntries;
       console.log(`[registry] Registered topic ${topicId} → "${sessionName}"`);
+    });
+  }
+
+  /** Upserts an AFK-managed entry, replacing any prior topic binding for the same session name. */
+  async upsert(entry: SessionEntry): Promise<void> {
+    return this.enqueueMutation(async () => {
+      const duplicate = this.findByName(entry.sessionName);
+      const newEntries = new Map(this.entries);
+      if (duplicate && duplicate.topicId !== entry.topicId) {
+        newEntries.delete(duplicate.topicId);
+      }
+      newEntries.set(entry.topicId, entry);
+      await this.doPersistEntries(newEntries);
+      this.entries = newEntries;
+      console.log(`[registry] Upserted topic ${entry.topicId} → "${entry.sessionName}"`);
     });
   }
 

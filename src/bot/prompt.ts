@@ -49,7 +49,7 @@ function formatOutcomeText(outcome: PromptOutcome, toolName: string): string {
   return `⚠️ Aborted: ${toolName}`;
 }
 
-function ensurePromptRegistry(bot: Bot<Context>): PromptRegistry {
+export function ensurePromptRegistry(bot: Bot<Context>): PromptRegistry {
   const existing = promptRegistries.get(bot);
   if (existing) {
     return existing;

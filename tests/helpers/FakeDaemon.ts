@@ -86,6 +86,18 @@ export type PermissionCancelledMessage = {
   permissionId: string;
 };
 
+/** ADR-11: extension asks the daemon to enter machine-wide AFK mode. */
+export type AfkRequestMessage = {
+  type: 'afk.request';
+  sessionId: string;
+};
+
+/** ADR-11: extension asks the daemon to return from AFK mode. */
+export type BackRequestMessage = {
+  type: 'back.request';
+  sessionId: string;
+};
+
 /** All message shapes the daemon can receive from an extension. */
 export type InboundMessage =
   | HelloMessage
@@ -94,7 +106,9 @@ export type InboundMessage =
   | StreamErrorMessage
   | SessionEventMessage
   | PermissionRequestMessage
-  | PermissionCancelledMessage;
+  | PermissionCancelledMessage
+  | AfkRequestMessage
+  | BackRequestMessage;
 
 export type PingMessage = {
   type: 'ping';
@@ -102,9 +116,18 @@ export type PingMessage = {
   sessionId: string;
 };
 
+export type ModeState = {
+  active: boolean;
+  since: string;
+};
+
 export type SessionRegisteredMessage = {
   type: 'session.registered';
   sessionId: string;
+  /** ADR-11 late-joiner field: present when daemon mode state is known. */
+  mode?: ModeState;
+  /** ADR-11 late-joiner field: present when a Telegram topic is mapped. */
+  topicId?: number;
 };
 
 export type InjectMessage = {
@@ -122,12 +145,55 @@ export type PermissionResponseMessage = {
   decision: 'allow' | 'deny';
 };
 
+/** ADR-11: daemon confirms that a session's Telegram topic is ready. */
+export type AfkActivatedMessage = {
+  type: 'afk.activated';
+  sessionId: string;
+  topicId: number;
+  topicUrl: string;
+};
+
+/** ADR-11: daemon confirms local-only mode resumed for a session. */
+export type BackConfirmedMessage = {
+  type: 'back.confirmed';
+  sessionId: string;
+};
+
+/** ADR-11: daemon broadcasts machine-wide AFK mode changes. */
+export type ModeChangedMessage = {
+  type: 'mode.changed';
+  active: boolean;
+  since: string;
+};
+
+/** ADR-11: daemon mirrors Telegram text into a CLI extension. */
+export type MirrorInputMessage = {
+  type: 'mirror.input';
+  sessionId: string;
+  text: string;
+  source: 'telegram';
+  topicId: number;
+};
+
+/** ADR-11: designed envelope for future relay slash commands. */
+export type RelayCommandMessage = {
+  type: 'relay.command';
+  sessionId: string;
+  command: string;
+  args: string[];
+};
+
 /** All message shapes the daemon can send to an extension. */
 export type OutboundMessage =
   | PingMessage
   | SessionRegisteredMessage
   | InjectMessage
-  | PermissionResponseMessage;
+  | PermissionResponseMessage
+  | AfkActivatedMessage
+  | BackConfirmedMessage
+  | ModeChangedMessage
+  | MirrorInputMessage
+  | RelayCommandMessage;
 
 export type AnyPipeMessage = InboundMessage | OutboundMessage;
 
@@ -167,6 +233,12 @@ export class FakeDaemon {
 
   /** Sessions that the daemon has marked unreachable. */
   private _unreachable: Set<string> = new Set();
+
+  /** ADR-11 mode state used by amended session.registered test flows. */
+  private _mode: ModeState | undefined;
+
+  /** ADR-11 sessionId → topicId mapping used by late-joiner test flows. */
+  private _topicBySession: Map<string, number> = new Map();
 
   /** Handle for the heartbeat interval, if running. */
   private heartbeatHandle: ReturnType<typeof setInterval> | null = null;
@@ -272,6 +344,8 @@ export class FakeDaemon {
         this._writeTo(record, {
           type: 'session.registered',
           sessionId: msg.sessionId,
+          ...(this._mode !== undefined && { mode: this._mode }),
+          ...(this._topicBySession.has(msg.sessionId) && { topicId: this._topicBySession.get(msg.sessionId) }),
         });
         break;
       }
@@ -306,6 +380,41 @@ export class FakeDaemon {
   sendTo(sessionId: string, msg: OutboundMessage): void {
     const record = this._findBySessionId(sessionId);
     this._writeTo(record, msg);
+  }
+
+  /** Configures the ADR-11 mode/topic fields included in future session.registered acks. */
+  setMode(active: boolean, since = '2026-05-24T23:19:14-07:00'): void {
+    this._mode = { active, since };
+  }
+
+  /** Configures the ADR-11 late-joiner topic mapping for a session. */
+  setTopicForSession(sessionId: string, topicId: number): void {
+    this._topicBySession.set(sessionId, topicId);
+  }
+
+  /** Sends ADR-11 afk.activated and records the mapping for future session.registered acks. */
+  sendAfkActivated(sessionId: string, topicId: number, topicUrl = `https://t.me/c/test/${topicId}`): void {
+    this._topicBySession.set(sessionId, topicId);
+    this.sendTo(sessionId, { type: 'afk.activated', sessionId, topicId, topicUrl });
+  }
+
+  /** Sends ADR-11 back.confirmed. */
+  sendBackConfirmed(sessionId: string): void {
+    this.sendTo(sessionId, { type: 'back.confirmed', sessionId });
+  }
+
+  /** Broadcasts ADR-11 mode.changed to all registered clients. */
+  sendModeChanged(active: boolean, since = '2026-05-24T23:19:14-07:00'): void {
+    this._mode = { active, since };
+    for (const record of this.connections) {
+      if (!record.registered || !record.sessionId) continue;
+      this._writeTo(record, { type: 'mode.changed', active, since });
+    }
+  }
+
+  /** Sends ADR-11 mirror.input to a registered session. */
+  sendMirrorInput(sessionId: string, text: string, topicId: number): void {
+    this.sendTo(sessionId, { type: 'mirror.input', sessionId, text, source: 'telegram', topicId });
   }
 
   // ── Heartbeat ────────────────────────────────────────────────────────────────
@@ -421,6 +530,20 @@ export class FakeDaemon {
     return this.connections.some((c) => c.sessionId === sessionId && c.registered);
   }
 
+  /** Returns the first received afk.request for a session or throws. */
+  expectAfkRequest(sessionId: string): AfkRequestMessage {
+    const msg = this.messagesOfType('afk.request').find((m) => m.sessionId === sessionId);
+    if (!msg) throw new Error(`Expected afk.request from ${sessionId}`);
+    return msg;
+  }
+
+  /** Returns the first received back.request for a session or throws. */
+  expectBackRequest(sessionId: string): BackRequestMessage {
+    const msg = this.messagesOfType('back.request').find((m) => m.sessionId === sessionId);
+    if (!msg) throw new Error(`Expected back.request from ${sessionId}`);
+    return msg;
+  }
+
   /** Number of connections accepted (registered or not). */
   get connectionCount(): number {
     return this.connections.length;
@@ -439,6 +562,8 @@ export class FakeDaemon {
     this.connections = [];
     this._received = [];
     this._unreachable.clear();
+    this._mode = undefined;
+    this._topicBySession.clear();
     this.pingCounter = 0;
     this._requiredToken = null;
   }

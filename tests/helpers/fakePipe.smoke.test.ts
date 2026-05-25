@@ -309,6 +309,93 @@ describe('FakeDaemon + FakeExtensionClient (smoke)', () => {
     });
   });
 
+  // ── ADR-11 AFK / mirror protocol shapes ─────────────────────────────────────
+
+  describe('ADR-11 pipe protocol additions', () => {
+    it('round-trips afk.request and back.request from extension to daemon', async () => {
+      const client = new FakeExtensionClient('sess-mode', 'reach-mode');
+      client.connect(daemon);
+      client.sendHello();
+      await flush();
+
+      client.sendAfkRequest();
+      client.sendBackRequest();
+      await flush();
+
+      expect(daemon.expectAfkRequest('sess-mode')).toMatchObject({
+        type: 'afk.request',
+        sessionId: 'sess-mode',
+      });
+      expect(daemon.expectBackRequest('sess-mode')).toMatchObject({
+        type: 'back.request',
+        sessionId: 'sess-mode',
+      });
+    });
+
+    it('round-trips daemon-to-extension AFK lifecycle and mirror messages', async () => {
+      const client = new FakeExtensionClient('sess-mode', 'reach-mode');
+      client.connect(daemon);
+      client.sendHello();
+      await flush();
+
+      daemon.sendAfkActivated('sess-mode', 12345, 'https://t.me/c/test/12345');
+      daemon.sendModeChanged(true, '2026-05-24T23:19:14-07:00');
+      daemon.sendMirrorInput('sess-mode', 'check the build logs', 12345);
+      daemon.sendTo('sess-mode', {
+        type: 'relay.command',
+        sessionId: 'sess-mode',
+        command: '/clear',
+        args: [],
+      });
+      daemon.sendBackConfirmed('sess-mode');
+      await flush();
+
+      expect(client.receivedOfType('afk.activated')[0]).toMatchObject({
+        type: 'afk.activated',
+        sessionId: 'sess-mode',
+        topicId: 12345,
+        topicUrl: 'https://t.me/c/test/12345',
+      });
+      expect(client.expectModeChanged(true)).toMatchObject({
+        type: 'mode.changed',
+        active: true,
+        since: '2026-05-24T23:19:14-07:00',
+      });
+      expect(client.expectMirrorInput('sess-mode', 'check the build logs')).toMatchObject({
+        type: 'mirror.input',
+        source: 'telegram',
+        topicId: 12345,
+      });
+      expect(client.receivedOfType('relay.command')[0]).toMatchObject({
+        type: 'relay.command',
+        sessionId: 'sess-mode',
+        command: '/clear',
+        args: [],
+      });
+      expect(client.receivedOfType('back.confirmed')[0]).toMatchObject({
+        type: 'back.confirmed',
+        sessionId: 'sess-mode',
+      });
+    });
+
+    it('includes amended session.registered mode and topic fields for late joiners', async () => {
+      daemon.setMode(true, '2026-05-24T23:19:14-07:00');
+      daemon.setTopicForSession('sess-late', 777);
+
+      const client = new FakeExtensionClient('sess-late', 'reach-late');
+      client.connect(daemon);
+      client.sendHello();
+      await flush();
+
+      expect(client.receivedOfType('session.registered')[0]).toMatchObject({
+        type: 'session.registered',
+        sessionId: 'sess-late',
+        mode: { active: true, since: '2026-05-24T23:19:14-07:00' },
+        topicId: 777,
+      });
+    });
+  });
+
   // ── daemon.sendTo (daemon → extension) ──────────────────────────────────────
 
   describe('daemon.sendTo()', () => {

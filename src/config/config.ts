@@ -13,6 +13,7 @@ import * as os from 'os';
 
 export interface ReachConfig {
   telegramChatId?: number;
+  telegramAllowedUserIds?: number[];
 }
 
 /**

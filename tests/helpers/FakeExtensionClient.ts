@@ -35,6 +35,8 @@ import type {
   PongMessage,
   StreamChunkMessage,
   StreamErrorMessage,
+  AfkRequestMessage,
+  BackRequestMessage,
 } from './FakeDaemon.js';
 
 // ─── FakeExtensionClient ──────────────────────────────────────────────────────
@@ -49,7 +51,7 @@ export class FakeExtensionClient {
   private fromServer: PassThrough | null = null;
 
   /** All messages this client has sent to the daemon, in send order. */
-  private _sent: (HelloMessage | PongMessage | StreamChunkMessage | StreamErrorMessage)[] = [];
+  private _sent: InboundMessage[] = [];
 
   /** All messages this client has received from the daemon, in arrival order. */
   private _received: OutboundMessage[] = [];
@@ -175,10 +177,24 @@ export class FakeExtensionClient {
     this._write(msg);
   }
 
-  /**
-   * Low-level: write any raw InboundMessage to the wire. Use the typed
-   * helpers above for protocol-conformant messages.
-   */
+  /** Sends ADR-11 afk.request (extension → daemon). */
+  sendAfkRequest(): void {
+    const msg: AfkRequestMessage = { type: 'afk.request', sessionId: this._sessionId };
+    this._write(msg);
+  }
+
+  /** Sends ADR-11 back.request (extension → daemon). */
+  sendBackRequest(): void {
+    const msg: BackRequestMessage = { type: 'back.request', sessionId: this._sessionId };
+    this._write(msg);
+  }
+
+  /** Sends ADR-8 session.event (extension → daemon). */
+  sendSessionEvent(payload: unknown): void {
+    this._write({ type: 'session.event', sessionId: this._sessionId, payload });
+  }
+
+  /** Low-level: write any raw InboundMessage to the wire. */
   sendRaw(msg: InboundMessage): void {
     this._write(msg);
   }
@@ -202,7 +218,7 @@ export class FakeExtensionClient {
   // ── Query / assertion helpers ─────────────────────────────────────────────────
 
   /** All messages this client has sent to the daemon, in send order. */
-  get sent(): (HelloMessage | PongMessage | StreamChunkMessage | StreamErrorMessage)[] {
+  get sent(): InboundMessage[] {
     return this._sent;
   }
 
@@ -217,7 +233,7 @@ export class FakeExtensionClient {
   }
 
   /** Last message sent to the daemon, or undefined. */
-  lastSent(): (HelloMessage | PongMessage | StreamChunkMessage | StreamErrorMessage) | undefined {
+  lastSent(): InboundMessage | undefined {
     return this._sent[this._sent.length - 1];
   }
 
@@ -237,6 +253,27 @@ export class FakeExtensionClient {
     return this._sent.filter(
       (m): m is Extract<InboundMessage, { type: T }> => m.type === type,
     );
+  }
+
+  /** Returns the first received afk.activated message or throws. */
+  expectAfkActivated(topicId?: number): Extract<OutboundMessage, { type: 'afk.activated' }> {
+    const msg = this.receivedOfType('afk.activated').find((m) => topicId === undefined || m.topicId === topicId);
+    if (!msg) throw new Error(`Expected afk.activated${topicId === undefined ? '' : ` for topic ${topicId}`}`);
+    return msg;
+  }
+
+  /** Returns the first received mode.changed message matching active or throws. */
+  expectModeChanged(active: boolean): Extract<OutboundMessage, { type: 'mode.changed' }> {
+    const msg = this.receivedOfType('mode.changed').find((m) => m.active === active);
+    if (!msg) throw new Error(`Expected mode.changed active=${active}`);
+    return msg;
+  }
+
+  /** Returns the first received mirror.input message matching session/text or throws. */
+  expectMirrorInput(sessionId: string, text: string): Extract<OutboundMessage, { type: 'mirror.input' }> {
+    const msg = this.receivedOfType('mirror.input').find((m) => m.sessionId === sessionId && m.text === text);
+    if (!msg) throw new Error(`Expected mirror.input for ${sessionId}: ${text}`);
+    return msg;
   }
 
   get sessionId(): string {
@@ -268,9 +305,7 @@ export class FakeExtensionClient {
 
   // ── Private ──────────────────────────────────────────────────────────────────
 
-  private _write(
-    msg: HelloMessage | PongMessage | StreamChunkMessage | StreamErrorMessage,
-  ): void {
+  private _write(msg: InboundMessage): void {
     if (!this.toServer || !this._connected) {
       throw new Error(
         `FakeExtensionClient: cannot send "${msg.type}" — not connected. Call connect(daemon) first.`,

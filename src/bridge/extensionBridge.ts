@@ -46,6 +46,8 @@ export interface RegisterMessage {
   sessionId: string;
   /** Human-readable session label. Reads SESSION_NAME env var; falls back to sessionId. */
   sessionName: string;
+  /** Working directory of the CLI session. Falls back to the daemon cwd for legacy extensions. */
+  cwd?: string;
   /** ADR-10: per-run CSPRNG token from bridge-auth.json. Required since B3. */
   authToken: string;
 }
@@ -105,6 +107,18 @@ export interface PermissionCancelledMessage {
   permissionId: string;
 }
 
+/** Extension → daemon: user requested machine-wide AFK mode from this CLI session. */
+export interface AfkRequestMessage {
+  type: 'afk.request';
+  sessionId: string;
+}
+
+/** Extension → daemon: user requested machine-wide back-at-desk mode from this CLI session. */
+export interface BackRequestMessage {
+  type: 'back.request';
+  sessionId: string;
+}
+
 export type InboundMessage =
   | RegisterMessage
   | PongMessage
@@ -112,15 +126,24 @@ export type InboundMessage =
   | StreamMessage
   | StreamErrorMessage
   | PermissionRequestMessage
-  | PermissionCancelledMessage;
+  | PermissionCancelledMessage
+  | AfkRequestMessage
+  | BackRequestMessage;
 
 //
 // Outbound (daemon → extension)
+
+export interface ModeState {
+  active: boolean;
+  since: string;
+}
 
 /** Acknowledgement sent after successful `hello`. */
 export interface RegisteredMessage {
   type: 'session.registered';
   sessionId: string;
+  mode?: ModeState;
+  topicId?: number;
 }
 
 /** Heartbeat probe. Extension must reply `pong` with the same `id`. */
@@ -146,20 +169,73 @@ export interface PermissionResponseMessage {
   decision: 'allow' | 'deny';
 }
 
+/** Daemon → extension: the session has an active Telegram topic for AFK mode. */
+export interface AfkActivatedMessage {
+  type: 'afk.activated';
+  sessionId: string;
+  topicId: number;
+  topicUrl: string;
+}
+
+/** Daemon → extension: this session is back at the desk. */
+export interface BackConfirmedMessage {
+  type: 'back.confirmed';
+  sessionId: string;
+}
+
+/** Daemon → all extensions: machine-wide AFK mode changed. */
+export interface ModeChangedMessage extends ModeState {
+  type: 'mode.changed';
+}
+
+/** Daemon → extension: Telegram user text to mirror into the CLI session. */
+export interface MirrorInputMessage {
+  type: 'mirror.input';
+  sessionId: string;
+  text: string;
+  source: 'telegram';
+  topicId: number;
+}
+
+/** Daemon → extension: slash-command relay envelope; execution is deferred. */
+export interface RelayCommandMessage {
+  type: 'relay.command';
+  sessionId: string;
+  command: string;
+  args: string[];
+}
+
 export type OutboundMessage =
   | RegisteredMessage
   | PingMessage
   | InjectMessage
-  | PermissionResponseMessage;
+  | PermissionResponseMessage
+  | AfkActivatedMessage
+  | BackConfirmedMessage
+  | ModeChangedMessage
+  | MirrorInputMessage
+  | RelayCommandMessage;
 
 // ── Connection state ─────────────────────────────────────────────────────────
 
 /** Status of an extension session. */
 export type ConnectionStatus = 'registered' | 'unreachable';
 
-/** Public handle for a registered extension connection. */
-export interface ExtensionConnection {
+export interface BridgeSessionInfo {
   readonly sessionId: string;
+  readonly sessionName: string;
+  readonly cwd: string;
+}
+
+export interface RegistrationExtras {
+  mode?: ModeState;
+  topicId?: number;
+}
+
+export type RegistrationAugmenter = (session: BridgeSessionInfo) => Promise<RegistrationExtras>;
+
+/** Public handle for a registered extension connection. */
+export interface ExtensionConnection extends BridgeSessionInfo {
   readonly status: ConnectionStatus;
   /** Send a typed outbound message to this extension. */
   send(msg: OutboundMessage): void;
@@ -170,6 +246,8 @@ interface InternalConnection extends ExtensionConnection {
   status: ConnectionStatus;
   /** Human-readable session label supplied in the `hello` message (SESSION_NAME env var). */
   readonly sessionName: string;
+  /** Working directory supplied by the extension, or daemon cwd for legacy extensions. */
+  readonly cwd: string;
   readonly socket: net.Socket;
   /** ID of the ping we're waiting on, or undefined if no outstanding ping. */
   pendingPingId: string | undefined;
@@ -190,6 +268,8 @@ interface InternalConnection extends ExtensionConnection {
  * - `stream.error`         — terminal error for a CLI response
  * - `permission.request`   — destructive tool needs user approval (ADR-9)
  * - `permission.cancelled` — extension abandoned a pending permission (ADR-9)
+ * - `afk.request`          — CLI user requested machine-wide AFK mode (ADR-11)
+ * - `back.request`         — CLI user requested machine-wide back-at-desk mode (ADR-11)
  */
 export interface BridgeEmitter {
   on(event: 'session.registered', listener: (sessionId: string) => void): this;
@@ -217,6 +297,8 @@ export interface BridgeEmitter {
     event: 'permission.cancelled',
     listener: (sessionId: string, permissionId: string) => void,
   ): this;
+  on(event: 'afk.request', listener: (sessionId: string) => void): this;
+  on(event: 'back.request', listener: (sessionId: string) => void): this;
   off(event: string, listener: (...args: unknown[]) => void): this;
 }
 
@@ -231,6 +313,7 @@ export class ExtensionBridge implements BridgeEmitter {
   private server: net.Server | null = null;
   /** Registered sessions, keyed by sessionId. */
   private readonly sessions = new Map<string, InternalConnection>();
+  private registrationAugmenter: RegistrationAugmenter | undefined;
   /** Sockets that have connected but not yet sent `register`. */
   private readonly pendingSockets = new Set<net.Socket>();
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -264,6 +347,8 @@ export class ExtensionBridge implements BridgeEmitter {
     event: 'permission.cancelled',
     listener: (sessionId: string, permissionId: string) => void,
   ): this;
+  on(event: 'afk.request', listener: (sessionId: string) => void): this;
+  on(event: 'back.request', listener: (sessionId: string) => void): this;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: string, listener: (...args: any[]) => void): this {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
@@ -350,6 +435,39 @@ export class ExtensionBridge implements BridgeEmitter {
    */
   getSession(sessionId: string): ExtensionConnection | undefined {
     return this.sessions.get(sessionId);
+  }
+
+  getSessionInfo(sessionId: string): BridgeSessionInfo | undefined {
+    const conn = this.sessions.get(sessionId);
+    return conn && conn.status === 'registered'
+      ? { sessionId: conn.sessionId, sessionName: conn.sessionName, cwd: conn.cwd }
+      : undefined;
+  }
+
+  listSessions(): BridgeSessionInfo[] {
+    return Array.from(this.sessions.values())
+      .filter((conn) => conn.status === 'registered')
+      .map((conn) => ({ sessionId: conn.sessionId, sessionName: conn.sessionName, cwd: conn.cwd }));
+  }
+
+  setRegistrationAugmenter(augmenter: RegistrationAugmenter): void {
+    if (this.registrationAugmenter !== undefined) {
+      throw new Error('registration augmenter already set');
+    }
+    this.registrationAugmenter = augmenter;
+  }
+
+  sendToSession(sessionId: string, msg: OutboundMessage): boolean {
+    const conn = this.sessions.get(sessionId);
+    if (conn === undefined || conn.status !== 'registered') return false;
+    conn.send(msg);
+    return true;
+  }
+
+  broadcastToSessions(msg: OutboundMessage): void {
+    for (const conn of this.sessions.values()) {
+      if (conn.status === 'registered') conn.send(msg);
+    }
   }
 
   /**
@@ -478,7 +596,7 @@ export class ExtensionBridge implements BridgeEmitter {
 
     switch (type) {
       case 'hello':
-        this.handleHello(socket, msg as RegisterMessage);
+        void this.handleHello(socket, msg as RegisterMessage);
         break;
       case 'pong':
         if (conn !== undefined) this.handlePong(conn, msg as PongMessage);
@@ -535,12 +653,34 @@ export class ExtensionBridge implements BridgeEmitter {
         }
         break;
       }
+      case 'afk.request': {
+        if (conn !== undefined) {
+          const ar = msg as AfkRequestMessage;
+          if (ar.sessionId === conn.sessionId) {
+            this._emitter.emit('afk.request', conn.sessionId);
+          } else {
+            console.warn('[bridge] afk.request: sessionId mismatch — dropping');
+          }
+        }
+        break;
+      }
+      case 'back.request': {
+        if (conn !== undefined) {
+          const br = msg as BackRequestMessage;
+          if (br.sessionId === conn.sessionId) {
+            this._emitter.emit('back.request', conn.sessionId);
+          } else {
+            console.warn('[bridge] back.request: sessionId mismatch — dropping');
+          }
+        }
+        break;
+      }
       default:
         console.warn(`[bridge] Unknown message type "${String(type)}" — ignoring`);
     }
   }
 
-  private handleHello(socket: net.Socket, msg: RegisterMessage): void {
+  private async handleHello(socket: net.Socket, msg: RegisterMessage): Promise<void> {
     const { sessionId } = msg;
 
     if (typeof sessionId !== 'string' || sessionId.length === 0) {
@@ -586,6 +726,7 @@ export class ExtensionBridge implements BridgeEmitter {
     const conn: InternalConnection = {
       sessionId,
       sessionName: msg.sessionName,
+      cwd: typeof msg.cwd === 'string' && msg.cwd.length > 0 ? msg.cwd : process.cwd(),
       socket,
       status: 'registered',
       pendingPingId: undefined,
@@ -604,7 +745,28 @@ export class ExtensionBridge implements BridgeEmitter {
     this.pendingSockets.delete(socket);
     this.sessions.set(sessionId, conn);
 
-    conn.send({ type: 'session.registered', sessionId });
+    let registrationExtras: RegistrationExtras = {};
+    if (this.registrationAugmenter !== undefined) {
+      try {
+        const extras = await this.registrationAugmenter({
+          sessionId: conn.sessionId,
+          sessionName: conn.sessionName,
+          cwd: conn.cwd,
+        });
+        registrationExtras = {
+          ...(extras.mode !== undefined && { mode: extras.mode }),
+          ...(typeof extras.topicId === 'number' && { topicId: extras.topicId }),
+        };
+      } catch (err) {
+        console.warn('[bridge] Registration augmenter failed:', err instanceof Error ? err.message : String(err));
+      }
+    }
+
+    if (this.sessions.get(sessionId) !== conn || socket.destroyed) {
+      return;
+    }
+
+    conn.send({ type: 'session.registered', sessionId, ...registrationExtras });
     console.log(`[bridge] Session registered: ${sessionId}`);
     this._emitter.emit('session.registered', sessionId);
   }

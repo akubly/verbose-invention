@@ -58,6 +58,8 @@ export class FakeBridge implements BridgeEmitter {
     event: 'permission.cancelled',
     listener: (sessionId: string, permissionId: string) => void,
   ): this;
+  on(event: 'afk.request', listener: (sessionId: string) => void): this;
+  on(event: 'back.request', listener: (sessionId: string) => void): this;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: string, listener: (...args: any[]) => void): this {
     this.onCalls.push({ event, listener: listener as (...args: unknown[]) => void });
@@ -98,6 +100,16 @@ export class FakeBridge implements BridgeEmitter {
   /** Synchronously emit a `permission.cancelled` event to all registered listeners. */
   emitPermissionCancelled(sessionId: string, permissionId: string): void {
     this._emitter.emit('permission.cancelled', sessionId, permissionId);
+  }
+
+  /** Synchronously emit an `afk.request` event to all registered listeners. */
+  emitAfkRequest(sessionId: string): void {
+    this._emitter.emit('afk.request', sessionId);
+  }
+
+  /** Synchronously emit a `back.request` event to all registered listeners. */
+  emitBackRequest(sessionId: string): void {
+    this._emitter.emit('back.request', sessionId);
   }
 
   /** Synchronously emit a `session.disconnected` event to all registered listeners. */

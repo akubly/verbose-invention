@@ -30,6 +30,8 @@ export const SAFE_TOOLS: ReadonlySet<string> = new Set([
   'memory-read_graph',
   'memory-open_nodes',
   'memory-search_nodes',
+  // SDK kind: 'memory' — Copilot CLI memory storage (store_memory). Non-destructive.
+  'memory',
 ]);
 
 export function isDestructive(toolName: string): boolean {

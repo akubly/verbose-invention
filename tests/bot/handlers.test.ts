@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { registerHandlers } from '../../src/bot/handlers.js';
+import { disposePromptRegistry } from '../../src/bot/prompt.js';
 import type { SessionEntry } from '../../src/types.js';
 import type { ISessionRegistry } from '../../src/sessions/registry.js';
 import { makeMockFactory, makeMockSession } from '../mocks/sdk.js';
@@ -539,6 +540,92 @@ describe('registerHandlers', () => {
 
       const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
       expect(replyText).toContain('--model');
+    });
+  });
+
+  // ── eager prompt listener installation (ADR-9 / grammY guard) ───────────
+
+  describe('eager callback_query:data listener for interactiveDestructive', () => {
+    it('installs the callback_query:data listener during registerHandlers, before any prompt is invoked', () => {
+      const { bot, onHandlers } = makeMockBot();
+      const registry = makeStubRegistry();
+      const factory = makeMockFactory();
+
+      registerHandlers({
+        bot: bot as any,
+        registry,
+        factory,
+        globalModel: 'test-model',
+        permissionPolicy: 'interactiveDestructive',
+      });
+
+      // The listener must be installed at setup time — before polling starts.
+      // If this fails, the bot.on() call would have happened lazily inside a
+      // grammY handler, triggering the "registering listeners from within other
+      // listeners" error in production.
+      expect(bot.on).toHaveBeenCalledWith('callback_query:data', expect.any(Function));
+      expect(onHandlers.has('callback_query:data')).toBe(true);
+
+      disposePromptRegistry(bot as any);
+    });
+
+    it('does NOT install callback_query:data listener when permissionPolicy is not interactiveDestructive', () => {
+      const { bot } = makeMockBot();
+      const registry = makeStubRegistry();
+      const factory = makeMockFactory();
+
+      registerHandlers({
+        bot: bot as any,
+        registry,
+        factory,
+        globalModel: 'test-model',
+        // default: no permissionPolicy (approveAll / denyAll)
+      });
+
+      const callbackQueryCalls = (bot.on as ReturnType<typeof vi.fn>).mock.calls.filter(
+        ([event]: [string]) => event === 'callback_query:data',
+      );
+      expect(callbackQueryCalls).toHaveLength(0);
+    });
+
+    it('does not call bot.on(callback_query:data) again when promptUserForPermission runs later', async () => {
+      // Simulates the grammY scenario: listener was installed at setup time,
+      // and a subsequent prompt invocation must NOT try to register again.
+      const { bot, onHandlers } = makeMockBot();
+      const registry = makeStubRegistry([ENTRY]);
+      const factory = makeMockFactory(makeMockSession(['ok']));
+
+      registerHandlers({
+        bot: bot as any,
+        registry,
+        factory,
+        globalModel: 'test-model',
+        permissionPolicy: 'interactiveDestructive',
+      });
+
+      const callbackQueryCallsAtSetup = (bot.on as ReturnType<typeof vi.fn>).mock.calls.filter(
+        ([event]: [string]) => event === 'callback_query:data',
+      ).length;
+      expect(callbackQueryCallsAtSetup).toBe(1);
+
+      // Invoke the callback_query handler directly (simulates grammY routing a
+      // button tap). The handler should resolve from the registry without any
+      // new bot.on() registration.
+      const callbackHandler = onHandlers.get('callback_query:data')!;
+      const fakeCtx = {
+        callbackQuery: { data: 'perm:approve:no-such-id', message: undefined },
+        chat: undefined,
+        answerCallbackQuery: vi.fn().mockResolvedValue(true),
+      };
+      await callbackHandler(fakeCtx);
+
+      // bot.on must still have been called exactly once (at setup).
+      const callbackQueryCallsAfterPrompt = (bot.on as ReturnType<typeof vi.fn>).mock.calls.filter(
+        ([event]: [string]) => event === 'callback_query:data',
+      ).length;
+      expect(callbackQueryCallsAfterPrompt).toBe(1);
+
+      disposePromptRegistry(bot as any);
     });
   });
 

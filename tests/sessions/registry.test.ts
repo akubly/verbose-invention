@@ -68,6 +68,16 @@ describe('SessionRegistry', () => {
       expect(ts).toBeGreaterThanOrEqual(before);
       expect(ts).toBeLessThanOrEqual(after);
     });
+
+    it('defaults cwd to the daemon working directory on registration', async () => {
+      await registry.register(42, -100, 'cwd-default');
+      expect(registry.resolve(42)?.cwd).toBe(process.cwd());
+    });
+
+    it('stores an explicit cwd on registration', async () => {
+      await registry.register(43, -100, 'cwd-explicit', undefined, 'D:\\git\\verbose-invention');
+      expect(registry.resolve(43)?.cwd).toBe('D:\\git\\verbose-invention');
+    });
   });
 
   // ── list ────────────────────────────────────────────────────────────────────
@@ -149,6 +159,28 @@ describe('SessionRegistry', () => {
       const data = JSON.parse(raw);
       expect(Object.keys(data.entries)).toContain('7');
     });
+
+    it('round-trips AFK mode fields and lastTopicId through persistence', async () => {
+      await registry.upsert({
+        sessionName: 'afk-session',
+        topicId: 77,
+        chatId: -100,
+        createdAt: '2026-05-24T23:19:14-07:00',
+        cwd: 'D:\\git\\verbose-invention',
+        mode: 'afk',
+        afkSince: '2026-05-24T23:19:14-07:00',
+        lastTopicId: 77,
+      });
+
+      const reloaded = new SessionRegistry(storePath);
+      await reloaded.load();
+      const entry = reloaded.resolve(77);
+
+      expect(entry?.cwd).toBe('D:\\git\\verbose-invention');
+      expect(entry?.mode).toBe('afk');
+      expect(entry?.afkSince).toBe('2026-05-24T23:19:14-07:00');
+      expect(entry?.lastTopicId).toBe(77);
+    });
   });
 
   // ── model field persistence ──────────────────────────────────────────────
@@ -196,6 +228,30 @@ describe('SessionRegistry', () => {
       const entry = registry.resolve(42);
       expect(entry?.sessionName).toBe('legacy-session');
       expect(entry?.model).toBeUndefined();
+    });
+
+    it('load() defaults cwd for legacy entries that predate the field', async () => {
+      const legacy = {
+        version: 1,
+        entries: {
+          '42': {
+            sessionName: 'legacy-cwd-session',
+            topicId: 42,
+            chatId: -100,
+            createdAt: '2024-01-01T00:00:00.000Z',
+          },
+        },
+      };
+      await fs.mkdir(path.dirname(storePath), { recursive: true });
+      await fs.writeFile(storePath, JSON.stringify(legacy), 'utf-8');
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await registry.load();
+        expect(registry.resolve(42)?.cwd).toBe(process.cwd());
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
   });
 

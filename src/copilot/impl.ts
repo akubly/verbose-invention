@@ -13,6 +13,7 @@ import {
   approveAll,
   type PermissionHandler,
   type PermissionRequest,
+  type SessionEventHandler,
 } from '@github/copilot-sdk';
 import type {
   CopilotSession,
@@ -38,15 +39,49 @@ function getPermissionToolName(req: ToolPermissionRequest): string {
   if (typeof req.toolName === 'string' && req.toolName.length > 0) return req.toolName;
   if (req.kind === 'shell') return process.platform === 'win32' ? 'powershell' : 'bash';
   if (req.kind === 'write') return 'edit';
+  // 'hook' kind: a pre-tool-use hook is asking for confirmation on behalf of the gated tool.
+  // Delegate to the gated tool name so the classifier sees the real tool, not 'hook'.
+  // Cast needed: 'hook' appears in session-events.d.ts but not in the exported PermissionRequest type.
+  if ((req.kind as string) === 'hook') {
+    const gated = req['toolName'];
+    if (typeof gated === 'string' && gated.length > 0) return gated;
+  }
   return String(req.kind);
 }
 
-function serializePermissionArgs(args: unknown): string {
+function serializePermissionArgs(req: ToolPermissionRequest): string {
   try {
-    return JSON.stringify(args ?? {});
+    // For shell requests, the real SDK sends fullCommandText (not args). Use it when present.
+    if (req.kind === 'shell') {
+      const fullCommandText = req['fullCommandText'];
+      if (typeof fullCommandText === 'string') return JSON.stringify({ command: fullCommandText });
+    }
+    return JSON.stringify(req.args ?? {});
   } catch {
     return '"[unserializable args]"';
   }
+}
+
+/**
+ * Diagnostic: builds a SessionEventHandler to pass as onEvent in session config.
+ * Logs all permission.requested events — including resolvedByHook=true cases where
+ * the CLI's own hooks approved the permission before our onPermissionRequest runs.
+ *
+ * If SDK permission.requested events appear (resolvedByHook=false) but the
+ * [copilot:perm] onPermissionRequest logs are absent, the CLI hooks bypassed us.
+ */
+function buildPermissionDiagnosticHandler(sessionName: string): SessionEventHandler {
+  return (event) => {
+    if (event.type !== 'permission.requested') return;
+    const { requestId, permissionRequest: pr, resolvedByHook: rbh } = event.data;
+    const cmdInfo: string = pr.kind === 'shell'
+      ? pr.fullCommandText
+      : ('toolName' in pr ? String(pr.toolName) : '(n/a)');
+    console.log(
+      '[copilot:perm] SDK permission.requested: session=%s requestId=%s kind=%s resolvedByHook=%s cmd=%s',
+      sessionName, requestId, pr.kind, String(rbh ?? false), cmdInfo,
+    );
+  };
 }
 
 function makePermissionHandler(
@@ -59,14 +94,26 @@ function makePermissionHandler(
     return async (req: PermissionRequest, invocation) => {
       const toolRequest = req as ToolPermissionRequest;
       const toolName = getPermissionToolName(toolRequest);
+      const argsStr = serializePermissionArgs(toolRequest);
+      // Diagnostic: log every invocation before branching so we can confirm the handler fires.
+      // If this line is ABSENT from logs while the SDK permission.requested event fires with
+      // resolvedByHook=true, the CLI's built-in hooks bypassed our handler entirely.
+      console.log(
+        '[copilot:perm] onPermissionRequest: kind=%s toolName=%s args=%s',
+        req.kind, toolName, argsStr,
+      );
       if (isKnownSafe(toolName)) {
+        console.log('[copilot:perm] decision=auto-approve (isKnownSafe) toolName=%s', toolName);
         return approveAll(req, invocation);
       }
       if (!isDestructive(toolName)) {
+        console.log('[copilot:perm] decision=denied-by-rules (unknown tool) toolName=%s', toolName);
         return { kind: 'denied-by-rules' as const, rules: [] };
       }
+      console.log('[copilot:perm] decision=prompting-user toolName=%s', toolName);
       try {
-        const approved = await promptCallback(toolName, serializePermissionArgs(toolRequest.args));
+        const approved = await promptCallback(toolName, argsStr);
+        console.log('[copilot:perm] user decision=%s toolName=%s', approved ? 'approved' : 'denied', toolName);
         return approved
           ? { kind: 'approved' as const }
           : { kind: 'denied-by-rules' as const, rules: [] };
@@ -249,6 +296,7 @@ export class CopilotClientImpl implements CopilotSessionFactory {
         model: model ?? this.model,
         streaming: true,
         onPermissionRequest: makePermissionHandler(this.permissionPolicy, permissionCallback),
+        onEvent: buildPermissionDiagnosticHandler(sessionName),
       });
       return new CopilotSessionAdapter(sdkSession);
     } catch (err) {
@@ -270,6 +318,7 @@ export class CopilotClientImpl implements CopilotSessionFactory {
       model: model ?? this.model,
       streaming: true,
       onPermissionRequest: makePermissionHandler(this.permissionPolicy, permissionCallback),
+      onEvent: buildPermissionDiagnosticHandler(sessionName),
     });
     return new CopilotSessionAdapter(sdkSession);
   }

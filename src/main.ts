@@ -15,6 +15,7 @@ import { CopilotClientImpl, type PermissionPolicy } from './copilot/impl.js';
 import { loadConfig, saveConfig, getConfigPath, getReachDataDir } from './config/config.js';
 import { Bot } from 'grammy';
 import { ExtensionBridge } from './bridge/extensionBridge.js';
+import { AfkModeController } from './bot/afkMode.js';
 import { BridgeSessionFactory } from './bridge/bridgeSessionFactory.js';
 import { CompositeSessionFactory } from './bridge/compositeSessionFactory.js';
 import { generatePipeAuth, cleanupPipeAuth } from './bridge/pipeAuth.js';
@@ -47,6 +48,8 @@ async function main(): Promise<void> {
 
   // Resolve chat ID: env var > config.json > pairing mode
   let chatId: number | undefined;
+  let allowedUserIds: number[] = [];
+  const config = await loadConfig(configPath);
 
   const rawChatId = process.env.TELEGRAM_CHAT_ID;
   if (rawChatId) {
@@ -55,12 +58,17 @@ async function main(): Promise<void> {
       console.error('[reach] Fatal: TELEGRAM_CHAT_ID must be a valid integer');
       process.exit(1);
     }
-  } else {
-    const config = await loadConfig(configPath);
-    if (config.telegramChatId) {
-      chatId = config.telegramChatId;
-      console.log(`[reach] Using chat ID from config: ***${String(chatId).slice(-4)}`);
-    }
+  } else if (config.telegramChatId) {
+    chatId = config.telegramChatId;
+    console.log(`[reach] Using chat ID from config: ***${String(chatId).slice(-4)}`);
+  }
+
+  if (process.env.TELEGRAM_ALLOWED_USER_IDS) {
+    allowedUserIds = process.env.TELEGRAM_ALLOWED_USER_IDS.split(',')
+      .map((id) => Number(id.trim()))
+      .filter((id) => Number.isInteger(id));
+  } else if (Array.isArray(config.telegramAllowedUserIds)) {
+    allowedUserIds = config.telegramAllowedUserIds.filter((id) => Number.isInteger(id));
   }
 
   // If no chat ID, enter pairing mode
@@ -88,7 +96,10 @@ async function main(): Promise<void> {
           await ctx.reply('❌ Could not determine chat ID.');
           return;
         }
-        await saveConfig(configPath, { telegramChatId: pairedChatId });
+        await saveConfig(configPath, {
+          telegramChatId: pairedChatId,
+          ...(ctx.from?.id !== undefined && { telegramAllowedUserIds: [ctx.from.id] }),
+        });
         clearTimeout(timeout);
         await ctx.reply(`✅ Paired! Chat ID saved. Restarting...`);
         console.log(`[reach] Paired with chat ${pairedChatId}. Restart to begin normal operation.`);
@@ -135,7 +146,22 @@ async function main(): Promise<void> {
     ? new CompositeSessionFactory(new BridgeSessionFactory(bridge), sdkFactory)
     : sdkFactory;
 
+  await registry.load();
+
   const bot = createBot(token, chatId);
+  if (allowedUserIds.length === 0) {
+    console.warn('[reach] No Telegram user allow-list configured; AFK mirror input from Telegram will be blocked. Re-pair or set TELEGRAM_ALLOWED_USER_IDS.');
+  }
+  if (permissionPolicy === 'approveAll') {
+    console.warn('[reach] REACH_PERMISSION_POLICY=approveAll; AFK mirror input from Telegram will be blocked for safety. Use interactiveDestructive for remote input.');
+  }
+
+  const afkMode = bridge
+    ? new AfkModeController(bot, bridge, registry, chatId, undefined, {
+      allowedUserIds: new Set(allowedUserIds),
+      allowTelegramInput: permissionPolicy !== 'approveAll',
+    })
+    : undefined;
 
   const relay = registerHandlers({
     bot,
@@ -143,9 +169,9 @@ async function main(): Promise<void> {
     factory,
     globalModel: model,
     permissionPolicy,
+    ...(afkMode !== undefined && { telegramMirror: afkMode }),
   });
 
-  await registry.load();
   console.log(`[reach] Model: ${model}`);
   console.log(`[reach] Permission policy: ${permissionPolicy}`);
   console.log(`[reach] Registry: ${registryPath}`);
@@ -169,7 +195,12 @@ async function main(): Promise<void> {
   process.on('SIGTERM', shutdown);
 
   console.log('[reach] Bot started. Listening for messages…');
-  await bot.start();
+  // Explicit allowed_updates: grammY's auto-inference from registered handlers
+  // can race with the Telegram-side sticky setting from a prior bot instance.
+  // Listing the update kinds we care about avoids "buttons do nothing" bugs.
+  await bot.start({
+    allowed_updates: ['message', 'edited_message', 'callback_query'],
+  });
 }
 
 main().catch((err) => {

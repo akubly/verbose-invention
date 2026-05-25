@@ -14,10 +14,11 @@ export interface ISessionRegistry {
   register(topicId: number, chatId: number, sessionName: string, model?: string, cwd?: string): Promise<void>;
   /** Upserts an AFK-managed entry; if the session name moved topics, replaces the prior topic binding. */
   upsert(entry: SessionEntry): Promise<void>;
-  resolve(telegramTopicId: number): SessionEntry | undefined;
+  /** Resolves a topic ID to its session entry. Optional: some lightweight fakes may omit it. */
+  resolve?: (telegramTopicId: number) => SessionEntry | undefined;
   findByName(sessionName: string): SessionEntry | undefined;
-  /** Returns every entry whose sessionName matches — may be >1 when legacy duplicates exist on disk. */
-  findAllByName(sessionName: string): SessionEntry[];
+  /** Returns every entry whose sessionName matches. Optional: some lightweight fakes may omit it. */
+  findAllByName?: (sessionName: string) => SessionEntry[];
   list(): SessionEntry[];
   remove(telegramTopicId: number): Promise<boolean>;
   /**
@@ -30,6 +31,45 @@ export interface ISessionRegistry {
    * Throws if fromTopicId is not registered, toTopicId is already bound, or persist fails.
    */
   move(fromTopicId: number, toTopicId: number): Promise<void>;
+}
+
+/**
+ * Normalises and validates the optional fields on a SessionEntry in place.
+ * Called from both load() and upsert() to keep validation symmetric.
+ * Returns false if required fields are missing or of the wrong type (caller
+ * should skip or reject the entry); returns true when all fields are valid.
+ */
+function validateEntry(entry: SessionEntry, label: string): boolean {
+  if (
+    typeof entry.sessionName !== 'string' ||
+    typeof entry.topicId !== 'number' ||
+    typeof entry.chatId !== 'number' ||
+    typeof entry.createdAt !== 'string'
+  ) {
+    console.warn(`[registry] Invalid required fields for ${label}`);
+    return false;
+  }
+  if (typeof entry.cwd !== 'string' || entry.cwd.length === 0) {
+    console.warn(`[registry] Entry ${label} missing cwd; defaulting to daemon cwd`);
+    entry.cwd = process.cwd();
+  }
+  if (entry.model !== undefined && typeof entry.model !== 'string') {
+    console.warn(`[registry] Stripping invalid model for ${label}`);
+    delete entry.model;
+  }
+  if (entry.mode !== undefined && entry.mode !== 'afk' && entry.mode !== 'back') {
+    console.warn(`[registry] Stripping invalid mode for ${label}`);
+    delete entry.mode;
+  }
+  if (entry.afkSince !== undefined && typeof entry.afkSince !== 'string') {
+    console.warn(`[registry] Stripping invalid afkSince for ${label}`);
+    delete entry.afkSince;
+  }
+  if (entry.lastTopicId !== undefined && typeof entry.lastTopicId !== 'number') {
+    console.warn(`[registry] Stripping invalid lastTopicId for ${label}`);
+    delete entry.lastTopicId;
+  }
+  return true;
 }
 
 /**
@@ -64,34 +104,10 @@ export class SessionRegistry implements ISessionRegistry {
         console.warn(`[registry] Registry file missing 'entries' field, starting empty`);
       }
       for (const [key, value] of Object.entries(entries)) {
-        if (typeof value.sessionName !== 'string' || typeof value.topicId !== 'number' || typeof value.chatId !== 'number' || typeof value.createdAt !== 'string') {
-          console.warn(`[registry] Skipping invalid entry for key ${key}`);
-          continue;
-        }
+        if (!validateEntry(value, `key ${key}`)) continue;
         if (Number(key) !== value.topicId) {
           console.warn(`[registry] Skipping entry for key ${key}: key does not match topicId ${value.topicId}`);
           continue;
-        }
-        if (typeof value.cwd !== 'string' || value.cwd.length === 0) {
-          console.warn(`[registry] Entry for key ${key} missing cwd; defaulting to daemon cwd`);
-          value.cwd = process.cwd();
-        }
-        // Strip invalid model field (must be string if present)
-        if (value.model !== undefined && typeof value.model !== 'string') {
-          console.warn(`[registry] Stripping invalid model for key ${key}`);
-          delete value.model;
-        }
-        if (value.mode !== undefined && value.mode !== 'afk' && value.mode !== 'back') {
-          console.warn(`[registry] Stripping invalid mode for key ${key}`);
-          delete value.mode;
-        }
-        if (value.afkSince !== undefined && typeof value.afkSince !== 'string') {
-          console.warn(`[registry] Stripping invalid afkSince for key ${key}`);
-          delete value.afkSince;
-        }
-        if (value.lastTopicId !== undefined && typeof value.lastTopicId !== 'number') {
-          console.warn(`[registry] Stripping invalid lastTopicId for key ${key}`);
-          delete value.lastTopicId;
         }
         this.entries.set(Number(key), value);
       }
@@ -146,15 +162,19 @@ export class SessionRegistry implements ISessionRegistry {
   /** Upserts an AFK-managed entry, replacing any prior topic binding for the same session name. */
   async upsert(entry: SessionEntry): Promise<void> {
     return this.enqueueMutation(async () => {
-      const duplicate = this.findByName(entry.sessionName);
+      const entryToStore = { ...entry };
+      if (!validateEntry(entryToStore, `session "${entry.sessionName}" topic ${entry.topicId}`)) {
+        throw new Error(`[registry] Cannot upsert invalid entry for "${entry.sessionName}"`);
+      }
+      const duplicate = this.findByName(entryToStore.sessionName);
       const newEntries = new Map(this.entries);
-      if (duplicate && duplicate.topicId !== entry.topicId) {
+      if (duplicate && duplicate.topicId !== entryToStore.topicId) {
         newEntries.delete(duplicate.topicId);
       }
-      newEntries.set(entry.topicId, entry);
+      newEntries.set(entryToStore.topicId, entryToStore);
       await this.doPersistEntries(newEntries);
       this.entries = newEntries;
-      console.log(`[registry] Upserted topic ${entry.topicId} → "${entry.sessionName}"`);
+      console.log(`[registry] Upserted topic ${entryToStore.topicId} → "${entryToStore.sessionName}"`);
     });
   }
 

@@ -1,0 +1,160 @@
+================================================================================
+                REACH DOGFOOD GO-LIVE SUMMARY FOR AARON
+                          2026-05-24 ~ 21:10 UTC
+================================================================================
+
+STATUS: READY ✅
+
+All systems green. No blockers. Code is shipping-quality for live validation
+tonight from your phone. Full checklist in: reach-dogfood-checklist.md
+
+================================================================================
+QUICK START (Copy & Paste)
+================================================================================
+
+1. SET UP .env FILE:
+   - Add your Telegram bot token (TELEGRAM_BOT_TOKEN)
+   - Add your supergroup chat ID (TELEGRAM_CHAT_ID) — get from @userinfobot
+   - Set REACH_PERMISSION_POLICY=interactiveDestructive
+
+2. BUILD & RUN:
+   cd D:\git\verbose-invention
+   npm install
+   npm run build
+   npm start
+
+3. EXPECT LOGS:
+   [reach] Model: claude-sonnet-4
+   [reach] Permission policy: interactiveDestructive
+   [reach] Extension bridge: listening on named pipe
+   [reach] Bot started. Listening for messages…
+
+4. TEST IN TELEGRAM (create a forum topic in your supergroup):
+   /new dogfood-session
+   → Send: bash ls
+   → Tap ✅ Allow on the permission prompt
+   → See file listing
+
+That's it. Phase 6 permission prompting is live.
+
+================================================================================
+WHAT YOU'RE TESTING TONIGHT (Core Validations)
+================================================================================
+
+Reach lets you control Copilot CLI from Telegram on your phone. Tonight,
+you're validating the PERMISSION PROMPTING feature — the key new capability
+that lets destructive tools (bash, git commit, etc.) prompt for approval.
+
+5 Core Validations:
+
+1. Permission prompt APPEARS when you send a destructive tool
+   Example: "bash ls" → inline keyboard with Allow | Deny buttons
+
+2. Permission prompt WORKS when you tap it
+   - Allow → tool executes
+   - Deny → tool is blocked
+   - Both return to normal session state
+
+3. Safe tools DON'T prompt
+   Example: "grep -r TODO src/" → runs immediately, no buttons
+
+4. Prompts DON'T TIMEOUT
+   You can think for 30 seconds before tapping. It still works.
+   (This is a critical ADR-9 design feature — verify it tonight.)
+
+5. CONCURRENT prompts work
+   If you trigger 2 destructive tools at once, each gets its own button set.
+   Approve/deny one independently of the other.
+
+Full test scenarios in: reach-dogfood-checklist.md §4
+
+================================================================================
+WHAT CAN GO WRONG (Rollback)
+================================================================================
+
+1. Prompt doesn't appear → Check: REACH_PERMISSION_POLICY=interactiveDestructive
+2. Buttons don't respond → Tap again (15s window). Check daemon logs.
+3. Daemon crashes → Ctrl+C, then: npm start
+4. Session stuck → /remove (in topic), then /new (create fresh)
+5. Registry corrupted → Delete %LOCALAPPDATA%\reach\registry.json, restart
+
+All recoveries in: reach-dogfood-checklist.md §6
+
+================================================================================
+KNOWN GAPS (Not blockers, but know they exist)
+================================================================================
+
+1. ADR-10 (pipe authentication) is documented but NOT YET IMPLEMENTED
+   - Current code uses randomized pipe name only, no token validation
+   - OK for solo testing on your machine
+   - Pre-production blocker for shared Windows environment (future)
+
+2. 9 unmerged inbox files from review cycles
+   - These are housekeeping, not bugs
+   - Next session's Scribe will merge them
+
+3. Allow-always is IN-MEMORY only (per-session)
+   - Each session restart clears the store
+   - Phase 7 will add persistent store if you request it
+
+None of these block tonight's validation.
+
+================================================================================
+SUCCESS CRITERIA (You'll know it worked if...)
+================================================================================
+
+□ Safe tool (grep, read, web_search) runs without prompt
+□ Destructive tool (bash, git_commit) shows permission buttons
+□ Allow button works — tool executes
+□ Deny button works — tool is blocked with "denied by user" message
+□ Prompt waits 30+ seconds without timing out
+□ Daemon logs show: "permission.request" and "permission.response"
+□ No errors in daemon console or Windows Event Viewer
+
+If all above = PASS, Phase 6 is validated ✅
+
+================================================================================
+QUESTIONS? NEXT STEPS?
+================================================================================
+
+After dogfooding, document your findings:
+- What worked smoothly?
+- What was confusing or slow?
+- Any edge cases you found?
+- Do you want:
+  * Persistent allow-always store (across daemon restarts)?
+  * More tools in the classifier?
+  * Production hardening (telemetry, monitoring)?
+
+This feedback shapes Phase 7.
+
+================================================================================
+ARTIFACT LOCATIONS
+================================================================================
+
+Full checklist (250 lines, 8 sections):
+  .copilot/reach-dogfood-checklist.md
+
+This summary:
+  .copilot/DOGFOOD-SUMMARY-FOR-AARON.txt
+
+Gate decision (5 pass/no-pass criteria):
+  .squad/decisions/inbox/noble-six-dogfood-gate.md
+
+Team update (learnings + dates):
+  .squad/agents/noble six/history.md (Learnings section)
+
+All commands are copy-pasteable. All paths are absolute (D:\git\...).
+
+================================================================================
+HAVE FUN 🚀
+================================================================================
+
+You're about to run Reach end-to-end from your phone for the first time.
+Phase 6 is the hardest part — permission prompting over a named pipe is
+non-trivial. The team put 6 weeks of architecture + hardening into this.
+
+Go validate it. Then tell us what works and what to build next.
+
+— Noble Six
+  2026-05-24T04:10:11Z

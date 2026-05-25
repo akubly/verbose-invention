@@ -1,6 +1,7 @@
 import type { Bot, Context } from 'grammy';
 import type { ISessionRegistry } from '../sessions/registry.js';
 import type { ExtensionBridge } from '../bridge/extensionBridge.js';
+import type { ModeState } from '../bridge/extensionBridge.js';
 
 export interface BridgeSessionInfo {
   sessionId: string;
@@ -8,14 +9,9 @@ export interface BridgeSessionInfo {
   cwd: string;
 }
 
-interface TopicBinding extends BridgeSessionInfo {
+export interface TopicBinding extends BridgeSessionInfo {
   topicId: number;
   topicUrl: string;
-}
-
-interface ModeState {
-  active: boolean;
-  since: string;
 }
 
 interface StreamState {
@@ -41,6 +37,10 @@ const MAX_RETRIES = 4;
 const MAX_MIRROR_TEXT_LENGTH = 4096;
 const MIRROR_RATE_WINDOW_MS = 60_000;
 const MIRROR_RATE_LIMIT = 20;
+const GLOBAL_MIRROR_RATE_LIMIT = 100;
+/** Cap Telegram retry_after to 30 s; an uncapped server value (e.g. 3600 s) would block the
+ *  topic queue for the full duration on each retry, stalling every other session. */
+const MAX_RATE_LIMIT_DELAY_MS = 30_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -64,6 +64,11 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Escape MarkdownV2 special characters for safe embedding in Telegram messages. */
+function escapeTgMdV2(text: string): string {
+  return text.replace(/[_*[\]()~`>#+=|{}.!\\-]/g, '\\$&');
+}
+
 export class AfkModeController {
   private mode: ModeState = { active: false, since: '' };
   private readonly sessionTopics = new Map<string, TopicBinding>();
@@ -74,6 +79,9 @@ export class AfkModeController {
   private readonly streamStates = new Map<string, StreamState>();
   private readonly streamChains = new Map<string, Promise<void>>();
   private readonly mirrorRates = new Map<string, MirrorRateState>();
+  private globalMirrorRate: MirrorRateState = { windowStartMs: 0, count: 0 };
+  /** Per-session index of active request IDs for O(1) disconnect cleanup. */
+  private readonly sessionRequestIds = new Map<string, Set<string>>();
 
   constructor(
     private readonly bot: Bot<Context>,
@@ -83,9 +91,15 @@ export class AfkModeController {
     private readonly delay: (ms: number) => Promise<void> = sleep,
     private readonly options: AfkModeOptions = {},
   ) {
-    this.bridge.on('afk.request', (sessionId) => { void this.activate(sessionId); });
-    this.bridge.on('back.request', () => { void this.deactivate(); });
-    this.bridge.on('session.disconnected', (sessionId) => { void this.handleDisconnect(sessionId); });
+    this.bridge.on('afk.request', (sessionId) => {
+      this.activate(sessionId).catch((err) => { console.error('[afk] activate failed:', errorText(err)); });
+    });
+    this.bridge.on('back.request', (sessionId) => {
+      this.deactivate(sessionId).catch((err) => { console.error('[afk] deactivate failed:', errorText(err)); });
+    });
+    this.bridge.on('session.disconnected', (sessionId) => {
+      this.handleDisconnect(sessionId).catch((err) => { console.error('[afk] handleDisconnect failed:', errorText(err)); });
+    });
     this.bridge.on('stream', (sessionId, requestId, chunk, done) => {
       this.enqueueStream(sessionId, requestId, chunk, done);
     });
@@ -114,8 +128,9 @@ export class AfkModeController {
       return true;
     }
 
+    // Fail-closed: refuse if no userId or user is not in the explicit allow-list.
     const userId = ctx.from?.id;
-    if (this.options.allowedUserIds !== undefined && (userId === undefined || !this.options.allowedUserIds.has(userId))) {
+    if (userId === undefined || !this.options.allowedUserIds?.has(userId)) {
       await ctx.reply('⛔ You are not authorized to control this Reach session.', { message_thread_id: topicId });
       return true;
     }
@@ -142,13 +157,22 @@ export class AfkModeController {
 
   private allowMirrorInput(sessionId: string): boolean {
     const now = Date.now();
+
+    // Global rate cap: 100 msgs/min across all sessions
+    const globalExpired = now - this.globalMirrorRate.windowStartMs >= MIRROR_RATE_WINDOW_MS;
+    if (globalExpired) this.globalMirrorRate = { windowStartMs: now, count: 0 };
+    if (this.globalMirrorRate.count >= GLOBAL_MIRROR_RATE_LIMIT) return false;
+
+    // Per-session rate cap: 20 msgs/min
     const current = this.mirrorRates.get(sessionId);
     if (!current || now - current.windowStartMs >= MIRROR_RATE_WINDOW_MS) {
       this.mirrorRates.set(sessionId, { windowStartMs: now, count: 1 });
+      this.globalMirrorRate.count++;
       return true;
     }
     if (current.count >= MIRROR_RATE_LIMIT) return false;
     current.count++;
+    this.globalMirrorRate.count++;
     return true;
   }
 
@@ -170,6 +194,33 @@ export class AfkModeController {
     this.activationPromise = this.activateAllSessions();
     try {
       await this.activationPromise;
+    } catch (err) {
+      // Rollback in-memory state so the daemon can retry cleanly.
+      const addedBindings = Array.from(this.sessionTopics.values());
+      this.mode = { active: false, since: '' };
+      this.sessionTopics.clear();
+      this.topicSessions.clear();
+      this.sessionRequestIds.clear();
+      // Best-effort registry rollback: revert any entries we flipped to 'afk'.
+      for (const binding of addedBindings) {
+        const entry = this.registry.findByName(binding.sessionName);
+        if (entry) {
+          const rolledBack = { ...entry, mode: 'back' as const };
+          delete rolledBack.afkSince;
+          await this.registry.upsert(rolledBack).catch((e) => {
+            console.warn('[afk] Registry rollback failed for', binding.sessionName, ':', errorText(e));
+          });
+        }
+      }
+      // Cleanup any pinned General summary that was partially posted.
+      await this.editGeneralSummary('❌ AFK mode activation failed.');
+      // Notify the requesting extension so it can surface the error to the user.
+      this.bridge.sendToSession(requestingSessionId, {
+        type: 'error',
+        sessionId: requestingSessionId,
+        error: errorText(err),
+      });
+      throw err;
     } finally {
       this.activationPromise = undefined;
     }
@@ -191,26 +242,36 @@ export class AfkModeController {
     this.bridge.broadcastToSessions({ type: 'mode.changed', active: true, since: this.mode.since });
   }
 
-  private async deactivate(): Promise<void> {
+  private async deactivate(requestingSessionId?: string): Promise<void> {
     if (this.activationPromise !== undefined) {
       await this.activationPromise;
     }
     if (!this.mode.active) {
-      console.warn('[afk] /back requested while AFK mode is inactive — no-op');
+      if (requestingSessionId) {
+        this.bridge.sendToSession(requestingSessionId, {
+          type: 'error',
+          sessionId: requestingSessionId,
+          error: 'Not in AFK mode.',
+        });
+      }
       return;
     }
 
     const bindings = Array.from(this.sessionTopics.values());
     for (const binding of bindings) {
-      await this.safeSendMessage('🖥️ Session resumed locally', binding.topicId);
-      await this.serializedTopicOperation(() => this.withRateLimitRetry(() =>
-        this.bot.api.closeForumTopic(this.chatId, binding.topicId),
-      ));
-      const existing = this.resolveBindingEntry(binding);
-      if (existing) {
-        const backEntry = { ...existing, mode: 'back' as const, lastTopicId: binding.topicId };
-        delete backEntry.afkSince;
-        await this.registry.upsert(backEntry);
+      try {
+        await this.safeSendMessage('🖥️ Session resumed locally', binding.topicId);
+        await this.serializedTopicOperation(() => this.withRateLimitRetry(() =>
+          this.bot.api.closeForumTopic(this.chatId, binding.topicId),
+        ));
+        const existing = this.resolveBindingEntry(binding);
+        if (existing) {
+          const backEntry = { ...existing, mode: 'back' as const, lastTopicId: binding.topicId };
+          delete backEntry.afkSince;
+          await this.registry.upsert(backEntry);
+        }
+      } catch (err) {
+        console.warn(`[afk] Error during deactivate cleanup for session ${binding.sessionId}:`, errorText(err));
       }
     }
 
@@ -222,6 +283,7 @@ export class AfkModeController {
     this.streamStates.clear();
     this.streamChains.clear();
     this.mirrorRates.clear();
+    this.sessionRequestIds.clear();
 
     for (const session of this.bridge.listSessions()) {
       this.bridge.sendToSession(session.sessionId, { type: 'back.confirmed', sessionId: session.sessionId });
@@ -230,9 +292,7 @@ export class AfkModeController {
   }
 
   private resolveBindingEntry(binding: TopicBinding) {
-    return typeof this.registry.resolve === 'function'
-      ? this.registry.resolve(binding.topicId)
-      : this.registry.findByName(binding.sessionName);
+    return this.registry.resolve?.(binding.topicId) ?? this.registry.findByName(binding.sessionName);
   }
 
   private async registrationExtras(session: BridgeSessionInfo): Promise<Record<string, unknown>> {
@@ -245,9 +305,8 @@ export class AfkModeController {
     const existingBinding = this.sessionTopics.get(session.sessionId);
     if (existingBinding) return existingBinding;
 
-    const matches = typeof this.registry.findAllByName === 'function'
-      ? this.registry.findAllByName(session.sessionName)
-      : [this.registry.findByName(session.sessionName)].filter((entry) => entry !== undefined);
+    const matches = this.registry.findAllByName?.(session.sessionName)
+      ?? [this.registry.findByName(session.sessionName)].filter((entry) => entry !== undefined);
     if (matches.length > 1) {
       console.warn(`[afk] Duplicate registry entries for "${session.sessionName}"; creating a fresh AFK topic instead of reusing lastTopicId`);
     }
@@ -314,11 +373,13 @@ export class AfkModeController {
 
   private async postGeneralSummary(): Promise<void> {
     const lines = [
-      '📡 AFK mode active.',
+      '📡 AFK mode active\\.',
       '',
-      ...Array.from(this.sessionTopics.values()).map((s) => `• ${s.sessionName} (${s.sessionId}) — ${s.cwd}`),
+      ...Array.from(this.sessionTopics.values()).map(
+        (s) => `• ${escapeTgMdV2(s.sessionName)} \\(${escapeTgMdV2(s.sessionId)}\\) — ${escapeTgMdV2(s.cwd)}`,
+      ),
     ];
-    const msg = await this.bot.api.sendMessage(this.chatId, lines.join('\n'));
+    const msg = await this.bot.api.sendMessage(this.chatId, lines.join('\n'), { parse_mode: 'MarkdownV2' });
     this.generalSummaryMessageId = msg.message_id;
     try {
       await this.bot.api.pinChatMessage(this.chatId, msg.message_id, { disable_notification: true });
@@ -357,11 +418,15 @@ export class AfkModeController {
     this.sessionTopics.delete(sessionId);
     this.topicSessions.delete(binding.topicId);
     this.mirrorRates.delete(sessionId);
-    for (const key of Array.from(this.streamChains.keys())) {
-      if (key.startsWith(`${sessionId}:`)) this.streamChains.delete(key);
-    }
-    for (const key of Array.from(this.streamStates.keys())) {
-      if (key.startsWith(`${sessionId}:`)) this.streamStates.delete(key);
+    // O(1) cleanup using the sessionRequestIds index instead of O(n) key-scan.
+    const requestIds = this.sessionRequestIds.get(sessionId);
+    if (requestIds) {
+      for (const requestId of requestIds) {
+        const key = `${sessionId}:${requestId}`;
+        this.streamChains.delete(key);
+        this.streamStates.delete(key);
+      }
+      this.sessionRequestIds.delete(sessionId);
     }
     const existing = this.resolveBindingEntry(binding);
     if (existing) {
@@ -373,11 +438,21 @@ export class AfkModeController {
 
   private enqueueStream(sessionId: string, requestId: string, chunk: string, done: boolean): void {
     const key = `${sessionId}:${requestId}`;
+    // Track request IDs per session for O(1) disconnect cleanup.
+    let ids = this.sessionRequestIds.get(sessionId);
+    if (!ids) { ids = new Set(); this.sessionRequestIds.set(sessionId, ids); }
+    ids.add(requestId);
+
     const next = (this.streamChains.get(key) ?? Promise.resolve())
       .then(() => this.handleStream(sessionId, requestId, chunk, done))
       .catch((err) => console.warn('[afk] Failed to route stream:', errorText(err)));
     this.streamChains.set(key, next);
-    if (done) next.finally(() => this.streamChains.delete(key));
+    if (done) {
+      next.finally(() => {
+        this.streamChains.delete(key);
+        this.sessionRequestIds.get(sessionId)?.delete(requestId);
+      });
+    }
   }
 
   private enqueueStreamError(sessionId: string, requestId: string, error: string): void {
@@ -385,7 +460,10 @@ export class AfkModeController {
     const next = (this.streamChains.get(key) ?? Promise.resolve())
       .then(() => this.handleStreamError(sessionId, requestId, error))
       .catch((err) => console.warn('[afk] Failed to route stream error:', errorText(err)))
-      .finally(() => this.streamChains.delete(key));
+      .finally(() => {
+        this.streamChains.delete(key);
+        this.sessionRequestIds.get(sessionId)?.delete(requestId);
+      });
     this.streamChains.set(key, next);
   }
 
@@ -448,11 +526,37 @@ export class AfkModeController {
       try {
         return await op();
       } catch (err) {
-        const retryMs = retryAfterMs(err);
-        if (retryMs === undefined || attempt >= MAX_RETRIES) throw err;
-        await this.delay(retryMs > 0 ? retryMs : Math.min(5000, 500 * 2 ** attempt));
+        const rawRetryMs = retryAfterMs(err);
+        if (rawRetryMs === undefined || attempt >= MAX_RETRIES) throw err;
+        // Cap server-supplied retry_after to 30 s; an uncapped value (e.g. 3600 s) would
+        // block the entire topic queue for the full duration on each retry.
+        const delayMs = rawRetryMs > 0
+          ? Math.min(rawRetryMs, MAX_RATE_LIMIT_DELAY_MS)
+          : Math.min(5000, 500 * 2 ** attempt);
+        console.warn(
+          '[afk] Rate-limited by Telegram (attempt %d/%d): retrying in %d ms — %s',
+          attempt + 1, MAX_RETRIES, delayMs, errorText(err),
+        );
+        await this.delay(delayMs);
         attempt++;
       }
     }
+  }
+
+  /**
+   * @visibleForTesting — Restores snapshotted AFK state (mode + topic maps) without
+   * going through activate(). Used by test helpers to seed pre-existing AFK sessions
+   * without reaching into private fields directly.
+   */
+  restoreSnapshot(snapshot: {
+    mode: ModeState;
+    sessionTopics: Map<string, TopicBinding>;
+    topicSessions: Map<number, string>;
+  }): void {
+    this.mode = { ...snapshot.mode };
+    this.sessionTopics.clear();
+    for (const [k, v] of snapshot.sessionTopics) this.sessionTopics.set(k, v);
+    this.topicSessions.clear();
+    for (const [k, v] of snapshot.topicSessions) this.topicSessions.set(k, v);
   }
 }

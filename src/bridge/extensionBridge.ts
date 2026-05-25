@@ -48,6 +48,7 @@ export type {
   ModeChangedMessage,
   MirrorInputMessage,
   RelayCommandMessage,
+  ErrorMessage,
   OutboundMessage,
 } from './protocol.js';
 import type {

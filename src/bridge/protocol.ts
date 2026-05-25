@@ -176,6 +176,13 @@ export interface RelayCommandMessage {
   args: string[];
 }
 
+/** Daemon → extension: an operation failed; the extension should surface the error to the user. */
+export interface ErrorMessage {
+  type: 'error';
+  sessionId: string;
+  error: string;
+}
+
 export type OutboundMessage =
   | RegisteredMessage
   | PingMessage
@@ -185,4 +192,5 @@ export type OutboundMessage =
   | BackConfirmedMessage
   | ModeChangedMessage
   | MirrorInputMessage
-  | RelayCommandMessage;
+  | RelayCommandMessage
+  | ErrorMessage;

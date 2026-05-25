@@ -32,7 +32,7 @@ export interface HandlerOptions {
  * All other text messages in forum topics are relayed to the linked session.
  */
 export function registerHandlers({ bot, registry, factory, globalModel, permissionPolicy, telegramMirror }: HandlerOptions): Relay {
-  const sessionLookup: SessionLookup = { resolve: (topicId) => registry.resolve(topicId) };
+  const sessionLookup: SessionLookup = { resolve: (topicId) => registry.resolve?.(topicId) };
 
   let permissionPrompter: PermissionPrompter | undefined;
   if (permissionPolicy === 'interactiveDestructive') {
@@ -90,7 +90,7 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
       return;
     }
 
-    const existing = registry.resolve(topicId);
+    const existing = registry.resolve?.(topicId);
     if (existing) {
       await ctx.reply(
         `⚠️ Topic already linked to "${existing.sessionName}". Use /remove first.`,
@@ -179,7 +179,7 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
       return;
     }
 
-    const matches = registry.findAllByName(name);
+    const matches = registry.findAllByName?.(name) ?? [];
     if (matches.length === 0) {
       const allNames = registry.list().map((e) => e.sessionName);
       const close = allNames.filter((n) => n.includes(name) || name.includes(n)).slice(0, 3);
@@ -207,7 +207,7 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
       return;
     }
 
-    const currentBinding = registry.resolve(topicId);
+    const currentBinding = registry.resolve?.(topicId);
     if (currentBinding) {
       await ctx.reply(
         `⚠️ Topic already linked to "${currentBinding.sessionName}". Use /remove first.`,

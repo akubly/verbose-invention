@@ -5,6 +5,8 @@ import type { FakeExtensionClient } from './FakeExtensionClient.js';
 
 export const ADR11_TIMESTAMP = '2026-05-24T23:19:14-07:00';
 export const CHAT_ID = -1001234567890;
+/** Fixed user ID used in contract tests when allowedUserIds is configured. */
+export const TEST_TELEGRAM_USER_ID = 11111;
 
 export interface AfkSessionFixture {
   sessionId: string;
@@ -169,6 +171,7 @@ function createBotAfkDriver(Ctor: unknown, deps: AfkContractDeps): AfkContractDr
     deps.registry,
     deps.chatId,
     async () => undefined,
+    { allowedUserIds: new Set([TEST_TELEGRAM_USER_ID]) },
   ) as Record<string, unknown>;
 
   return {
@@ -279,5 +282,6 @@ function makeTelegramCtx(topicId: number, text: string) {
   return {
     message: { message_thread_id: topicId, text },
     chat: { id: CHAT_ID },
+    from: { id: TEST_TELEGRAM_USER_ID },
   };
 }

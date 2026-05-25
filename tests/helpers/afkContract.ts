@@ -1,5 +1,5 @@
 import { vi } from 'vitest';
-import { AfkModeController } from '../../src/bot/afkMode.js';
+import { AfkModeController, type TopicBinding } from '../../src/bot/afkMode.js';
 import type { FakeDaemon } from './FakeDaemon.js';
 import type { FakeExtensionClient } from './FakeExtensionClient.js';
 
@@ -255,12 +255,10 @@ function makeBridgeAdapter(deps: AfkContractDeps) {
 function seedActiveState(controller: Record<string, unknown>, registry: MemoryAfkRegistry): void {
   const activeEntries = registry.list().filter((entry) => entry.mode === 'afk' && entry.lastTopicId !== undefined);
   if (activeEntries.length === 0) return;
-  controller.mode = { active: true, since: activeEntries[0]?.afkSince ?? ADR11_TIMESTAMP };
-  const sessionTopics = controller.sessionTopics as Map<string, unknown> | undefined;
-  const topicSessions = controller.topicSessions as Map<number, string> | undefined;
-  if (!sessionTopics || !topicSessions) {
-    throw new Error('AFK contract adapter could not seed active state: expected sessionTopics/topicSessions maps');
-  }
+
+  const mode = { active: true, since: activeEntries[0]?.afkSince ?? ADR11_TIMESTAMP };
+  const sessionTopics = new Map<string, TopicBinding>();
+  const topicSessions = new Map<number, string>();
   for (const entry of activeEntries) {
     const topicId = entry.topicId ?? entry.lastTopicId!;
     sessionTopics.set(entry.sessionId, {
@@ -272,10 +270,7 @@ function seedActiveState(controller: Record<string, unknown>, registry: MemoryAf
     });
     topicSessions.set(topicId, entry.sessionId);
   }
-  const mode = controller.mode as { active?: boolean } | undefined;
-  if (mode?.active !== true) {
-    throw new Error('AFK contract adapter failed to seed active mode');
-  }
+  (controller as unknown as AfkModeController).restoreSnapshot({ mode, sessionTopics, topicSessions });
 }
 
 function makeTelegramCtx(topicId: number, text: string) {

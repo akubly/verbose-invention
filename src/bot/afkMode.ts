@@ -323,8 +323,7 @@ export class AfkModeController {
     const existingBinding = this.sessionTopics.get(session.sessionId);
     if (existingBinding) return existingBinding;
 
-    const matches = this.registry.findAllByName?.(session.sessionName)
-      ?? [this.registry.findByName(session.sessionName)].filter((entry) => entry !== undefined);
+    const matches = this.registry.findAllByName(session.sessionName);
     if (matches.length > 1) {
       console.warn(`[afk] Duplicate registry entries for "${session.sessionName}"; creating a fresh AFK topic instead of reusing lastTopicId`);
     }
@@ -461,7 +460,7 @@ export class AfkModeController {
     // Track request IDs per session for O(1) disconnect cleanup.
     let ids = this.sessionRequestIds.get(sessionId);
     if (!ids) { ids = new Set(); this.sessionRequestIds.set(sessionId, ids); }
-    ids.add(requestId);
+    if (!ids.has(requestId)) ids.add(requestId);
 
     const next = (this.streamChains.get(key) ?? Promise.resolve())
       .then(() => this.handleStream(sessionId, requestId, chunk, done))
@@ -567,12 +566,22 @@ export class AfkModeController {
    * @visibleForTesting — Restores snapshotted AFK state (mode + topic maps) without
    * going through activate(). Used by test helpers to seed pre-existing AFK sessions
    * without reaching into private fields directly.
+   *
+   * Note: `streamStates`, `streamChains`, and `sessionRequestIds` are NOT restored —
+   * they self-populate on new stream events and are not relevant to the seeded state.
+   *
+   * Architect note: currently accepts raw Map shapes for Jun's convenience. A future
+   * refactor could take `{ mode: ModeState; bindings: TopicBinding[] }` DTO and rebuild
+   * maps internally — discuss with Jun before changing.
    */
   restoreSnapshot(snapshot: {
     mode: ModeState;
     sessionTopics: Map<string, TopicBinding>;
     topicSessions: Map<number, string>;
   }): void {
+    if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
+      throw new Error('restoreSnapshot is @visibleForTesting only');
+    }
     this.mode = { ...snapshot.mode };
     this.sessionTopics.clear();
     for (const [k, v] of snapshot.sessionTopics) this.sessionTopics.set(k, v);

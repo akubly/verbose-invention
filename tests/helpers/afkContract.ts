@@ -84,6 +84,14 @@ export class MemoryAfkRegistry {
   list(): AfkSessionFixture[] {
     return Array.from(this.bySessionId.values());
   }
+
+  resolve(topicId: number): AfkSessionFixture | undefined {
+    return Array.from(this.bySessionId.values()).find((entry) => entry.topicId === topicId);
+  }
+
+  findAllByName(sessionName: string): AfkSessionFixture[] {
+    return Array.from(this.bySessionId.values()).filter((entry) => entry.sessionName === sessionName);
+  }
 }
 
 export class RelayTargetSpy {

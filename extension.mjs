@@ -347,6 +347,12 @@ function handleMessage(msg) {
       }
       break;
 
+    case 'error':
+      if (isForCurrentSession(msg, 'error')) {
+        showCliMessage(msg.error, 'error');
+      }
+      break;
+
     default:
       log('warn', `Unknown message type from daemon: "${msg.type}" — ignoring`);
   }

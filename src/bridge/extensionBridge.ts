@@ -27,30 +27,7 @@ import type { PipeAuthConfig } from './pipeAuth.js';
 import { cleanupPipeAuth } from './pipeAuth.js';
 
 // ── Protocol types (re-exported for backwards compatibility) ──────────────────
-export type {
-  RegisterMessage,
-  PongMessage,
-  SessionEventMessage,
-  StreamMessage,
-  StreamErrorMessage,
-  PermissionRequestMessage,
-  PermissionCancelledMessage,
-  AfkRequestMessage,
-  BackRequestMessage,
-  InboundMessage,
-  ModeState,
-  RegisteredMessage,
-  PingMessage,
-  InjectMessage,
-  PermissionResponseMessage,
-  AfkActivatedMessage,
-  BackConfirmedMessage,
-  ModeChangedMessage,
-  MirrorInputMessage,
-  RelayCommandMessage,
-  ErrorMessage,
-  OutboundMessage,
-} from './protocol.js';
+export type * from './protocol.js';
 import type {
   RegisterMessage,
   PongMessage,
@@ -583,9 +560,7 @@ export class ExtensionBridge implements BridgeEmitter {
     }
 
     // cwd is required since ADR-11; guard against pre-ADR-11 extensions that omit the field.
-    const helloCwd = typeof (msg as { cwd?: string }).cwd === 'string' && msg.cwd.length > 0
-      ? msg.cwd
-      : undefined;
+    const helloCwd = typeof msg.cwd === 'string' && msg.cwd.length > 0 ? msg.cwd : undefined;
     if (helloCwd === undefined) {
       console.warn('[bridge] extension hello missing cwd — falling back; legacy client?');
     }

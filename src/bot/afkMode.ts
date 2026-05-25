@@ -219,6 +219,7 @@ export class AfkModeController {
         type: 'error',
         sessionId: requestingSessionId,
         error: errorText(err),
+        code: 'afk.activation_failed',
       });
       throw err;
     } finally {
@@ -252,6 +253,7 @@ export class AfkModeController {
           type: 'error',
           sessionId: requestingSessionId,
           error: 'Not in AFK mode.',
+          code: 'afk.not_active',
         });
       }
       return;
@@ -401,6 +403,8 @@ export class AfkModeController {
 
   private async safeSendMessage(text: string, topicId: number): Promise<void> {
     try {
+      // Intentionally omits parse_mode — text sent as plain Telegram, no markdown escape needed.
+      // Adding parse_mode in the future requires escaping all user content.
       await this.bot.api.sendMessage(this.chatId, text, { message_thread_id: topicId });
     } catch (err) {
       console.warn(`[afk] Failed to send topic message to ${topicId}:`, errorText(err));

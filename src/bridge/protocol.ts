@@ -17,8 +17,11 @@ export interface RegisterMessage {
   sessionId: string;
   /** Human-readable session label. Reads SESSION_NAME env var; falls back to sessionId. */
   sessionName: string;
-  /** Working directory of the CLI session. Required since ADR-11; bridge falls back to daemon cwd for legacy extensions. */
-  cwd: string;
+  /**
+   * Working directory of the CLI session.
+   * @required since ADR-11; legacy clients may omit; daemon falls back to its own cwd.
+   */
+  cwd?: string;
   /** ADR-10: per-run CSPRNG token from bridge-auth.json. Required since B3. */
   authToken: string;
 }
@@ -181,6 +184,12 @@ export interface ErrorMessage {
   type: 'error';
   sessionId: string;
   error: string;
+  /**
+   * Machine-readable error code for programmatic handling.
+   * Well-known values: 'afk.activation_failed', 'afk.not_active'.
+   * Open-ended (`| string`) to allow future codes without breaking the union.
+   */
+  code?: 'afk.activation_failed' | 'afk.not_active' | string;
 }
 
 export type OutboundMessage =

@@ -1,5 +1,17 @@
 ---
 
+### 2026-05-24 — /afk Mode: 9 Telegram-Side UX & Bot API Opens Filed
+
+Surfaced 9 pre-implementation opens for /afk machine-wide mode: topic burst rate-limiting, name disambiguation, General summary message, reopenForumTopic confirmed + unread-marker caveat, resume picker shape, spawn-from-Telegram repo source, slash-command relay intercept risk, concurrent permission prompt cross-topic notification, registry schema additions. Filed to inbox as kat-afk-mode-ux-opens.md.
+
+---
+
+### 2026-05-24 — /afk & /back Telegram-Side Capability Audit
+
+Audited handlers.ts, prompt.ts, registry.ts, relay.ts for CLI-initiated AFK flow. Filed 6 gaps: no createForumTopic, no CLI→daemon control channel, no cwd/status registry fields, no AFK/back banners, no closeForumTopic on /back. 5 UX questions filed to inbox.
+
+---
+
 ### 2026-05-24 — Dogfooding Kickoff: ADR-9 Reconciliation Finalized
 
 K2, K4, K5 reconciliation notes merged into canonical decisions.md. K4 per-session AllowAlwaysStore bug fixed (code changed). Jun's 32 vitest scenarios now unblocked for Phase 7 test writing.
@@ -164,7 +176,25 @@ No action required Day 2. `sendCommand()` now returns `requestId` (or `false`) i
 
 ---
 
-### 2026-05-23 — ADR-9 Reconciliation Complete + Jun's Test Suite Green
+### 2026-05-23 — Live Dogfood Bug Fix: Eager Prompt Registry Installation
+
+**Bug:** `promptUserForPermission` crashed on first call with grammY error: "registering listeners on your bot from within other listeners". Reproduced when Aaron sent `bash echo "test" >> reach-test.txt` from Telegram — ADR-9 permissionCallback fired correctly, but the `bot.on('callback_query:data', ...)` call inside `ensurePromptRegistry()` was rejected because polling was already active.
+
+**Root cause:** `ensurePromptRegistry(bot)` was called LAZILY from inside `promptUserForPermission()`, which runs inside an active grammY message handler. The `handlerInstalled.has(bot)` guard only helps on the second call — on the first call, the listener hasn't been registered yet, and grammY forbids `bot.on()` registration after polling starts.
+
+**Fix:**
+- Exported `ensurePromptRegistry` from `src/bot/prompt.ts` (was previously unexported).
+- Called `ensurePromptRegistry(bot)` EAGERLY inside `registerHandlers()` in `src/bot/handlers.ts`, alongside the other `bot.command()` / `bot.on()` calls, gated on `permissionPolicy === 'interactiveDestructive'`.
+- The dispose/recreate cycle behavior is preserved: `handlerInstalled` WeakSet ensures the listener is installed at most once per bot lifetime; `disposePromptRegistry` only clears the interval and registry map, not the listener.
+
+**Tests added (handlers.test.ts):**
+- Asserts `callback_query:data` listener is installed during `registerHandlers` (not lazily)
+- Asserts it is NOT installed for non-interactive policies
+- Asserts `bot.on` count stays at exactly 1 after the callback handler fires
+
+**Result:** 413 tests pass, 4 skipped, 0 failed. `tsc` clean.
+
+
 
 **Status:** Jun's 32-scenario vitest suite FULLY SHIPPED against reconciled implementation. 353 tests pass, 4 skipped, 0 failures. All K1–K6 assumptions verified:
 - **K2:** BridgeSession abort controller wiring confirmed
@@ -182,3 +212,6 @@ No action required Day 2. `sendCommand()` now returns `requestId` (or `false`) i
 - **T5** (`README.md:146`): Replaced hardcoded `\\.\pipe\reach-bridge` with ADR-10 description: randomized pipe name + `%LOCALAPPDATA%\reach\bridge-auth.json` discovery.
 - **T8** (`README.md:145`): Removed incorrect "stops when you log off" claim. Windows Services run in Session 0, independent of interactive sessions — corrected to reflect that the daemon persists across logoff until machine shutdown or uninstall.
 - **T10** (`src/bot/prompt.ts:67`): Added `scanHandle` to `PromptRegistry`; exported `disposePromptRegistry(bot)` to clear the interval and evict from WeakMap. Restructured `ensurePromptRegistry` to build map then interval then registry object. Two new tests verify one-interval-per-bot and dispose-clears-all behaviour.
+
+**[2026-05-24] Scribe log entry:** Telegram-side UX opens merged into decisions. Registry schema additions defined (mode, afkSince, cwd, lastTopicId). Pre-implementation review complete.
+

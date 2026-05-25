@@ -2758,3 +2758,1238 @@ than necessary for reviewers.
   should ship in a separate PR, merged first, so the main Phase 6 PR is smaller.
 - Not actionable retroactively — the code is correct, tested, and merged.
 
+
+
+
+
+---
+
+# ADR-11: /afk Mode + Multi-Session Mirror Bridge
+
+**Status:** PROPOSED  
+**Author:** Noble Six (Lead / Architect)  
+**Date:** 2026-05-24  
+**Relates to:** ADR-3 (pipe), ADR-6 (reconnect), ADR-7 (heartbeat), ADR-8 (wire protocol), ADR-9 (permissions)
+
+---
+
+## 1. Scope
+
+**IN (AFK MVP — Phase 7):**
+- `/afk` and `/back` slash commands from the CLI
+- Machine-wide mode toggle (all active CLI sessions fan out to Telegram topics simultaneously)
+- Mirror semantics: Telegram→CLI echoed (display + SDK ingestion); CLI assistant output→Telegram; local keystrokes NOT mirrored out
+- New pipe message types for mode lifecycle and mirror relay
+- Daemon-owned mode state and sessionId↔topicId map
+- Topic creation, pinned summary, banner+close on /back
+- New CLI sessions auto-join an active AFK fleet
+- Loop avoidance via origin tags
+
+**OUT (Phase 8+):**
+- Resume-from-Telegram (resume a prior session not currently open in any CLI)
+- Spawn-from-Telegram (create a totally new CLI session from Telegram)
+- `relay.command` execution (envelope designed now, implementation deferred)
+- Persistent mode state (crash recovery) — memory-only acceptable for v1
+
+---
+
+## 2. Mode Semantics
+
+AFK is a **machine-wide mode**, not per-session. A single `/afk` from any CLI session transitions ALL connected sessions to Telegram topics. A single `/back` from ANY CLI session brings them all back. `/back` is only honored from the physical machine (CLI side), never from Telegram.
+
+During AFK, CLI sessions remain **fully interactive locally**. This is mirror/broadcast, not sink-switching:
+- Telegram messages are echoed into the local CLI session (displayed + fed to SDK)
+- CLI assistant output streams to Telegram (existing `stream` path; daemon routes via sessionId→topicId map)
+- Local user keystrokes are NOT mirrored to Telegram
+
+Mode state lives in daemon memory as a singleton `{ active: boolean, since: string }`. Memory-only is acceptable for v1; crash loses AFK state (sessions fall back to local-only).
+
+---
+
+## 3. Trigger Surface
+
+The entry point is an extension-level slash command handler registered via the SDK's `commands: CommandDefinition[]` field on `JoinSessionConfig` in `extension.mjs`. Implementation is ~25 lines around the existing `joinSession()` call, reusing `sendToDaemon()` to emit `afk.request` / `back.request` over the pipe.
+
+**SKILL.md was evaluated and rejected.** Carter's spike (issue #6) confirmed with high confidence that SKILL.md files are YAML+markdown prompt-augmentation only — no code execution, no process control, no pipe access. The SDK's first-class `commands` field is the correct surface for stateful slash commands that interact with external infrastructure.
+
+---
+
+## 4. Pipe Protocol Additions
+
+Eight new or amended message types. All travel the existing ADR-3 pipe, interleaved with streaming data.
+
+### 4.1 Extension → Daemon: `afk.request`
+
+```json
+{
+  "type": "afk.request",
+  "sessionId": "abc-123"
+}
+```
+
+Any single extension triggers machine-wide AFK. No `resumeTopicId` — the daemon resolves topic reuse from its own map.
+
+### 4.2 Daemon → Extension: `afk.activated`
+
+Sent individually to each connected extension after its Telegram topic is ready.
+
+```json
+{
+  "type": "afk.activated",
+  "sessionId": "abc-123",
+  "topicId": 12345,
+  "topicUrl": "https://t.me/c/..."
+}
+```
+
+### 4.3 Extension → Daemon: `back.request`
+
+```json
+{
+  "type": "back.request",
+  "sessionId": "abc-123"
+}
+```
+
+Any single extension triggers machine-wide /back.
+
+### 4.4 Daemon → Extension: `back.confirmed`
+
+Broadcast to all connected extensions.
+
+```json
+{
+  "type": "back.confirmed",
+  "sessionId": "abc-123"
+}
+```
+
+### 4.5 Daemon → All Extensions: `mode.changed`
+
+Broadcast on every AFK↔back transition.
+
+```json
+{
+  "type": "mode.changed",
+  "active": true,
+  "since": "2026-05-24T22:40:00Z"
+}
+```
+
+### 4.6 Daemon → Extension: `mirror.input`
+
+Relays a Telegram user message to the target CLI session for display + SDK ingestion.
+
+```json
+{
+  "type": "mirror.input",
+  "sessionId": "abc-123",
+  "text": "check the build logs",
+  "source": "telegram",
+  "topicId": 12345
+}
+```
+
+Extension handles display (e.g., `📱 Telegram: check the build logs`) and SDK routing independently of `inject`.
+
+### 4.7 Daemon → Extension: `relay.command` (designed, not implemented)
+
+```json
+{
+  "type": "relay.command",
+  "sessionId": "abc-123",
+  "command": "/clear",
+  "args": []
+}
+```
+
+Deferred to Phase 8. Envelope exists so protocol doesn't break when slash command relay ships. Extension routes to CLI side-channel; daemon never forwards raw `/clear` as a prompt.
+
+### 4.8 Amended: `session.registered` (late-joiner field)
+
+Existing `session.registered` response gains a `mode` field so late-joining extensions self-initialize:
+
+```json
+{
+  "type": "session.registered",
+  "sessionId": "abc-123",
+  "mode": { "active": true, "since": "2026-05-24T22:40:00Z" },
+  "topicId": 12345
+}
+```
+
+If `mode.active` is true on registration, the daemon auto-creates a topic for the new session and includes `topicId` in the response. No separate poll needed.
+
+### Updated Canonical Message Table
+
+| Direction | Type | New? | Purpose |
+|---|---|---|---|
+| ext → daemon | `afk.request` | ✅ | Trigger machine-wide AFK |
+| ext → daemon | `back.request` | ✅ | Trigger machine-wide /back |
+| daemon → ext | `afk.activated` | ✅ | Per-session topic ready ack |
+| daemon → ext | `back.confirmed` | ✅ | Per-session /back ack |
+| daemon → all | `mode.changed` | ✅ | AFK↔back broadcast |
+| daemon → ext | `mirror.input` | ✅ | Telegram→CLI message relay |
+| daemon → ext | `relay.command` | ✅ | Slash command relay (deferred impl) |
+| daemon → ext | `session.registered` | amended | Adds `mode`, `topicId` fields |
+
+---
+
+## 5. Daemon-Side Responsibilities
+
+1. **Owns mode state.** Singleton `{ active, since }` in memory. Authoritative source of truth.
+2. **Owns sessionId↔topicId map.** Built during AFK activation; persisted in `SessionRegistry` entries. Survives extension reconnects (re-sent in `session.registered`).
+3. **Broadcasts `mode.changed`** to all connected extensions on every transition.
+4. **Serializes topic creation.** 200–300ms gaps between `createForumTopic` calls to avoid 429s. Retry with exponential backoff on rate-limit responses.
+5. **Auto-joins late arrivals.** When a new extension connects during active AFK, daemon creates its topic and sends `afk.activated` in the `session.registered` flow.
+6. **Routes Telegram messages** to the correct extension via `mirror.input` (keyed by topicId→sessionId reverse lookup).
+7. **Routes CLI `stream` output** to the correct Telegram topic (keyed by sessionId→topicId forward lookup). No protocol change — daemon already receives `stream` and knows the mapping.
+
+---
+
+## 6. Telegram-Side Responsibilities
+
+1. **Topic creation.** Name format: `<session-name> (<session-id>)`. CLI exposes a user-settable session name.
+2. **Pinned summary in General.** On `/afk`: post a summary message listing all active sessions with cwds. On `/back`: edit to "🖥️ Back at desk."
+3. **Banner + close on `/back`.** Post `🖥️ Session resumed locally` banner, then `closeForumTopic`. Topics are reopenable via `reopenForumTopic` on next `/afk`; unread-marker loss on reopen is an accepted tradeoff.
+4. **Cross-topic permission alert.** When a permission prompt fires in topic-A, post a one-line notification in General with a jump button (`⚠️ Permission required in '<session-name>'`). Prevents missed prompts across N topics.
+5. **Don't register relay commands with BotFather.** `/clear`, `/agent`, etc. are free-text relay, not bot commands. Avoids Telegram client command-suggestion popups.
+
+---
+
+## 7. Registry Schema Additions
+
+`SessionEntry` gains four optional fields:
+
+```typescript
+interface SessionEntry {
+  // ... existing fields ...
+  mode?: 'afk' | 'back';
+  afkSince?: string;       // ISO-8601
+  cwd: string;             // required — needed for disambiguation and future spawn
+  lastTopicId?: number;    // resume convenience — reuse topic on next /afk
+}
+```
+
+`mode` and `afkSince` are per-entry reflections of the daemon-wide state. `cwd` is required for topic naming, spawn-from-Telegram candidate enumeration, and session disambiguation. `lastTopicId` enables topic reuse across AFK cycles.
+
+---
+
+## 8. Loop Avoidance
+
+Every relayed message carries an origin tag: `"cli"` | `"telegram"`. The daemon drops messages that would echo back to their origin:
+
+- Telegram user message → daemon tags `origin: "telegram"` → sends `mirror.input` to extension → extension displays + feeds SDK → SDK response streams back as `stream` → daemon tags `origin: "cli"` → relays to Telegram topic. ✅
+- If the daemon receives a `stream` chunk tagged `origin: "telegram"` (impossible in current design, but defensive), it drops it. No echo loop.
+
+The origin tag is a transport-layer field on `mirror.input` and on the daemon's internal relay envelope. It does not appear on `stream` messages (those are always CLI-origin by construction).
+
+---
+
+## 9. `/clear` Semantics
+
+**P0:** `/clear` relayed from Telegram applies to the CLI session — starts a new session context. The CLI handles this identically to a local `/clear`.
+
+**Nice-to-have:** Telegram topic echoes a `🔄 New session started` banner so the remote user has visual confirmation. Implementation is a single `sendMessage` call in the relay handler.
+
+---
+
+## 10. Failure Modes
+
+| Scenario | Behavior |
+|---|---|
+| `/afk` while daemon down | Error immediately: "Reach daemon not running — start it first." No buffering. |
+| Bridge disconnect during AFK | CLI shows `⚠ bridge disconnected — local only`. ADR-6 exponential backoff + auto-rejoin AFK fleet on reconnect. |
+| CLI exit during AFK | Daemon detects pipe close. Posts `💀 Session ended` banner in topic, then `closeForumTopic`. Removes session from AFK fleet. |
+| Double `/afk` | Idempotent. Daemon is already in AFK mode; new `afk.request` is a no-op (acknowledged with existing `afk.activated`). |
+| `/back` without prior `/afk` | Error: "Not in AFK mode." No state change. |
+
+---
+
+## 11. Adjacent-Story Design Compatibility
+
+The protocol surface is designed so Phase 8 stories can reuse existing infrastructure:
+
+- **Topic↔session correlation:** `lastTopicId` in `SessionEntry` + daemon's sessionId↔topicId map are the foundation for both resume-from-Telegram and spawn-from-Telegram.
+- **`relay.command` envelope:** Designed now (§4.7), implemented when CLI's programmatic slash command API surface is known.
+- **Daemon-owned map:** The daemon's `sessionId↔topicId` map is the single source of truth for all three stories (AFK, spawn, resume). No registry restructuring needed.
+- **`cwd` in registry:** Enables spawn-from-Telegram to enumerate candidate repos from recent sessions without a separate config file.
+
+---
+
+## 12. Open Implementation Questions
+
+1. **Skill viability (issue #6) — RESOLVED.** SKILL.md is prompt-augmentation only (no code/process/pipe access). Entry point is an extension-level command handler via the SDK's `commands: CommandDefinition[]` field on `JoinSessionConfig`.
+2. **Spawn-from-Telegram launch trigger (issue #5).** How does the daemon launch a new CLI process? Deferred — not in AFK MVP scope, but `relay.command` and `cwd` registry field are forward-compatible.
+3. **Persistent mode state.** v1 is memory-only. If crash recovery becomes a requirement, a `~/.reach/mode.json` file with daemon as authoritative reader is the upgrade path.
+4. **Backpressure under multi-session AFK.** Five sessions streaming simultaneously may hit Telegram's 20 msg/sec flood limit. Handled at the relay layer (Kat's per-topic throttle), not the protocol layer. Monitor during dogfooding.
+
+
+---
+
+# Skill Spike: Can /afk Be a Pure skill.md?
+
+**Date:** 2026-05-24  
+**Author:** Carter (Bridge Dev)  
+**Requested by:** Aaron  
+**Time-box:** ~1 h research (no code written)  
+**Answers:** ADR-11 §12 "Skill viability (issue #6)"
+
+---
+
+## Verdict: NO — a pure skill.md cannot do it
+
+A Copilot CLI `skill.md` is a **markdown instruction document**, not executable
+code.  It cannot intercept slash commands, hold per-session state, or open a
+named-pipe connection.
+
+The surface that **can** do all three is already in the repo: **`extension.mjs`**.
+Adding `/afk` requires a small, well-bounded change to `extension.mjs` — no new
+files, no new extension points, no extension changes needed beyond the one we own.
+
+---
+
+## Evidence
+
+### 1. What a "skill.md" actually is
+
+`~/.copilot/skills/*/SKILL.md` are YAML-frontmatter + markdown files loaded by the
+CLI agent as additional knowledge/context.  Inspected four installed skills
+(`cloud-review-cycle`, `persona-review`, `review-cycle`, `ship-to-pr`) —
+they are all plain text with frontmatter fields: `name`, `description`, `requires.tools`.
+
+The `requires.tools` field lists CLI binaries the *agent* may invoke (e.g. `git`,
+`gh`), not Node.js APIs.  There is no `handler:`, no `execute:`, no JS entry point.
+The CLI's `/skills` command manages them; they are prompt-augmentation, not code.
+
+**Files inspected:**
+- `~/.copilot/skills/cloud-review-cycle/SKILL.md`
+- `~/.copilot/skills/persona-review/SKILL.md`
+- `.squad/skill.md` (squad template — same format)
+- `.copilot/skills/cli-wiring/SKILL.md`
+
+**SDK type confirming no code surface for skills:**  
+`SessionConfig.skillDirectories?: string[]` — the CLI just loads markdown from
+those directories.  No callable interface.
+
+### 2. The SDK's slash-command surface
+
+`@github/copilot-sdk` v0.2.2 exposes a first-class `commands` API:
+
+```typescript
+// dist/types.d.ts : 907-911
+/**
+ * Slash commands registered for this session.
+ * When the CLI has a TUI, registered commands appear as
+ * `/commandName` for the user to invoke.
+ */
+commands?: CommandDefinition[];
+```
+
+`CommandDefinition` (line 253):
+```typescript
+interface CommandDefinition {
+  name: string;            // without leading /
+  description?: string;
+  handler: CommandHandler; // (context: CommandContext) => Promise<void> | void
+}
+```
+
+`CommandContext` (line 234):
+```typescript
+interface CommandContext {
+  sessionId: string;
+  command: string;     // full text e.g. "/afk"
+  commandName: string; // "afk"
+  args: string;        // raw arg string after command name
+}
+```
+
+`commands` is included in both `SessionConfig` and `ResumeSessionConfig`
+(the `Pick<>` type at line 1007 explicitly includes `"commands"`).
+`JoinSessionConfig = Omit<ResumeSessionConfig, "onPermissionRequest"> & { onPermissionRequest? }`,
+so `joinSession()` accepts `commands`.
+
+**Reference:** `node_modules/@github/copilot-sdk/dist/types.d.ts:907-911`, `1007`  
+**SDK README:** "Register slash commands so that users of the CLI's TUI can invoke
+custom actions via `/commandName`." (README line 487)
+
+### 3. extension.mjs already has everything needed
+
+`extension.mjs` is a Node.js child process loaded by the CLI on every foreground
+session.  It already imports:
+
+```javascript
+import { joinSession } from '@github/copilot-sdk/extension';  // line 52
+import { createConnection } from 'node:net';                    // line 53
+import { randomUUID } from 'node:crypto';                       // line 54
+```
+
+It currently calls `joinSession()` with **no config** (line 675):
+
+```javascript
+sdkSession = await joinSession();
+```
+
+Adding `commands: [...]` here is the only extension change needed.
+
+Module-scope state is already the pattern (`SESSION_ID`, `pipeSocket`,
+`activeInjectIds`, `pendingPermissions`); per-session AFK state fits the same mold.
+
+`sendToDaemon(msg)` (line 245) already handles pipe I/O; new message types drop in
+with zero infrastructure work.
+
+### 4. CLI --help and plugin system confirm skill = markdown only
+
+`copilot help commands` lists `/skills` as "Manage skills for enhanced
+capabilities" — confirmed to be a discovery/toggle UI for markdown skill files.
+
+`copilot plugin --help` describes plugins as extending the CLI with "skills,
+agents, hooks, MCP servers, and LSP servers" — but the "skills" here are still
+markdown documents, and "hooks" are JSON files.  No plugin surface registers a
+slash-command *handler* without going through the SDK's `commands` API (which
+requires JS/TS code).
+
+**Copilot CLI binary version confirmed at:**
+`C:\Users\akubl\AppData\Local\Microsoft\WinGet\Links\copilot.exe`
+
+---
+
+## Integration Shape (extension.mjs change)
+
+Pseudocode for the `/afk` addition — **~25 lines in extension.mjs**:
+
+```javascript
+// 1. Module-scope AFK state
+let afkMode = false;  // true while machine-wide AFK is active
+
+// 2. Pass commands to joinSession()
+sdkSession = await joinSession({
+  onPermissionRequest: ...,  // existing
+  commands: [
+    {
+      name: 'afk',
+      description: 'Go AFK — mirror this session to a Telegram topic',
+      handler: ({ sessionId }) => {
+        sendToDaemon({ type: 'afk.request', sessionId: SESSION_ID });
+        // Optimistic local feedback; actual confirmation arrives via afk.activated
+        log('info', '/afk sent to daemon');
+      },
+    },
+    {
+      name: 'back',
+      description: 'Return from AFK — restore local-only mode',
+      handler: ({ sessionId }) => {
+        if (!afkMode) {
+          log('warn', '/back ignored — not in AFK mode');
+          return;
+        }
+        sendToDaemon({ type: 'back.request', sessionId: SESSION_ID });
+      },
+    },
+  ],
+});
+
+// 3. Handle new inbound messages in handleMessage()
+case 'afk.activated':
+  afkMode = true;
+  log('info', `AFK active — Telegram topic: ${msg.topicUrl}`);
+  break;
+
+case 'back.confirmed':
+  afkMode = false;
+  log('info', 'Back from AFK — local mode restored');
+  break;
+
+case 'mode.changed':
+  afkMode = msg.active;
+  break;
+```
+
+No new files.  No new process.  No new SDK dependencies.
+
+---
+
+## Confidence: HIGH
+
+All three claims are directly verified from source:
+- Skill = markdown (four real skill files inspected)
+- `commands` API = SDK type definition + README documentation
+- `extension.mjs` already has pipe + `joinSession` + module state
+
+The only unknown is whether `joinSession({ commands })` works correctly when
+called from an extension process (vs. a standalone SDK client).  The type
+signature accepts it, the README documents it for `createSession`, and
+`extension.d.ts` chains to `ResumeSessionConfig` which includes `commands` —
+high confidence.  A 5-minute smoke test (add a `/ping` command, type it in the
+CLI) would make it 100%.
+
+---
+
+## Recommended Next Steps
+
+1. **Low-risk validation (15 min):** Add `commands: [{ name: 'ping', handler: () => log('info', 'pong') }]` to the
+   `joinSession()` call in extension.mjs, reinstall the extension, type `/ping` in
+   the CLI.  Confirms the SDK surface works from an extension context.
+
+2. **If smoke test passes:** Implement full `/afk` + `/back` handlers plus the four
+   new inbound message types (`afk.activated`, `back.confirmed`, `mode.changed`,
+   `mirror.input`) as a single extension.mjs PR.
+
+3. **Daemon side:** ADR-11 §5 lists five daemon responsibilities — session-to-topic
+   map, mode state machine, topic creation, `mode.changed` broadcast, late-joiner
+   `session.registered` amendment.  These are independent of the extension work and
+   can be parallel-tracked.
+
+
+---
+
+### 2026-05-24T22:40-07:00: Aaron's answers to /afk mode opens
+
+**By:** Aaron (via Copilot)
+
+**Locked decisions:**
+
+1. **Mirror directionality:** Team picks most sensible feasible option. Default recommendation: Telegram→CLI = echoed (display + SDK ingestion); CLI assistant output → Telegram (already today); local keystrokes are NOT mirrored to Telegram.
+2. **Mode-state persistence:** Memory-only is acceptable for v1. Crash recovery is nice-to-have, not blocking.
+3. **`/clear` semantics:** P0 = clears the CLI session (starts new session). Nice-to-have = Telegram topic echoes a "new session started" banner from the CLI's perspective.
+4. **Resume-from-Telegram scope:** Phase 8 (deferred from /afk MVP).
+5. **Spawn-from-Telegram launch trigger:** Defer to team — pick what's feasible.
+6. **Skill.md capability for /afk entry-point:** Defer to feasibility. Ultimately the user just needs a slash-command entry point to toggle AFK mode. If skill.md can't do it, use an extension or other surface.
+7. New CLI sessions auto-join AFK fleet: ✅
+8. CLI exit during AFK → banner + close topic: ✅
+9. Topic-scoped messaging (forum isolation): ✅
+10. Topic-create burst serialized 200-300ms gaps + 429 retry: ✅
+11. **Topic naming convention:** `<session-name> (<session-id>)` — CLI exposes a user-settable session name. Overrides earlier "basename · short-id" proposal.
+12. Pinned summary in General topic: ✅
+13. On /back banner + close topic (reopenForumTopic exists, unread-marker loss accepted): ✅
+14. Loop avoidance via origin tag: ✅
+15. `mode.changed { active, since }` broadcast + current mode in session.registered: ✅
+16. New message type `mirror.input { sessionId, text, source, topicId }`: ✅
+17. Daemon owns sessionId→topicId map; stream unchanged: ✅
+18. Define `relay.command { sessionId, command, args }` now, defer implementation: ✅
+19. Daemon broadcasts afk.activated per extension after N topic creates: ✅
+20. SessionEntry adds: mode?, afkSince?, cwd, lastTopicId?: ✅
+21. Don't register relay commands with BotFather: ✅
+22. Cross-topic permission alert in General with jump button: ✅
+23. /afk while daemon down → error immediately, no buffering: ✅
+24. Bridge disconnect during AFK → status line + ADR-6 backoff + auto-rejoin: ✅
+25. Design topic↔session correlation now to support all three stories: ✅
+
+**New facts:**
+- CLI exposes a user-settable session "name" (settable, not auto-derived).
+- AFK MVP scope confirmed: /afk + /back + multi-session fan-out + mirror semantics + spawn-from-Telegram (later phase but design-compatible).
+
+
+---
+
+# /afk Realignment Analysis — Noble Six (2026-05-24)
+
+## What We Have
+
+The daemon is Telegram-initiated. `/new <name>` on a forum topic creates a registry entry (topicId → sessionName), and the Relay lazily starts a Copilot SDK session on first message. `/resume <name>` moves an existing name to a new topic. The extension bridge (`extensionBridge.ts`) accepts push-based pipe connections from Copilot CLI extensions and wraps them as `BridgeSession` adapters so the relay's streaming/permission logic works unchanged. `SessionRegistry` is keyed by Telegram topicId, with sessionName as a lookup index.
+
+**In short:** Telegram side can create/resume sessions. CLI side can attach to the daemon via pipe. Permission prompting round-trips through Telegram. All plumbing works.
+
+## What's Missing
+
+The primary user story is CLI-initiated: "I'm in a Copilot CLI session, I type `/afk`, and a Telegram topic opens (or resumes) where I continue remotely." This is the **inverse** control flow from what we built. Nothing in the current system can:
+
+1. **Accept a `/afk` command from the CLI.** No CLI-side slash command exists. The extension bridge listens for connections — it doesn't initiate topic creation.
+2. **Create or resume a Telegram topic from the daemon side.** `registerHandlers` only reacts to incoming Telegram commands. There is no daemon API to call `bot.api.createForumTopic()` proactively.
+3. **Correlate a CLI session to an existing topic.** The registry keys on topicId. There's no reverse index from sessionId/cwd/sessionName to "which topic should this reattach to."
+4. **Signal `/back` from the CLI to disconnect the topic.** No teardown path exists from CLI → daemon → "stop relaying to this topic."
+
+## Open Architectural Questions
+
+These must be answered before anyone writes code:
+
+1. **Where does `/afk` live?** Three options: (a) Copilot CLI built-in slash command (requires SDK support we don't control), (b) the extension itself intercepts it and sends a message over the pipe, (c) a separate CLI tool (`reach afk`) that talks to the daemon directly. Option (b) is the only one within our control that doesn't add a new component.
+
+2. **What's the resume key?** When `/afk` says "resume," resume *what*? Options: (a) sessionName (user-chosen, stable), (b) session ID from the Copilot SDK, (c) cwd-based heuristic. sessionName is the obvious answer — it's already our identity concept — but it means the user must have named the session, or we auto-generate a name.
+
+3. **Is topic creation the daemon's job or Telegram's?** Current model: user creates topics manually, bot reacts. `/afk` model: daemon must create topics on demand via `createForumTopic()`. This is a meaningful shift — the daemon becomes an active Telegram participant, not a passive listener.
+
+## Recommended Next Step
+
+**Pause Phase 6 tail work. Pivot to an `/afk` spike.**
+
+Phase 6 delivered the bridge, permission prompting, and streaming — all load-bearing infrastructure. But the next items on the Phase 6 backlog (persistent allow-always, ADR-10 pipe auth, telemetry) are hardening work that doesn't advance the primary story. They'll still be valid after we answer the `/afk` questions.
+
+**Concrete proposal:**
+
+1. **Spike (1 session):** Noble Six drafts ADR-11 covering the three questions above. Aaron picks options. No code.
+2. **Phase 7 scope = `/afk` + `/back` MVP:** Extension intercepts `/afk`, sends `session.afk` over the pipe. Daemon creates or resumes a forum topic, wires the relay. `/back` sends `session.back`, daemon disconnects the topic. Registry gets a reverse index (sessionName → topicId).
+3. **Phase 6 hardening becomes Phase 8** — it's still needed, just not next.
+
+The bridge and relay are solid. The gap isn't infrastructure — it's the entry point. Let's build the front door.
+
+
+---
+
+### 2026-05-24T22:19-07:00: /afk mode — remaining opens before code starts
+
+**By:** Noble Six (Lead/Architect)  
+**Context:** Aaron answered the 6 realignment questions (machine-wide mode, mirror semantics, CLI stays interactive). These are the NEW gaps that surfaced from those answers.
+
+---
+
+#### 1. Mode state persistence
+
+/afk is machine-wide. Where does that boolean live — daemon memory, a file on disk, or both? If the daemon crashes and restarts, is the machine still "AFK"? A persistent file survives crashes but introduces stale-state cleanup. Daemon-only is simpler but loses state on restart.
+
+**Rec:** TBD — needs Aaron's call. Suggest persistent file with daemon as authoritative reader, so crash-restart auto-recovers.
+
+#### 2. New CLI sessions joining an active AFK fleet
+
+If Aaron opens a new terminal while AFK mode is already active, does that session auto-join the AFK fleet (auto-create a Telegram topic)? Or does it stay local-only until the next explicit /afk toggle?
+
+**Rec:** Auto-join — otherwise a newly opened session is invisible from the phone, which defeats the purpose. But this means the extension must check mode state on connect.
+
+#### 3. CLI session exit during AFK
+
+When a CLI session exits (Ctrl-C, window close) while AFK is active, what happens to its Telegram topic? Options: close/archive the topic, post a tombstone message and leave it open, or silently leave it.
+
+**Rec:** Post a "session ended" banner and close the topic. Keeps the topic list clean.
+
+#### 4. Mirror directionality
+
+Aaron said remote Telegram messages are echoed in-session. Two sub-questions:
+- (a) Are LOCAL assistant responses also echoed TO Telegram? (Presumably yes — that's the point.)
+- (b) Are LOCAL user keystrokes echoed to Telegram? (Probably no — Aaron typing locally doesn't need to see his own input on the phone.)
+- (c) When Aaron types in Telegram, does that text appear in the local CLI's input stream as if he typed it? Or only in the assistant output area?
+
+**Rec:** (a) yes, (b) no, (c) only assistant output area — but needs Aaron's confirmation. (c) has UX implications for the CLI's scroll behavior.
+
+#### 5. Topic-scoped messaging under fan-out
+
+With N sessions = N topics, if Aaron messages topic-A from Telegram, does only session-A receive it, or do all sessions see it? Forum topics are naturally scoped, so this should be session-A only — but confirm.
+
+**Rec:** Session-A only (forum topic isolation). State this explicitly in the protocol spec.
+
+#### 6. Topic creation burst — rate limits
+
+/afk with N sessions creates N topics simultaneously. Telegram Bot API rate limits are ~30 req/s globally, ~1 req/s per chat for some methods. Creating 5+ topics in a burst may hit limits.
+
+**Rec:** Sequential creation with 200ms delay between topics. Log warnings on 429s and retry with backoff.
+
+#### 7. Topic naming collisions
+
+Multiple sessions could share the same cwd basename (e.g., two terminals in `verbose-invention`). `{basename}` alone collides.
+
+**Rec:** `{basename} · {session-id-short}` (first 6 chars of session ID). Unique, scannable.
+
+#### 8. Topic list discoverability in Telegram
+
+With N topics, how does Aaron find the right one? Forum topic ordering is chronological by last message. No pinned-topic mechanism exists in Telegram forums.
+
+**Rec:** Post a pinned summary message in the General topic listing all active sessions with their cwds when /afk activates. Update it on session join/exit.
+
+#### 9. Slash command relay — control envelope
+
+Future /clear and /agent relay from Telegram needs a way to distinguish control messages from regular chat. If Aaron types "/clear" in a topic, the daemon must not forward it as a prompt.
+
+**Rec:** Design a `command.*` message type in the wire protocol NOW (even if relay isn't Phase 7). Cost is ~5 LOC in the type definitions. Avoids breaking the protocol later.
+
+#### 10. Slash command relay — authorization
+
+Should any Telegram chat member be able to send /clear, or only Aaron's user ID?
+
+**Rec:** Aaron-only (chat_id guard already exists). But name this decision explicitly.
+
+#### 11. Mirror loop avoidance
+
+Assistant output → echoed to Telegram → could a webhook re-relay it back to CLI → echo again? The daemon must tag outbound messages to distinguish "echoed from CLI" vs. "typed by user in Telegram."
+
+**Rec:** Origin tag on every relayed message (`origin: 'cli' | 'telegram'`). Daemon drops messages that would echo back to their origin. Design this into the protocol from day one.
+
+#### 12. /afk while daemon is down
+
+If the daemon isn't running when Aaron types /afk, what happens? Options: error immediately, buffer the intent and activate when daemon connects, or silently fail.
+
+**Rec:** Error immediately with a clear message ("Reach daemon not running — start it first"). Buffering creates invisible state.
+
+#### 13. Bridge disconnect during AFK
+
+If the named pipe drops while AFK is active, what does the CLI show? A banner? Silent degradation? Does it auto-retry?
+
+**Rec:** CLI shows a status line ("⚠ bridge disconnected — local only"). Reconnect uses existing ADR-6 exponential backoff. On reconnect, re-join the AFK fleet automatically.
+
+#### 14. Skill.md surface capability — research needed
+
+Aaron wants /afk as a Copilot CLI skill (SKILL.md). Open question: can a skill intercept slash-command input, maintain persistent state (mode toggle), AND communicate with an external daemon over a named pipe? This may require extension-level cooperation, not just a skill definition.
+
+**Rec:** Flag as a research spike (1–2 hours). Carter or Jun should probe the skill API surface before we commit to this implementation path.
+
+#### 15. /clear semantics under mirror
+
+If /clear is relayed from Telegram, does it clear both the local CLI context and the Telegram topic history? Just the CLI context? Just the Telegram view?
+
+**Rec:** TBD — needs Aaron's call. My instinct: /clear clears CLI context only (that's what the command does). Telegram topic history is immutable (Bot API doesn't support bulk delete in forums).
+
+#### 16. Minimum coupling with spawn/resume stories
+
+Spawn-from-Telegram and resume-from-Telegram share infrastructure with /afk: topic↔session correlation, mode state, repo discovery. Should the protocol accommodate all three from the start, or is /afk independent?
+
+**Rec:** Design the topic↔session correlation table and daemon-side session registry to support all three. The marginal cost is low (a few extra fields). Avoids a protocol break when spawn/resume ship.
+
+---
+
+**Total opens: 16.** Of these, 3 need Aaron's explicit call (#1, #4c, #15). 1 needs a research spike (#14). The rest have recommendations that can be confirmed or overridden.
+
+
+---
+
+# /afk Mode Protocol Opens — Carter (2026-05-24, post-realignment)
+
+**Date:** 2026-05-24  
+**Author:** Carter (Bridge Dev)  
+**Status:** Opens for team review — no code written  
+**Requested by:** Aaron  
+**Context:** Corrected AFK semantics — mirror/broadcast (not sink-switch), machine-wide mode, /back from CLI only.
+
+---
+
+## Opens
+
+**1. Mode state is a daemon-side singleton.**
+Since AFK is machine-wide, the daemon holds a single `{ active: bool, since: timestamp }` flag — not a per-connection flag.
+**Recommendation:** Add `mode.changed { active: bool, since: timestamp }` broadcast (daemon → all extensions) on every transition; include current mode in `session.registered` response so late-joining extensions self-initialize without a separate poll.
+
+**2. Mirror direction inbound: `inject` is wrong for Telegram echo.**
+`inject` routes text directly to the SDK with no CLI-visible display. Mirrored Telegram messages must be displayed in the local CLI (e.g., prefixed "📱 Telegram:") AND sent to the SDK as a prompt — two distinct actions that `inject` cannot express.
+**Recommendation:** New message type `mirror.input { sessionId, text, source: "telegram", topicId }` — extension handles display + SDK routing independently of normal `inject`.
+
+**3. Mirror direction outbound: `stream` carries no topicId — and that's fine.**
+When the daemon forwards SDK output to Telegram, it needs to know which topic to post to. `stream` has no `topicId` field today.
+**Recommendation:** Daemon owns the `sessionId → topicId` map (established at AFK activation); extension stamps nothing extra on `stream`. No protocol change needed on the outbound path.
+
+**4. Loop avoidance: does Telegram see local user prompts?**
+Aaron's words ("remote messages echoed in-session") read as one-way: Telegram→CLI only. Local typing flows to SDK → `stream` → Telegram (AI response only). But "fully interactive as a normal CLI session" is ambiguous about whether the raw local prompts should also appear in Telegram.
+**TBD — confirm with Aaron:** Telegram sees AI responses only, or both prompts and responses?
+
+**5. Slash command envelope: `inject` cannot carry `/clear` or `/agent`.**
+The SDK treats plain text injection as a prompt. Slash commands have side-channel semantics the SDK should not see raw.
+**Recommendation:** New message type `relay.command { sessionId, command: string, args: string[] }` (daemon → extension) on the pipe; extension routes to CLI side-channel. Defer extension-side implementation until CLI's programmatic slash command API surface is known — **needs Aaron / Noble Six call**.
+
+**6. Machine-wide AFK activation: single trigger, broadcast response.**
+The prior analysis assumed a single extension sends `afk.request` for its own session. With machine-wide semantics, the `/afk` CLI skill fires once and the daemon must create N topics and push `afk.activated` to N extensions simultaneously.
+**Recommendation:** Daemon treats any single `afk.request` as a machine-wide trigger; creates Telegram topics for all active sessions in parallel; broadcasts `afk.activated { sessionId, topicId, topicUrl }` individually to each connected extension. Late-joining extensions get their topic on `session.registered` response when `mode.changed` is active.
+
+**7. Spawn-from-Telegram and Resume-from-Telegram: new message surface.**
+Both user stories need request/response pairs the protocol doesn't carry today:
+- `session.list_repos` / `session.list_repos.response { repos: [{ name, cwd }] }` — enumerate candidate cwds
+- `session.list_resumable` / `session.list_resumable.response { sessions: [...] }` — sessions on disk not currently connected
+- `session.spawn { cwd, model? }` or `session.resume { sessionId }` — trigger creation
+
+Who actually spawns the CLI child process?
+**TBD — needs Aaron call** on whether the daemon may launch child CLI processes and how it learns the extension invocation command.
+
+**8. Backpressure under multi-session AFK is a relay-layer concern.**
+Five sessions streaming simultaneously could hit Telegram's 20 msg/sec per-chat flood limit.
+**Recommendation:** No new protocol messages needed — Kat's relay adapter handles per-topic throttle. Protocol is not the right layer.
+
+
+
+---
+
+# /afk–/back Protocol Gap Analysis — Carter (2026-05-24)
+
+**Date:** 2026-05-24  
+**Author:** Carter (Bridge Dev)  
+**Status:** Gap analysis — no code written  
+**Requested by:** Aaron
+
+---
+
+## What the Pipe Supports Today
+
+The ADR-8 wire protocol carries seven message types across a single named pipe (ADR-3):
+
+**Inbound (extension → daemon):** `hello`, `pong`, `session.event`, `stream`, `stream.error`, `permission.request`, `permission.cancelled`
+
+**Outbound (daemon → extension):** `session.registered`, `ping`, `inject`, `permission.response`
+
+The current flow is one-dimensional: daemon injects a command (`inject`), extension streams back chunks (`stream`/`stream.error`). The daemon's `BridgeSession` sits in `CompositeSessionFactory` and relays all output to wherever the relay sends it — today, Telegram. There is no concept of "which sink is active" on either side of the pipe. The bridge is passive: it forwards, it does not steer. `extensionBridge.ts` tracks `sessionId` + `sessionName` but has no `mode` or `remoteSink` field. The `relay.ts` routing table maps session names to Telegram topics, but it is always live — there is no paused/detached state. Neither side has any representation of `/afk` or `/back` state.
+
+---
+
+## Protocol Gaps for /afk and /back
+
+### New message types needed
+
+**Extension → daemon (user types `/afk` at the CLI):**
+
+```jsonc
+{ "type": "afk.request", "sessionId": "...", "resumeTopicId": null }
+// resumeTopicId: null = create a new Telegram topic; non-null = resume a known one
+```
+
+**Daemon → extension (Telegram topic is ready):**
+
+```jsonc
+{ "type": "afk.activated", "sessionId": "...", "topicId": 12345, "topicUrl": "https://t.me/..." }
+// Extension can print this URL to the CLI so the user knows where to go
+```
+
+**Telegram side (user types `/back` in the Telegram topic):**  
+No wire message yet — the daemon processes this command internally, then sends:
+
+**Daemon → extension (Aaron types `/back` in Telegram):**
+
+```jsonc
+{ "type": "back.confirmed", "sessionId": "...", "topicId": 12345 }
+// Tells the extension to restore the local prompt and consider the session live again
+```
+
+The extension should also be able to initiate `/back` from the CLI (e.g., re-typing `/back` locally):
+
+```jsonc
+{ "type": "back.request", "sessionId": "..." }   // extension → daemon
+```
+
+Followed by the same `back.confirmed` from the daemon.
+
+### Daemon-side capability gaps
+
+1. **No session-to-topic mapping.** The daemon has no persistent `Map<sessionId, topicId>`. When `afk.request` arrives, the daemon doesn't know whether to create a new Telegram forum topic or resume an existing one. This map needs to be tracked (and survives reconnects via ADR-6 `hello` re-registration).
+
+2. **No "active sink" state machine.** `relay.ts` currently routes all sessions to Telegram always. For `/afk`, the daemon needs a per-session mode: `{ mode: 'local' | 'remote' }`. In `local` mode the relay is silent (or the CLI is the only consumer). In `remote` mode the relay is live and the CLI extension is suppressing its own output.
+
+3. **No topic creation trigger.** Nothing today calls `ctx.api.createForumTopic(...)` in response to a session signal. That logic needs to be written on the Telegram/relay side.
+
+### Extension-side capability gaps
+
+1. **No `/afk` command handler.** `extension.mjs` has no command parsing. It needs to intercept `/afk` before sending it to the SDK, suppress the local response, and send `afk.request` over the pipe.
+
+2. **Output suppression.** When in `remote` mode, the extension must suppress streaming output to the CLI (or print a one-liner: "Session is remote. Resume with /back in Telegram."). Currently the extension always relays chunks to the local terminal.
+
+---
+
+## Open Questions for Noble Six
+
+1. **Telegram topic lifetime:** When Aaron types `/back`, should the topic be archived/closed in Telegram, or left open for future `/afk` reuse? "Disconnected" could mean either. If left open, `resumeTopicId` in `afk.request` is how the extension re-attaches to it.
+
+2. **CLI output during remote mode:** When the session is in remote mode and a chunk arrives at the extension, what does the CLI show? Options: (a) nothing, (b) a static "session is remote" banner, (c) a live mirror (broadcast mode). Aaron's wording implies (a) or (b) — confirm.
+
+3. **Multi-session `/afk`:** If Aaron has two CLI sessions and goes AFK on both, does each get its own Telegram topic? The `sessionId`-keyed approach supports this naturally, but the Telegram forum topic limit may be a practical constraint.
+
+4. **`/back` from the CLI vs from Telegram:** Should `/back` typed locally at the CLI pipe prompt also terminate the remote session? Or is `/back` only valid inside Telegram? Symmetry suggests both should work, but they have different protocol directions.
+
+
+---
+
+# Telegram-Side Gaps for /afk & /back (CLI-Initiated Flow)
+
+**Author:** Kat  
+**Date:** 2026-05-24  
+**Triggered by:** Aaron's user-story reframe — `/afk` fires from CLI and opens/resumes a Telegram topic
+
+---
+
+## What the Bot Does Today
+
+The current flow is entirely Telegram-initiated:
+1. Aaron creates a forum topic manually in Telegram.
+2. Aaron types `/new <name>` inside that topic → registry binds `topicId → sessionName`.
+3. Messages relay to the Copilot session.
+4. `/resume <name>` re-binds a named session to a new topic (move semantics).
+5. `/remove` unlinks a topic.
+
+The registry stores: `sessionName`, `topicId`, `chatId`, `createdAt`, `model?`. No `cwd`, no AFK timestamps, no "active" vs "idle" state. The relay is fully passive — it only acts on incoming Telegram messages; it has no way to push an event unless a message arrives from Telegram first.
+
+There is **no CLI-facing interface**. The daemon has no HTTP endpoint, no named-pipe command server for `/afk`/`/back` signals from the CLI. The extension bridge (`ExtensionBridge`) handles only the Copilot session streaming protocol — it does not accept control commands like "go AFK."
+
+---
+
+## Telegram Gaps for /afk & /back
+
+**1. No programmatic topic creation.**  
+`createForumTopic` is a standard Bot API method. The bot token already has the right scope if it is admin in the supergroup (bots must be admin with "Manage Topics" privilege to create/close/reopen topics). The `allowedChatId` guard in `createBot` is fine for outbound API calls — it only filters *inbound* updates. So `bot.api.createForumTopic(chatId, name)` would work, but there is no code calling it today.
+
+**2. No CLI → daemon control channel.**  
+`/afk` and `/back` fire from the CLI. The daemon has no receiver for those signals. A new IPC surface is needed — either a second named pipe, a Unix-socket/HTTP loopback endpoint, or a new message type in the extension bridge protocol. This is an architectural gap that touches Carter's domain (pipe server) and Noble Six's domain (protocol).
+
+**3. No resume-by-cwd or resume-by-CLI-session.**  
+The registry key is `topicId`. To "resume" the right topic for a given `/afk` invocation, we need to look up by something the CLI knows: `cwd`, session name, or a stable identity. `SessionEntry` has no `cwd` field. `findByName` exists but requires the CLI to pass a name. If the CLI derives a name from `cwd` (e.g., `my-project`), that works — but the registry must be able to confirm "is there already a topic for this name, and if so, what's its `topicId`?"
+
+**4. No /back handler on the Telegram side.**  
+When `/back` fires, the bot should post a banner in the topic (e.g., `🖥️ Aaron is back at the desk — topic paused`) and optionally close/lock the topic via `closeForumTopic`. There is no such handler today. Closing is reversible; deleting loses history. Locking + banner is the right default.
+
+**5. No AFK banner on topic open/resume.**  
+When a topic is opened or resumed by `/afk`, the bot should post a banner: `📵 Aaron went AFK — relay active`. This is a simple `sendMessage` call but there is no trigger point today.
+
+**6. Missing registry fields.**  
+`SessionEntry` needs: `cwd?: string` (for resume-by-cwd lookup), `lastAfkAt?: string` (ISO-8601, for display and staleness detection), `status?: 'afk' | 'back'` (to know whether the topic is currently live).
+
+---
+
+## UX Questions for Aaron
+
+1. **Auto-create vs. named:** When `/afk` fires and no topic exists for this cwd/name, should the daemon auto-create a topic (name derived from cwd basename, e.g., `verbose-invention`)? Or should the CLI prompt Aaron for a name before signalling the daemon?
+
+2. **On /back — close or leave open?** Should `closeForumTopic` be called (topic greys out in Telegram but history is preserved), or just post a banner and leave it open for read-back?
+
+3. **Resume identity:** What is the resume key — `cwd`? Explicit session name passed from CLI? Both? A cwd-derived default with override is probably the right answer, but needs a decision before we can add the registry field.
+
+4. **Multiple AFK sessions:** Can Aaron have two topics open (e.g., two different cwds) simultaneously? If yes, the registry needs to support multiple "active" entries by different cwds with different topicIds.
+
+5. **Control channel:** Should the CLI-to-daemon signal go through the existing extension bridge pipe (new message type), a new loopback HTTP endpoint, or a second pipe? This is Carter/Noble Six territory but Kat needs the answer to know what event to handle on the bot side.
+
+
+---
+
+### 2026-05-24 — /afk Mode: Telegram-Side UX & Bot API Opens
+
+**By:** Kat  
+**What:** Pre-implementation opens for the /afk machine-wide mode — Telegram-side UX and Bot API surface.
+
+---
+
+1. **createForumTopic rate limit on /afk burst.**
+The Bot API has no documented per-method limit for createForumTopic, but the general rule (1 msg/sec per chat, 20/min in groups) applies to API calls. A 4-session burst creates 4 topics ~simultaneously — close enough that a naive loop risks 429s.
+Recommendation: serialize topic creation with a 300ms gap between calls; surface a loading indicator in the originating CLI terminal while the burst completes.
+
+2. **Topic name disambiguation when sessions share a cwd basename.**
+If two sessions both have cwd `~/projects/reach`, both topics get named "reach" — indistinguishable in the forum topic list.
+Recommendation: append a short suffix — session index or a 4-char hash of the session name — e.g., "reach · 1" and "reach · 2". Registry already has sessionName; derive suffix from it.
+
+3. **General-topic AFK summary message.**
+Aaron has no single view of all active AFK topics without scrolling the forum list. A summary message in General on /afk ("📵 AFK — 3 sessions: reach · 1, edge · 2, dotfiles · 3") would act as a nav anchor.
+Recommendation: Send one summary message to General immediately after all topics are created. On /back, edit that message to "🖥️ Back at desk."
+
+4. **reopenForumTopic — confirmed exists. Unread-marker caveat.**
+`reopenForumTopic` is in the Bot API. Reopening a closed topic works. However, Telegram clients do not restore the unread-marker state when a topic is reopened — it appears fully read on reopen regardless of any unread messages that were there at close time.
+Recommendation: Banner + close on /back (since reopen is available). Accept the unread-marker loss as a known tradeoff; document in ADR.
+
+5. **Resume picker — where and what shape.**
+Two trigger points: (a) on /afk, if a prior topic exists for a session, offer "resume topic" vs "new topic" before creating; (b) for the resume-from-Telegram story, the bot needs a session list UI.
+Recommendation: Use an inline keyboard for both. On /afk, show per-session buttons only if a prior topicId exists in the registry. For resume-from-Telegram, send a single message with N inline buttons, one per eligible session. TBD — needs Aaron to confirm (b) is in scope for this sprint.
+
+6. **Spawn-from-Telegram repo picker — source of truth.**
+Bot needs a repo list. Three options: (A) daemon enumerates known cwd paths from active/recent sessions in the registry; (B) Aaron pre-registers a list in config; (C) filesystem heuristic (scan ~/projects).
+Recommendation: Option A — registry already tracks cwd per session. Enumerate distinct cwd values from recent sessions as the candidate list. No config file needed. TBD — needs Aaron on launch trigger (/spawn command vs. inline button from General).
+
+7. **Slash command relay — Telegram client intercept risk.**
+`/clear` typed inside a topic is a valid Telegram bot command, but Telegram clients show command-suggestion popups for all /commands, which can be confusing. `/cli_clear` avoids that but adds namespace clutter.
+Recommendation: Use bot command names that match CLI slash commands (e.g., `/clear`, `/agent`) — Telegram only intercepts if the command is registered with BotFather. Don't register them; treat them as free-text relay. Confirm with a small client test.
+
+8. **Concurrent permission prompts across topics.**
+Multiple AFK sessions can each fire a permission prompt simultaneously — three inline keyboards across three topics, no cross-topic awareness. Aaron may not notice a prompt in a topic he's not viewing.
+Recommendation: In addition to the per-topic inline keyboard, post a one-line notification in General ("⚠️ Permission required in 'reach · 1'") with a deep-link reply button. TBD — needs Aaron to decide acceptable latency before auto-deny.
+
+9. **Registry schema additions needed.**
+Current SessionEntry has topicId ↔ sessionName. AFK mode requires: `mode: 'afk' | 'back'`, `afkSince?: timestamp`, `cwd: string` (needed for spawn-from-Telegram and disambiguation), `lastTopicId?: number` (resume convenience).
+Recommendation: Add all four fields now; `mode` and `afkSince` are daemon-level state, but per-entry storage is simpler than a separate daemon-level flag given the machine-wide semantics. TBD — Carter should weigh in on registry write path.
+
+
+---
+
+# Test Coverage Audit: /afk → Topic Open/Resume → /back Flow
+
+**Date:** 2026-05-24  
+**Auditor:** Jun (Test Engineer)  
+**Status:** Ready for Noble Six / Carter protocol finalization
+
+---
+
+## Covered Today
+
+**Bot commands:** /new, /resume, /list, /remove (registry, name lookup, move semantics)  
+**Relay:** Telegram→CLI round-trip, message throttle (800ms), markdown escaping, message splitting  
+**Bridge:** BridgeSession unit (10 tests), relay-integration (4 tests), factory (6 tests), permission prompting (32 tests per ADR-9)  
+**Integration:** Pairing flow (config round-trip), chat-id enforcement, SDK crash recovery  
+**Idle monitor:** Timeout tracking, per-topic timers, cancellation on reset  
+**Protocol:** Pipe auth, session registry, extension bridge emit/listen contract
+
+---
+
+## Gaps for /afk → Topic-Opens-or-Resumes → /back Flow
+
+**Missing CLI ↔ daemon protocol:** No tests for CLI `/afk` emission or daemon receipt.  
+**Missing topic state machine:** No tests for topic creation vs. resume (existing topic link).  
+**Missing relay re-targeting:** No tests for dynamic switch from CLI pipe to Telegram topic (or back).  
+**Missing "backgrounded" state:** CLI session backgrounded while Telegram topic active; CLI receives relayed messages.  
+**Missing disconnection flow:** No tests for `/back` (CLI or Telegram), topic "disconnected" banner, relay re-target to CLI.  
+**Missing edge cases:** /afk when daemon unreachable, /back when no AFK, double /afk, topic-create rate limits, session recovery after network drop.
+
+---
+
+## Proposed Test Cases (5–8 High-Value Scenarios)
+
+**T1 — CLI /afk → topic creates and activates:**  
+CLI sends `/afk` → daemon receives → bot creates/finds topic for this session → registry links topic → relay targets Telegram topic. Verify: topic ID returned, registry entry created, first message in topic visible.
+
+**T2 — Resume existing topic (idempotent /afk):**  
+Session already has active topic from prior /afk. CLI sends `/afk` again → bot resolves existing topic (not new) → relay re-targets to same topic. Verify: no duplicate topics, same topic ID returned, history preserved.
+
+**T3 — Telegram message → CLI (backgrounded):**  
+Aaron sends message in Telegram topic → relay invokes CLI session's handler (even though CLI pipe backgrounded) → CLI async receives and processes. Verify: message delivered to SDK, no pipe-read timeout, clean state.
+
+**T4 — /back from Telegram → relay re-targets to CLI:**  
+Aaron sends `/back` in Telegram topic → bot detects command → relay re-targets to CLI pipe → topic receives "disconnected" banner. Verify: CLI pipe active, Telegram topic unmuted/muted state correct, relay routes subsequent messages to CLI.
+
+**T5 — /back from CLI → relay re-targets and banners:**  
+CLI sends `/back` → daemon receives → relay re-targets to CLI pipe → topic gets "disconnected" banner + mute flag. Verify: relay no longer routes Telegram to SDK, relay routes CLI to Telegram (not vice versa).
+
+**T6 — /afk when daemon unreachable:**  
+CLI sends `/afk` but daemon is offline/slow → connection timeout or retry loop. Verify: CLI retry behavior (exponential backoff), no hang, error message to user, graceful fallback.
+
+**T7 — /back without prior /afk:**  
+CLI sends `/back` but no active AFK session. Verify: error message, no relay re-targeting, state unchanged.
+
+**T8 — Double /afk (rate limit / idempotence):**  
+CLI sends `/afk` twice in rapid succession → daemon receives both → bot handles idempotently (no duplicate topics, no double-relay). Verify: topic link stable, relay targets single topic, no state corruption.
+
+---
+
+## Test Doubles & Fixtures Needed
+
+- **FakeDaemon extension:** CLI→daemon `/afk` / `/back` messages (new message types)
+- **Mock Telegram bot:** /back command handler, topic creation/find, unmute/mute
+- **Relay re-target spy:** Track relay targets before/after /afk, /back (sessionId vs topicId)
+- **SessionEntry fixture:** Session with/without topicId, to test resume logic
+- **Clock + network delay simulation:** Test /afk timeout (Vitest fake timers) and retry backoff
+
+---
+
+## Blockers for Implementation
+
+1. **Protocol decision (Noble Six):** CLI→daemon /afk / /back wire shape, timeout, retry semantics
+2. **Topic state enum (Carter):** Add `isAfk: boolean` or status field to SessionEntry? Or separate registry?
+3. **Relay re-targeting scope:** Relay.relay() switches target per-request (topicId vs sessionId) or per-session setup?
+
+Once decisions are locked, all 8 test cases are high-confidence and require no further protocol iteration.
+
+
+---
+
+# Carter — Permission Prompt Dogfood Bug Investigation
+
+**Date:** 2026-05-23  
+**Author:** Carter  
+**Status:** Diagnostic deployed. Awaiting Aaron's rerun to confirm root cause.
+
+---
+
+## Bug Summary
+
+Aaron sent `bash ls` from Telegram with `REACH_PERMISSION_POLICY=interactiveDestructive`. The command executed successfully and returned output, but no Allow/Deny inline keyboard appeared in Telegram. ADR-9 prompting did not fire.
+
+---
+
+## Root Cause Analysis
+
+### PRIMARY SUSPECT: CLI auto-approves read-only shell commands → `resolvedByHook=true`
+
+In `@github/copilot-sdk` v0.2.2 `session.js`:
+
+```javascript
+} else if (event.type === "permission.requested") {
+  const { requestId, permissionRequest, resolvedByHook } = event.data;
+  if (resolvedByHook) {
+    return; // Our onPermissionRequest is NEVER called
+  }
+  if (this.permissionHandler) {
+    void this._executePermissionAndRespond(requestId, permissionRequest);
+  }
+}
+```
+
+When `resolvedByHook: true`, the SDK skips `onPermissionRequest` entirely. `bash ls` executed successfully without prompting, so `resolvedByHook=true` is the most likely explanation.
+
+**Revised hook hypothesis:** Aaron confirmed that:
+- `~/.copilot/permissions-config.json` does NOT list `D:\git\verbose-invention`
+- The cairn-archivist `preToolUse` hook targets files that don't exist on this machine; `curate.ps1` exits 0 with no stdout
+
+**New leading hypothesis: CLI built-in read-only command detection**
+
+The `kind='shell'` permission event contains `commands[].readOnly: boolean` per `session-events.d.ts`. `bash ls` — `ls` is a read-only command. The Copilot CLI likely has a built-in policy: **"if all commands in the shell request are read-only → auto-approve → `resolvedByHook=true`."** This would be independent of any user-configured hooks.
+
+Alternative: even if `curate.ps1` exits 0 with no stdout, the CLI may treat "preToolUse hook exited 0, produced no JSON" as `permissionDecision: "allow"` (implicit allow on successful hook invocation). This is unconfirmed without CLI source access.
+
+**Wiring was correct.** `makePermissionHandler` with `policy=interactiveDestructive` correctly routes `kind='shell'` → `'bash'`/`'powershell'` → `isDestructive=true` → calls `promptCallback`. If our handler were called, the Telegram prompt WOULD have fired.
+
+**Implication:** For `bash ls`, the CLI's read-only detection may be correct behavior. ADR-9 is most relevant for destructive shell commands (`bash rm`, `bash mv`, `bash git push`, etc.) which would NOT be flagged as read-only.
+
+### SECONDARY BUGS found during investigation (fixed)
+
+1. **`kind: 'hook'` not classified** — `session-events.d.ts` reveals a `'hook'` PermissionRequest kind (a pre-tool-use hook asking for user confirmation on the gated tool). Not in exported `PermissionRequest` type. Our classifier returned `denied-by-rules`. Fixed: delegate to `req.toolName` (the actual gated tool name).
+
+2. **`kind: 'memory'` not classified** — `session-events.d.ts` reveals a `'memory'` kind for `store_memory` tool. Our classifier returned `denied-by-rules`. Fixed: added `'memory'` to `SAFE_TOOLS`.
+
+3. **Shell args were empty** — Real SDK `kind='shell'` sends `fullCommandText` (not `args`). Our args serialization returned `'{}'` for real calls. Fixed: prefer `fullCommandText` for display when present.
+
+---
+
+## Diagnostic Instrumentation Added
+
+**`src/copilot/impl.ts`** now emits these log lines on every session:
+
+```
+[copilot:perm] SDK permission.requested: session=X requestId=Y kind=Z resolvedByHook=true/false cmd=...
+```
+→ This fires via `onEvent` in session config. The `onEvent` wildcard handler is called by `_dispatchEvent` AFTER `_handleBroadcastEvent`, meaning it fires **even when `resolvedByHook=true`**. Shows EVERY permission event including bypassed ones.
+
+```
+[copilot:perm] onPermissionRequest: kind=Z toolName=W args=...
+[copilot:perm] decision=prompting-user toolName=W
+[copilot:perm] user decision=approved/denied toolName=W
+```
+→ These fire only when `onPermissionRequest` is actually called (i.e., `resolvedByHook=false`).
+
+**Diagnostic rule:**
+- If `SDK permission.requested ... resolvedByHook=true` → CLI resolved it (built-in read-only detection OR hook auto-allow). Handler never reached.
+- If `SDK permission.requested ... resolvedByHook=false` AND no `onPermissionRequest` logs → SDK not calling our handler (registration bug)
+- If `onPermissionRequest` logs appear with `decision=prompting-user` but no Telegram button → bug in `prompt.ts` or relay wiring
+
+**Retry protocol:** Rebuild → restart bot → send `bash ls` → paste `[copilot:perm]` log lines. Then send a DESTRUCTIVE command (e.g., `bash echo test >> /tmp/x`) to validate the prompt fires for write-capable commands.
+
+---
+
+## ADR-9 Impact Assessment
+
+ADR-9 is sound. The implementation is correct. The `resolvedByHook` bypass is **expected SDK behavior** — the CLI gate runs before the SDK dispatch layer.
+
+**New scope clarification for ADR-9:**
+
+The `interactiveDestructive` policy gates Reach's permission layer. However, the Copilot CLI independently classifies commands before they reach the SDK client. Specifically:
+- **Read-only shell commands** (`ls`, `cat`, `grep`, etc.) may be auto-approved by the CLI itself, producing `resolvedByHook=true` before our handler is invoked. This is likely correct behavior and not a defect.
+- **Destructive shell commands** (`rm`, `mv`, `git push`, file writes, etc.) should NOT be auto-approved by the CLI, and our handler should fire for those.
+
+**Action for Scribe:** Add a note to ADR-9 §7 (or a new §14) documenting this:
+> The Copilot CLI may auto-approve read-only tool calls (particularly shell commands with `readOnly=true` commands) before the SDK client receives them. Reach's `interactiveDestructive` policy governs only what reaches the SDK client. This is expected behavior for read-only commands. Destructive commands should still trigger the Telegram prompt.
+
+No ADR revision needed for the core design. A clarifying footnote is appropriate.
+
+---
+
+## Files Changed
+
+- `src/copilot/permissions.ts` — Added `'memory'` to `SAFE_TOOLS`
+- `src/copilot/impl.ts` — Diagnostic logging, `kind: 'hook'` classifier fix, shell `fullCommandText` fix
+- `extension.mjs` — Added `'memory'` to `SAFE_TOOLS` (mirrors permissions.ts; fixes drift test)
+
+
+---
+
+# Decision: Eager Prompt Registry Installation
+
+**Author:** Kat  
+**Date:** 2026-05-23  
+**Status:** Implemented  
+
+## Context
+
+Live dogfood session. Aaron sent `bash echo "test" >> reach-test.txt` from Telegram. ADR-9 permissionCallback fired correctly (decision=prompting-user logged), but crashed with:
+
+```
+Error: It looks like you are registering more listeners on your bot from within other listeners!
+```
+
+## Decision
+
+`ensurePromptRegistry(bot)` is now called **eagerly** inside `registerHandlers()` in `src/bot/handlers.ts`, gated on `permissionPolicy === 'interactiveDestructive'`. It runs alongside the other `bot.command()` / `bot.on()` setup calls — before `bot.start()` begins polling.
+
+**Previous behaviour:** `ensurePromptRegistry` was called lazily from inside `promptUserForPermission`, which runs in an active grammY handler — violating grammY's single-pass listener registration contract.
+
+## Contract Change
+
+`ensurePromptRegistry` is now **exported** from `src/bot/prompt.ts`. It remains idempotent (WeakMap guard). Callers outside this module may call it during setup — do NOT call it from within active message handlers.
+
+`disposePromptRegistry` behaviour is unchanged: clears the interval and evicts the registry, but does NOT remove the `callback_query:data` listener (which must outlive registry recreation per the WeakSet design).
+
+## Impact on Other Agents
+
+- **Carter:** No change to pipe protocol or session lifecycle.
+- **Jun:** Test doubles don't call `registerHandlers` directly; no impact. If adding tests that construct a prompter directly, continue calling `promptUserForPermission` via a bot that already has `ensurePromptRegistry` called, or call `ensurePromptRegistry` in test setup.
+- **Noble Six:** Main.ts wiring unchanged — `registerHandlers` is the only call site.
+
+
+---
+
+# Decision: Dogfood Gate Criteria for Phase 6 Ship Validation
+
+**Date:** 2026-05-24T04:10:11Z  
+**Author:** Noble Six (Lead / Architect)  
+**Type:** Gate Decision (non-ADR)  
+**Status:** PROPOSED  
+**Triggers:** Aaron's live dogfoodin from phone tonight
+
+---
+
+## Problem
+
+Phase 6 is merged and code-reviewed (PR #6, 21 Copilot threads). All tests pass (410/414). But "merged" ≠ "production ready." We need clear go/no-go criteria before Aaron tests end-to-end from his phone. This decision codifies what "working permission prompting" means at the integration level.
+
+---
+
+## Gate: 5 Success Conditions for Phase 6 Live Dogfood
+
+After running the checklist in `.copilot/reach-dogfood-checklist.md` (Sections 4–5), Aaron should observe:
+
+1. **Permission prompting round-trip works** (§3.3, §4.2–4.3)
+   - Destructive tool triggers `permission.request` over bridge
+   - Telegram shows inline keyboard with Allow | Deny buttons
+   - Buttons respond within 15s window (answerCallbackQuery deadline)
+   - Tool executes on Allow; aborts on Deny
+   - Daemon logs show no errors or timeout-related events
+
+2. **Safe/destructive classification is correct** (§4.1–4.3)
+   - Safe tools (read, grep, web_search) execute without prompts
+   - Destructive tools (bash, powershell, edit, git_commit, etc.) trigger prompts
+   - Classification matches extension.mjs list vs src/copilot/permissions.ts list
+
+3. **No-timeout semantics verified** (§4.5)
+   - Permission prompt remains open indefinitely (no 30s/60s auto-deny)
+   - Tapper can respond 30+ seconds after prompt appears
+   - Tool executes with same success rate regardless of response delay
+   - Daemon logs show no setTimeout/Promise.race near permission handler
+
+4. **Concurrent prompts don't interfere** (§4.6)
+   - Multiple destructive tools triggered in rapid succession (<5s apart)
+   - Each generates independent permission prompt in Telegram
+   - Approving/denying one does not affect the other
+   - Both tools execute (or both abort) based on individual button taps
+   - Daemon multiplexing (sessionId filters on stream + permission events) works
+
+5. **Zero blocking errors in daemon + Event Viewer** (§6.2)
+   - Daemon foreground output shows no `Fatal:`, `Error:`, or `panic`-style messages
+   - Windows Event Viewer (Application log) has no error-level entries from Reach
+   - No stuck sessions (registry.json doesn't grow indefinitely)
+   - Shutdown is clean on `Ctrl+C` (logs "Bye." within 2 seconds)
+
+---
+
+## Pass/No-Pass
+
+- **PASS:** All 5 conditions observed. Phase 6 is validated for live use. Proceed to Phase 7 planning.
+- **NO-PASS:** Any condition fails. Root-cause in `.copilot/reach-dogfood-checklist.md` Sections 5–6, then retry or escalate.
+
+---
+
+## Consequences
+
+If PASS:
+- Aaron can use Reach for daily AI pair-programming from phone
+- Schedule Phase 7 scope meeting (classifier extension? persistent store? ADR-10?)
+- Plan production rollout (telemetry, monitoring, on-call procedures)
+
+If NO-PASS:
+- Document failure mode + logs
+- Identify if it's a code issue, environment issue, or gate criteria issue
+- Fix in hot-fix branch or defer to Phase 7
+
+---
+
+## Notes
+
+- This gate is about **integration validation**, not security audit or performance tuning
+- ADR-10 (pipe token validation) is not part of this gate — it's a pre-production item for Phase 7
+- The 9 unmerged inbox items are orthogonal to this gate and do not block dogfooding
+- If dogfooding succeeds but exposes edge cases, document them as Phase 7 candidates, not gates
+
+---
+
+**Next:** Scribe merges this into decisions.md post-dogfood with outcome notes.
+

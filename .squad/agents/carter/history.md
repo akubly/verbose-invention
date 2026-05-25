@@ -77,6 +77,12 @@ See `history-archive.md` for earlier phases and Phase 6 spike details.
 
 ---
 
+## 2026-05-24 — Skill Spike (issue #6)
+
+Researched whether a Copilot CLI `skill.md` can intercept slash commands, hold per-session state, and call the named pipe. Verdict: **NO** — skill.md is a markdown instruction document only (no code surface). The surface that CAN do all three is `extension.mjs` via SDK `commands: CommandDefinition[]` in `joinSession()`. High confidence. Full analysis in `.squad/decisions/inbox/carter-skill-spike.md`.
+
+---
+
 ## Phase 6 Day 5 (2026-05-22)
 
 **Status:** ADR-9 (Permission Prompting Over Bridge) drafted. **GATING:** 4 open questions for Aaron before implementation begins.
@@ -100,4 +106,78 @@ See `history-archive.md` for earlier phases and Phase 6 spike details.
 
 **Blocking:** Production dogfooding blocked on ADR-9 resolution. This is the gating issue for Phase 6 completion.
 
+---
+
+## Phase 6 Dogfood Day 1 (2026-05-23)
+
+**Status:** Investigating live dogfood bug: `bash ls` executed without ADR-9 permission prompt.
+
+### SDK Investigation Findings
+
+**Inspected:** `@github/copilot-sdk` v0.2.2 dist types (`types.d.ts`, `session.d.ts`, `session-events.d.ts`, `session.js`)
+
+#### 1. `resolvedByHook` bypass (PRIMARY SUSPECT)
+
+In `session.js:224-250`, `_handleBroadcastEvent`:
+```javascript
+} else if (event.type === "permission.requested") {
+  const { requestId, permissionRequest, resolvedByHook } = event.data;
+  if (resolvedByHook) {
+    return; // BYPASSES onPermissionRequest entirely
+  }
+  if (this.permissionHandler) {
+    void this._executePermissionAndRespond(requestId, permissionRequest);
+  }
+}
+```
+If Aaron's Copilot CLI has a pre-tool-use hook configured (in `~/.config/gh-copilot/settings.json` or similar) that auto-approves all or some tools, the CLI sets `resolvedByHook: true` in the event before it reaches the SDK. Our `onPermissionRequest` handler is never called, and the tool executes silently. This is the most likely cause.
+
+**Key observation:** User-registered `on(eventType, handler)` handlers DO fire before `_handleBroadcastEvent` (see `_dispatchEvent`), so an `onEvent` handler in the session config will see `permission.requested` events even when `resolvedByHook: true`.
+
+#### 2. Undocumented `PermissionRequest` kinds
+
+`session-events.d.ts` reveals two `kind` values NOT in the exported `PermissionRequest` type (`types.d.ts`):
+- `kind: 'hook'` — a pre-tool-use hook asking for confirmation on behalf of the gated tool (has `toolName` field = the gated tool)
+- `kind: 'memory'` — store_memory tool (Copilot memory storage, non-destructive)
+
+Our original classifier mapped both to `denied-by-rules` (unknown tool fallback). Fixed:
+- `'hook'` → delegate to `toolName` field (the actual gated tool name)
+- `'memory'` → added to `SAFE_TOOLS` (non-destructive, equivalent to read)
+
+#### 3. Shell args shape mismatch
+
+Real SDK `kind: 'shell'` sends `fullCommandText: string` (not `args`). Our `serializePermissionArgs` was calling `JSON.stringify(toolRequest.args ?? {})` = `'{}'` for real SDK calls. Fixed to prefer `fullCommandText` when present (falls back to `args` for backward compat with tests).
+
+#### 4. `kind` mapping is correct for the bypass scenario
+
+For `kind === 'shell'` on Windows: `'powershell'` (DESTRUCTIVE_TOOLS) → should prompt. So if `resolvedByHook` is NOT the cause and our handler IS being called, the classifier is correct and should prompt. Diagnostic logs will confirm.
+
+### Changes Made
+
+- **`src/copilot/permissions.ts`**: Added `'memory'` to `SAFE_TOOLS`
+- **`src/copilot/impl.ts`**:
+  - `getPermissionToolName`: handle `kind: 'hook'` by delegating to `req.toolName` (the gated tool)
+  - `serializePermissionArgs`: now takes the full `ToolPermissionRequest`; uses `fullCommandText` for shell
+  - `buildPermissionDiagnosticHandler`: `SessionEventHandler` passed as `onEvent` to session config; logs `permission.requested` events including `resolvedByHook`
+  - `makePermissionHandler`: added diagnostic logging before EVERY branch (kind, toolName, decision)
+  - `resumeSession` / `createSession` configs: added `onEvent: buildPermissionDiagnosticHandler(sessionName)`
+
+### Next Step for Aaron
+
+See findings written to `.squad/decisions/inbox/carter-permission-prompt-dogfood-bug.md`.
+
+---
+
+## 2026-05-24 — /afk Mode Protocol Opens (post-realignment)
+
+Post-realignment opens analysis: identified 8 concrete protocol opens under corrected mirror/broadcast + machine-wide AFK semantics — including mode-state singleton, new `mirror.input` message type, `relay.command` for slash relay, machine-wide broadcast mechanics, Spawn/Resume message surface, and 2 TBDs (local prompt echo direction, spawn mechanism). Full analysis in `.squad/decisions/inbox/carter-afk-mode-protocol-opens.md`.
+
+---
+
+## 2026-05-24 — /afk–/back Protocol Gap Audit
+
+Audited bridge and pipe protocol for /afk user story; identified 4 new message types needed (`afk.request`, `afk.activated`, `back.request`, `back.confirmed`), 3 daemon-side gaps (no session-to-topic map, no active-sink state machine, no topic-creation trigger), and 2 extension-side gaps (no /afk command handler, no output suppression). Confirmed switching (not broadcast) semantics. Full analysis in `.squad/decisions/inbox/carter-afk-protocol-gaps.md`.
+
+
+**[2026-05-24] Scribe log entry:** Skill-spike verdict: NO (HIGH). SDK commands field is correct surface for /afk. Authored protocol gap analyses. Permission prompt diagnostics deployed. Await Aaron rerun.
 

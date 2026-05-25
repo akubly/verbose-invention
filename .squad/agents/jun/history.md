@@ -144,6 +144,29 @@ Kat implemented K1–K6 per ADR-9 spec. Jun's revised 32-scenario catalog assume
 
 ---
 
+## Phase 6 Day 7 (2026-05-24) — Test Coverage Audit: /afk → Topic → /back User Story
+
+**Task:** Aaron's dogfooding insight: primary user story is `/afk` (CLI) → topic opens/resumes → `/back` → CLI resumes. Audit test coverage gaps.
+
+**Deliverables:**
+- Listed 33 test files (relay, bridge, bot, integration, helpers, copilot)
+- Mapped 7 coverage areas: bot commands, relay round-trip, bridge, integration, idle monitor, protocol, permission prompting
+- Identified 6 gap categories: CLI↔daemon protocol, topic state machine, relay re-targeting, backgrounded state, disconnection flow, edge cases
+- Proposed 8 high-value test scenarios (T1–T8) with clear assertions
+- Documented 3 blocking protocol decisions (Noble Six, Carter)
+
+**Deliverable:** `.squad/decisions/inbox/jun-afk-test-gaps.md` (ready for review)
+
+**Key insight:** /afk/back is not a command-handler problem (like /new) — it's a **state-machine + relay re-targeting problem**. Test cases require:
+- Dual-mode relay (CLI-active vs Telegram-active)
+- Topic link lifecycle (create/resume/disconnect)
+- Bidirectional messages (CLI→Telegram when backgrounded, Telegram→CLI when foregrounded)
+- Protocol clarity on idempotence, timeout, and recovery
+
+Status: BLOCKED on protocol decisions. Once Noble Six (daemon-side /afk wire) and Carter (state enum) confirm scope, Jun writes all 8 test suites immediately.
+
+---
+
 ## Phase 6 Review Cycle 1 (2026-05-22) — I3 drift detection + I8 FakeDaemon schema
 
 **Deliverables:**
@@ -165,3 +188,5 @@ Kat implemented K1–K6 per ADR-9 spec. Jun's revised 32-scenario catalog assume
 ---
 
 Earlier learnings (Phases 1–5, Phase 6 Spike methodology) in `history-archive.md`.
+**[2026-05-24] Scribe log entry:** Test coverage audit merged into decisions. 8 high-value test scenarios identified for /afk→topic→/back flow. Blockers from protocol decisions cleared.
+

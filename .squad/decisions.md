@@ -1,3 +1,7 @@
+> 📦 Pre-2026-05-24 non-ADR entries archived to decisions-archive.md on 2026-05-24.
+
+---
+
 # Decisions Archive
 
 **Last updated:** 2026-05-22
@@ -897,391 +901,204 @@ All three tasks below have **no hard data dependencies** and can start immediate
 
 ---
 
-# Pipe Protocol — Carter (2026-05-19)
 
-**To:** Jun (test doubles), Kat (install.ts)  
-**From:** Carter  
-**Date:** 2026-05-19
+## ADR-9: Permission Prompting Over the Bridge (Final)
+
+**Status:** ACCEPTED  
+**Author:** Noble Six (Lead / Architect)  
+**Date:** 2026-05-22  
+**Amended:** 2026-05-22 (Carter SDK verification — Branch A confirmed; Branch B struck; all gates cleared)  
+**Relates to:** ADR-3 (pipe), ADR-6 (reconnect), ADR-7 (heartbeat), ADR-8 (wire protocol)  
+**Supersedes:** `noble-six-adr9-permission-prompting.md` (original, 2026-05-22, now retired)
+
+**Amendment trail:**
+- `noble-six-adr9-open-questions-walkthrough.md` — Q1–Q4 initial analysis
+- `noble-six-adr9-followup-clarifications.md` — Q1/Q2/Q4 reanalysis, Q5 added
+- `noble-six-adr9-no-timeout-analysis.md` — Q4 no-timeout steel-man; recommendation changed
+- `noble-six-adr9-amended.md` — full amendment incorporating all settled decisions (Branch A/B scaffold)
+- **This document** — final locked version; Carter's SDK verification received; Branch A adopted; Branch B struck; all tasks unblocked
 
 ---
 
-## Canonical Message Schema for `\\.\pipe\reach-bridge`
 
-All messages are UTF-8 JSON, newline-delimited (JSON-Lines).  
-Max frame size: **64 KB** (both directions).  
-Pipe path: `\\.\pipe\reach-bridge`
+## Phase 6 Architecture — LOCKED (2026-05-19)
+
+**By:** Noble Six (Lead/Architect)  
+**Status:** LOCKED (was PROPOSED)  
+
+Aaron resolved all three architectural blockers. This document finalizes seven ADRs and locks the Phase 6 architecture for implementation.
+
+### ADR-1: Use Copilot CLI Extension API for Session Attach
+
+**Status:** ACCEPTED
+
+Use the Copilot CLI extension API (`joinSession()`, `session.send()`, `session.on()`) as the sole attach mechanism. The extension runs as a forked Node child of the CLI process. It self-registers with the daemon over a named pipe on startup.
+
+**Consequences:**  
+✅ Push-based registration eliminates port-discovery gap entirely.  
+✅ Extension lifecycle is tied to CLI lifecycle.  
+✅ Bidirectional streaming is native.  
+❌ Coupled to `@github/copilot-sdk@0.2.2`. Mitigation: pin 0.2.x, extension is <100 LOC.  
+❌ Adds install surface (extension file deployed to user extensions dir).
 
 ---
 
-### Inbound (extension → daemon)
+### ADR-2: Push-Based Discovery with listSessions() Fallback
 
-#### `register` — first message sent by extension on every connect
+**Status:** ACCEPTED
 
+Primary discovery is push-based. Each CLI extension instance opens a named pipe connection to the daemon and sends a `hello` message. Daemon maintains live-session map. `listSessions()` is used only as fallback for dormant sessions (on disk but no running extension).
+
+**Consequences:**  
+✅ Authoritative — daemon knows exactly which sessions have a live extension.  
+✅ Low latency — registration is immediate on CLI startup.  
+✅ No polling overhead.  
+❌ Dormant sessions require `listSessions()` fallback. Two code paths for session enumeration.  
+❌ If extension fails to register (daemon not running), session is invisible until daemon starts.
+
+---
+
+### ADR-3: Single Named Pipe, Multiplexed by sessionId
+
+**Status:** ACCEPTED
+
+A single named pipe (`\\.\pipe\reach-bridge`) serves all extension connections. Each message includes a `sessionId` field for routing. Protocol framing: UTF-8 JSON, newline-delimited. Max message size: 64 KB per line.
+
+**Consequences:**  
+✅ Single pipe simplifies firewall/security surface — one endpoint to secure.  
+✅ Multiplexing by sessionId scales to 10+ concurrent sessions.  
+✅ JSON-Lines is human-readable, debuggable, and trivial to parse.  
+❌ Single pipe is a single point of failure. Mitigation: daemon auto-restarts (Windows service recovery), extensions reconnect.  
+❌ 64 KB message limit means very large responses must be chunked. Acceptable — relay already chunks at 4096 chars for Telegram.
+
+---
+
+### ADR-4: Extension Crash = Session Unreachable (No Auto-Recovery)
+
+**Status:** ACCEPTED
+
+Extension crash marks the session as `unreachable` in the daemon's session map. Session remains in `/list` with an `[unreachable]` tag. No automatic re-fork — user restarts the CLI or opens a new session.
+
+**Consequences:**  
+✅ Simple, predictable failure mode.  
+✅ Daemon stays healthy regardless of extension state.  
+✅ Deterministic for testing.  
+❌ User must manually restart CLI to re-establish the bridge. Acceptable — CLI restarts are fast.  
+❌ `/attach` on unreachable session produces an error.
+
+---
+
+### ADR-5: Daemon Service Account — Logged-In User
+
+**Status:** ACCEPTED
+
+The Reach Windows service runs as the logged-in interactive user, not LocalSystem. `src/service/install.ts` determines the current user at install time via `whoami /upn` (preferred) or `wmic useraccount where name='%USERNAME%' get sid` (fallback). Installer prompts for password if required.
+
+**Implementation notes:**
+- `serviceaccount` block in `install.ts` sets `--username` and `--password` on service registration.
+- If password prompt fails or is cancelled, installer exits with clear error: `"Service install requires your Windows password to run as your account."`
+- UPN format (`user@domain`) preferred for compatibility.
+
+**Consequences:**  
+✅ Eliminates pipe DACL / integrity-level problem entirely.  
+✅ Daemon sees only current user's CLI sessions.  
+✅ Fixes existing `LookupAccountName failed: 1332` bug.  
+❌ Service stops when user logs off. Acceptable — Reach is personal-host tool.  
+❌ Multi-user-on-same-host requires one install per user. Acceptable — explicit single-user scope decision.  
+❌ Requires user password at install time. Acceptable — one-time cost.
+
+---
+
+### ADR-6: Extension Reconnect Policy — Exponential Backoff
+
+**Status:** ACCEPTED
+
+Exponential backoff with parameters:
+- **Base interval:** 1 second
+- **Multiplier:** 2×
+- **Ceiling:** 300 seconds (5 minutes)
+- **Termination:** Never give up while CLI session is alive
+- **Logging:** Each attempt logs attempt number, elapsed time, error message
+
+Backoff schedule: 1s, 2s, 4s, 8s, 16s, 32s, 64s, 128s, 256s, 300s, 300s, 300s, …
+
+On successful reconnect, extension re-sends `hello` message (re-registration) and resets backoff timer.
+
+**Consequences:**  
+✅ Daemon restarts don't require user intervention — extensions reconnect automatically.  
+✅ Bounded worst-case reconnect latency: 5 minutes after backoff ceiling is reached.  
+✅ Deterministic for tests — Jun can inject controlled delays and assert on attempt counts.  
+✅ Logging on each attempt provides debuggability.  
+❌ Stale extensions could attempt reconnects for hours if daemon down. Acceptable — CPU cost negligible (~one syscall per 5 minutes at ceiling).  
+❌ Worst-case 5-minute reconnect delay after daemon restart. Acceptable — daemon restarts rare.
+
+---
+
+### ADR-7: Heartbeat Protocol — Ping/Pong + Pipe Teardown
+
+**Status:** ACCEPTED
+
+Use BOTH mechanisms:
+
+1. **Fast path — Pipe teardown detection:** Daemon listens for `close` event on each extension's pipe connection. When CLI dies, OS closes pipe handle, daemon receives event. Detection latency: <1 second.
+
+2. **Slow path — Ping/pong heartbeat:** Daemon sends `ping` every 30 seconds to each connected extension. Extension replies with `pong` within 5 seconds. If daemon misses one pong (30s cycle passes without pong), it waits 15s grace period before marking session `unreachable`.
+
+**Protocol messages:**
 ```json
-{ "type": "register", "sessionId": "<string>" }
+{"type": "ping", "id": "uuid-v4"}
+{"type": "pong", "id": "uuid-v4"}
 ```
 
-- Must be the **first message** on every new pipe connection.
-- `sessionId` = value of `SESSION_ID` env var (set by CLI).
-- Daemon replies with `registered` or closes the connection on invalid sessionId.
+**Timing analysis:**
+- **Pipe close (fast path):** <1s detection.
+- **Missed pong (slow path):** Worst case = 30s + 5s + 15s = **50s**. Typical case = 5s + 15s = **20s**. Aaron's target of ≤45s is met in typical case; worst case is 50s (one cycle boundary overshoot). Acceptable.
 
-#### `pong` — heartbeat reply
-
-```json
-{ "type": "pong", "id": "<uuid-v4>" }
-```
-
-- Must echo the exact `id` from the corresponding `ping`.
-- Must arrive within the pong window (5 s) to avoid grace-period start.
-
-#### `session.event` — CLI session event forwarded to daemon
-
-```json
-{ "type": "session.event", "sessionId": "<string>", "payload": { /* any object */ } }
-```
-
-- Extension sends this whenever a notable SDK session event occurs.
-- `payload` shape TBD during relay refactor (Phase 6 Days 3–4).
-
-#### `session.command-result` — result of a daemon-injected command
-
-```json
-{
-  "type": "session.command-result",
-  "sessionId": "<string>",
-  "payload": { "text": "<response string>" }
-}
-```
-
-Or on error:
-
-```json
-{
-  "type": "session.command-result",
-  "sessionId": "<string>",
-  "payload": { "error": "<error message string>" }
-}
-```
+**Consequences:**  
+✅ Fast disconnect detection via pipe close — sub-second for normal CLI exits.  
+✅ Catches network-style hangs.  
+✅ Deterministic for tests.  
+✅ UUID correlation prevents stale pongs after reconnect.  
+❌ 30s background traffic per session (negligible — ~50 bytes per ping/pong pair per 30s cycle).  
+❌ Worst-case detection is 50s, slightly above Aaron's 45s target. Acceptable — overshoot is boundary condition.
 
 ---
 
-### Outbound (daemon → extension)
+### Updated Phase 6 Status
 
-#### `registered` — handshake acknowledgement
+| Dimension | Status |
+|-----------|--------|
+| **Architecture** | LOCKED |
+| **Open architectural questions** | NONE — all gated decisions resolved |
+| **ADRs** | 7 accepted (ADR-1 through ADR-7) |
+| **Implementation gates** | Test doubles (`FakeDaemon`, `FakeExtensionClient`) needed Days 1–2 per Jun. Carter can start named-pipe server skeleton in parallel. Kat can start `install.ts` refactor in parallel. |
 
-```json
-{ "type": "registered", "sessionId": "<string>" }
-```
-
-- Sent immediately after a valid `register` is received.
-- Signals that the extension is now the live relay for this sessionId.
-
-#### `ping` — heartbeat probe (every 30 s)
-
-```json
-{ "type": "ping", "id": "<uuid-v4>" }
-```
-
-- Extension must reply with `pong` carrying the same `id` within 5 s.
-- If no pong in 5 s: 15 s grace period begins. After grace: session evicted.
-
-#### `session.command` — inject a message into the CLI session
-
-```json
-{
-  "type": "session.command",
-  "sessionId": "<string>",
-  "payload": { "text": "<user message string>" }
-}
-```
-
-- Extension calls `session.send(payload.text)` on the SDK session.
-- Must reply with `session.command-result`.
+**Out of scope (Phase 6):**
+- Multi-user-on-same-host (explicit single-user scope decision, ADR-5)
+- Conversational Session 0 (command-only, Decision #1)
+- Per-session git worktrees
+- `/afk` / `/back` commands (deferred — not load-bearing)
 
 ---
 
-## Connection Lifecycle
+### Day 1 Parallel Tasks
 
-```
-Extension                     Daemon
-   │── connect ──────────────>│
-   │── register ─────────────>│ (first message)
-   │<── registered ───────────│
-   │  (active, bidirectional) │
-   │<── ping ─────────────────│ (every 30 s)
-   │── pong ────────────────>│
-   │<── session.command ──────│
-   │── session.command-result>│
-   │── session.event ─────────>│
-   │── [pipe close] ──────────>│ (fast-path disconnect, <1 s)
-```
+All three tasks below have **no hard data dependencies** and can start immediately in parallel.
 
----
+**Carter — Named Pipe Server Skeleton + Extension Handshake**  
+**Start:** Immediately  
+**Deliverable:** `src/bridge/extensionBridge.ts` — pipe server on `\\.\pipe\reach-bridge`, accepts connections, parses JSON-Lines, handles `hello` → `session.registered` handshake. Stub `inject` and `stream` message handlers. Also `extension.mjs` skeleton — connects to pipe, sends `hello`, handles `ping`/`pong`, implements reconnect loop per ADR-6.
 
-## Jun: FakeDaemon implementation notes
+**Kat — install.ts Refactor for User-Account Service Install**  
+**Start:** Immediately  
+**Deliverable:** Refactored `src/service/install.ts` — service installs as current user (not LocalSystem) per ADR-5. `whoami /upn` primary, `wmic` fallback. Password prompt flow. Clear error on cancellation. Fixes existing `LookupAccountName failed: 1332` bug.
 
-- Spawn pipe server on a **configurable pipe name** (not hardcoded `reach-bridge`) so tests can run in parallel without collision.
-- After accepting a connection: wait for `register`, then send `registered`.
-- Expose `sendPing(sessionId)` → sends `ping` with new UUID, returns a Promise that resolves when `pong` arrives (with timeout).
-- Expose `getMessages(sessionId)` → returns all inbound messages received from that session.
-- Expose `sendCommand(sessionId, text)` → sends `session.command`.
-
-## Jun: FakeExtensionClient implementation notes
-
-- Connect to configured pipe name, send `register` with a test sessionId.
-- Auto-reply to `ping` with matching `pong` (controllable: add `setPongEnabled(false)` to simulate missed heartbeat).
-- Expose `getOutbound()` → all messages sent to daemon.
-- Expose `waitForMessage(type)` → Promise that resolves on next message of given type.
+**Jun — FakeDaemon + FakeExtensionClient Test Doubles**  
+**Start:** Immediately  
+**Deliverable:** `test/helpers/FakeDaemon.ts` — spawns pipe server on random pipe name, accepts connections, sends/receives protocol messages, exposes assertion helpers. `test/helpers/FakeExtensionClient.ts` — connects to pipe, sends `hello`, responds to `ping`, exposes message log for assertions.
 
 ---
 
-## Kat: No protocol changes required
-
-The bridge is completely isolated from `install.ts`. No action needed on this protocol.
-
-
----
-
-# Test Doubles Contract — Message Schema
-
-**Author:** Jun (Test Engineer)  
-**Date:** 2026-05-19  
-**Status:** DRAFT — awaiting Carter's `carter-pipe-protocol.md` to confirm alignment  
-**Relates to:** ADR-3 (pipe protocol), ADR-7 (heartbeat), Phase 6 Day 1
-
----
-
-## Purpose
-
-This document records the exact message shapes used in `tests/helpers/FakeDaemon.ts`
-and `tests/helpers/FakeExtensionClient.ts`. Carter should confirm that
-`src/bridge/extensionBridge.ts` and `extension.mjs` use identical field names
-and types. Any divergence is a contract break that will cause test doubles to
-diverge from the real implementation.
-
----
-
-## Wire Protocol
-
-Per ADR-3:
-- **Transport:** UTF-8 JSON, newline-delimited (JSON-Lines)
-- **Framing:** One JSON object per line (`\n` delimiter, no embedded newlines in values)
-- **Max line size:** 64 KB
-- **Routing:** Every message includes a `sessionId` field
-
----
-
-## Message Shapes
-
-### Extension → Daemon (InboundMessage)
-
-#### `hello` — extension registration (ADR-2)
-```json
-{
-  "type": "hello",
-  "sessionId": "string — Copilot CLI session ID",
-  "sessionName": "string — human-readable name, e.g. 'reach-myapp'"
-}
-```
-- Sent on connect and on every successful reconnect (ADR-6).
-- Daemon responds with `session.registered`.
-
-#### `pong` — heartbeat reply (ADR-7)
-```json
-{
-  "type": "pong",
-  "id": "string — must echo the UUID from the paired ping",
-  "sessionId": "string"
-}
-```
-- Must arrive within 5 s of the paired `ping`.
-- Daemon matches by `id` to cancel the miss-detection timer.
-
-#### `stream` — CLI response chunk (extension → daemon → relay)
-```json
-{
-  "type": "stream",
-  "sessionId": "string",
-  "requestId": "string — correlates with the inject that triggered this response",
-  "chunk": "string — partial response text",
-  "done": "boolean — true on the final chunk of a response"
-}
-```
-
-#### `stream.error` — CLI error notification
-```json
-{
-  "type": "stream.error",
-  "sessionId": "string",
-  "requestId": "string",
-  "error": "string — human-readable error description"
-}
-```
-
----
-
-### Daemon → Extension (OutboundMessage)
-
-#### `session.registered` — registration acknowledgement (ADR-2)
-```json
-{
-  "type": "session.registered",
-  "sessionId": "string"
-}
-```
-- Sent immediately after a valid `hello` is received.
-
-#### `ping` — heartbeat probe (ADR-7)
-```json
-{
-  "type": "ping",
-  "id": "string — unique ID for this ping (monotonic counter in FakeDaemon: 'ping-N')",
-  "sessionId": "string"
-}
-```
-- Sent every 30 s to each registered connection.
-- Real implementation should use UUID v4; test double uses `ping-N` for readability.
-- **Carter: confirm the real daemon uses `crypto.randomUUID()` here.**
-
-#### `inject` — relay injects a message into the CLI session
-```json
-{
-  "type": "inject",
-  "sessionId": "string",
-  "requestId": "string — unique per request, echoed in stream/stream.error replies",
-  "text": "string — the Telegram message to send to Copilot"
-}
-```
-
----
-
-## Heartbeat Timing (ADR-7)
-
-| Parameter | Value | Controlled by |
-|-----------|-------|---------------|
-| Ping interval | 30 000 ms | `setInterval` in FakeDaemon.startHeartbeat() |
-| Pong deadline | 5 000 ms | `setTimeout` set before _writeTo in _sendHeartbeat() |
-| Grace period | 15 000 ms | `setTimeout` inside pong-deadline callback |
-| Total worst-case | 50 000 ms | matches ADR-7 |
-
-**Test-double note:** All timing uses standard `setTimeout`/`setInterval`.
-Tests fake only those two (not `setImmediate`) so readline 'line' events still
-fire synchronously through the in-memory PassThrough transport.
-
----
-
-## Implementation Notes for Carter
-
-1. **`hello` re-send on reconnect:** FakeExtensionClient calls `sendHello()`
-   as a discrete step. The real `extension.mjs` must also re-send `hello`
-   after every successful reconnect per ADR-6.
-
-2. **Synchronous transport gotcha:** In the test doubles, PassThrough streams
-   deliver data synchronously. The pong-deadline `setTimeout` handle must be
-   registered in `pendingPings` *before* `_writeTo` is called, or the pong
-   arrives and clears a handle that doesn't exist yet. Real named-pipe I/O is
-   async so this race doesn't occur in production, but it's worth noting for
-   local integration testing.
-
-3. **`ping` id format:** Test double uses `ping-N` (monotonic counter).
-   Production should use `crypto.randomUUID()`. Either format is valid as long
-   as `pong.id === ping.id`.
-
-4. **`requestId` generation:** Not specified in ADRs. Test double uses caller-
-   supplied strings. Production should use `crypto.randomUUID()`.
-
----
-
-## Files
-
-| File | Role |
-|------|------|
-| `tests/helpers/FakeDaemon.ts` | In-process daemon double; in-memory transport |
-| `tests/helpers/FakeExtensionClient.ts` | In-process extension double |
-| `tests/helpers/fakePipe.smoke.test.ts` | 15-test smoke suite (all passing ✅) |
-
----
-
-## Open Questions for Carter
-
-- [ ] Confirm `ping.id` field name (docs say `id`, ADR-7 schema says `id` — matches ✅)
-- [ ] Confirm `inject` message exists and uses field names `requestId` + `text`
-- [ ] Confirm `stream.error` is the error shape (vs `error` top-level or embedded)
-- [ ] Any additional message types in `extension.mjs` not captured above?
-- [ ] Does `session.registered` carry any extra fields (e.g., timestamp)?
-
-
----
-
-# Decision: install.ts Refactored to User-Account Service (ADR-5 Implementation)
-
-**From:** Kat (Bot Dev)  
-**To:** Carter (Pipe Server), Team  
-**Date:** 2026-05-19  
-**Status:** IMPLEMENTED
-
----
-
-## What Changed
-
-`src/service/install.ts` now installs Reach as a Windows Service running under the currently logged-in user account, not NetworkService/LocalSystem. This is the implementation of ADR-5.
-
-### Key changes
-
-- `install()` is now `async` — it resolves the current user then prompts for a Windows password before calling the SCM.
-- `resolveCurrentUser()` uses `os.userInfo().username` + `process.env.USERDOMAIN` (no `LookupAccountName`, no spawned processes).
-- `createService()` now accepts an optional `account: ServiceAccount` field. When provided, `logOnAs` is set in the node-windows config. When omitted (uninstall path), no `logOnAs` block is written.
-- `promptPassword()` uses readline with echo suppressed via the `_writeToOutput` override pattern.
-- `main()` is now `async` and wraps the top-level call in `.catch()`.
-
-### API additions (exported)
-
-```typescript
-export interface ServiceAccount { username, domain, password }
-export function resolveCurrentUser(): { username, domain }
-export async function promptPassword(prompt): Promise<string>
-```
-
----
-
-## Impact on Carter (Named Pipe Server)
-
-**The service now runs in the user's session.** This is the whole point of ADR-5:
-
-- The named pipe `\\.\pipe\reach-bridge` will be created in a user-session context, not the LocalSystem/NetworkService context. This eliminates the DACL/integrity-level barrier that was blocking extension connections.
-- The daemon process sees the current user's environment, so `%USERPROFILE%`, `%APPDATA%`, and any user-specific paths are correct.
-- The service stops on logoff (expected behaviour for a single-user personal tool).
-
-**No pipe protocol changes required** — this is purely a service account change.
-
----
-
-## Trade-off Documented (Password Prompt)
-
-`node-windows` requires a Windows account password to register a service under a user account (Windows SCM API requirement). A password-less path via Scheduled Task was considered but rejected because:
-1. It would require dropping `node-windows` entirely.
-2. Scheduled Tasks have different restart semantics (no SCM auto-restart on crash).
-3. ADR-5 explicitly accepted the password cost: "Requires user password at install time. Acceptable — one-time cost."
-
-The password is never stored — it is passed directly to `CreateService` via node-windows and lives only in memory during the install invocation.
-
----
-
-## CLI Commands Preserved
-
-No CLI changes. `npm run service:install` and `npm run service:uninstall` continue to work as before.
-
----
-
-## Verification
-
-- `npx tsc --noEmit` ✅
-- `npm run lint` ✅
-- `npx vitest run` — 296 passed, 4 skipped, 0 failed ✅
-- Service install test suite: 22/22 passed ✅
-
-
----
 
 # ADR-8: Canonical Pipe Wire Protocol
 
@@ -1748,881 +1565,6 @@ The relay team (likely Carter + Jun) will need to integrate the pipe bridge into
 
 ---
 
-# Carter Day 2 — `sendCommand()` Return Type Decision
-
-**Author:** Carter  
-**Date:** 2026-05-20  
-**Status:** FYI — no blocking action needed; noting for relay/Kat integration awareness
-
----
-
-## Context
-
-ADR-8 §4 specifies that `inject` messages carry a `requestId` generated by the daemon.
-The `requestId` must be returned to the caller (relay layer) so it can correlate incoming
-`stream` chunks back to the Telegram placeholder that needs editing.
-
-## Decision
-
-`ExtensionBridge.sendCommand()` signature changed:
-
-**Before (Day 1):**
-```typescript
-sendCommand(sessionId: string, payload: unknown): boolean
-```
-
-**After (Day 2, ADR-8):**
-```typescript
-sendCommand(sessionId: string, text: string): string | false
-```
-
-- Returns the generated `requestId` (`crypto.randomUUID()`) on success.
-- Returns `false` if the session is not registered or is unreachable.
-- `requestId` is generated inside `sendCommand`; the caller does not need to supply it.
-
-## Rationale
-
-The relay will need to match incoming `'stream'` events (which carry `requestId`) to the
-correct pending Telegram edit. Returning the `requestId` from `sendCommand` gives the relay
-the correlation handle without requiring a separate lookup map in the bridge.
-
-## Impact on other agents
-
-- **Kat** (command surface / relay refactor, Days 3–4): call sites that used `sendCommand(sid, payload)` need updating to `sendCommand(sid, text)` and should capture the return value for correlation.
-- **Jun**: FakeDaemon uses `sendTo()` directly (bypasses `sendCommand`), so test doubles are unaffected.
-
----
-
-# Jun Day 2 — `session.event` Shape Decision
-
-**Author:** Jun (Test Engineer)  
-**Date:** 2026-05-20  
-**Status:** INFORMATIONAL — no team action required
-
----
-
-## Context
-
-ADR-8 §6 defers `session.event` to a future-use type in the canonical wire protocol.
-The shape given in ADR-8's canonical schema is:
-
-```json
-{
-  "type": "session.event",
-  "sessionId": "abc-123",
-  "payload": { "kind": "tool_call", "name": "read_file", "args": "..." }
-}
-```
-
-Day 2 task: add this type to the `InboundMessage` discriminated union in
-`tests/helpers/FakeDaemon.ts` for forward compatibility.
-
----
-
-## Decision
-
-**Field name:** `payload` (not `data` or `body`).  
-**Field type:** `unknown` (not `any`, not `Record<string, unknown>`).
-
-### Alternatives considered
-
-| Option | Shape | Verdict |
-|---|---|---|
-| A (chosen) | `payload: unknown` | Matches ADR-8 field name. `unknown` enforces narrowing at callsites. |
-| B | `data?: unknown` | `data` diverges from ADR-8 example. Optional implies daemon may omit it; ADR-8 gives no such hint. |
-| C | `payload: Record<string, unknown>` | Over-constrains. ADR-8 says this is a generic event channel; a non-object payload (e.g. string or number) should not be ruled out. |
-| D | `payload: { kind: string; [k: string]: unknown }` | Pre-assumes a `kind` discriminator. ADR-8 doesn't lock the payload shape — that's the whole point of deferring. |
-
-### Rationale for `unknown`
-
-- Matches ADR-8's field name exactly.
-- `unknown` is the canonical TypeScript type for "data whose shape is not yet defined." Any consumer that eventually needs to read `payload` must narrow it first — this is intentional and correct for a reserved/not-yet-implemented message type.
-- If ADR-9 locks a specific `session.event` payload shape, changing `unknown` to a concrete type is a non-breaking refinement (narrowing from unknown).
-
----
-
-## Impact
-
-- `FakeDaemon.ts` exports `SessionEventMessage` and it is part of `InboundMessage`.
-- `_handleInbound`'s `default: break` already handles it (no dispatch needed until ADR-9 specifies behavior).
-- 296 tests pass, 4 skipped, 0 failed. tsc clean. lint clean.
-
-No action required from Carter, Kat, or Noble Six unless ADR-9 specifies a different `payload` shape.
-
-
----
-
-# ADR-9 Implementation Notes (Kat)
-
-Sub-decisions and patterns established during K1–K6 implementation.
-Archive as needed; these are factual records, not prescriptive ADRs.
-
----
-
-## `raceAbortSignals()` instead of `AbortSignal.any()`
-
-**Decision:** Implemented a local `raceAbortSignals(signals: AbortSignal[]): AbortSignal` helper rather than using the built-in `AbortSignal.any()`.
-
-**Why:** `AbortSignal.any()` was added in Node 20.3 / browser baseline 2023-05-16. The project targets `@types/node@^20` but we have no explicit version floor above 20.0. Using the helper avoids a silent runtime crash if deployed on an older Node 20 minor. Also provides explicit code comment documenting why it exists.
-
-**Pattern:**
-```ts
-function raceAbortSignals(signals: AbortSignal[]): AbortSignal {
-  const ac = new AbortController();
-  for (const signal of signals) {
-    if (signal.aborted) { ac.abort(); return ac.signal; }
-    signal.addEventListener('abort', () => ac.abort(), { once: true });
-  }
-  return ac.signal;
-}
-```
-
-Can be replaced with `AbortSignal.any(signals)` once Node floor is pinned ≥ 20.3.
-
----
-
-## Self-cleaning permission listener pattern in `BridgeSession`
-
-**Decision:** The `session.disconnected` handler removes all three permission-related listeners (`permission.request`, `permission.cancelled`, `session.disconnected` itself) to prevent emitter accumulation when BridgeSessions are reused across reconnects.
-
-**Why not `dispose()`?** The session lifecycle is managed by `BridgeSessionFactory` and callers never call a dispose method. Adding a `dispose()` method would require caller changes. The self-cleaning listener is zero-overhead and correct because disconnect is the only session-end signal.
-
-**Trade-off:** If there are ever scenarios where a session is "recycled" without a disconnect event, this pattern breaks. Accepted because the protocol guarantees disconnect before reconnect.
-
----
-
-## `currentRequestId` in `extension.mjs` — metadata only
-
-**Decision:** The Copilot extension (Node.js ESM) tracks a module-level `currentRequestId` and forwards it in `permission.request` messages. This is metadata context for the daemon, NOT a correlation ID for response matching.
-
-**Why separate from `permissionId`?** `permissionId` uniquely identifies one permission request and is used to correlate `permission.response`. `requestId` is the broader CLI tool-call request. One `requestId` can generate multiple `permission.request` messages (one per destructive tool in a sequential tool-call). The daemon doesn't need `requestId` for correctness, but it's useful for logging/tracing.
-
----
-
-## `exactOptionalPropertyTypes: true` — conditional spread pattern
-
-**Issue:** When `strictOptionalProperties: true` is set (via `exactOptionalPropertyTypes`), you cannot pass `T | undefined` where `T` is an optional property typed as `T` (not `T | undefined`). TypeScript treats these differently.
-
-**Pattern used in `BridgeSessionFactory._makeSession()`:**
-```ts
-const permOptions: BridgeSessionPermOptions = {
-  permissionCallback: this.permissionCallback,
-  sendPermissionResponseFn: this.sendPermissionResponseFn,
-  ...(this.allowAlwaysStore !== undefined
-    ? { allowAlwaysStore: this.allowAlwaysStore }
-    : {}),
-};
-```
-
-The conditional spread is the idiomatic workaround when `exactOptionalPropertyTypes` is enabled. Alternative: widen the `BridgeSessionPermOptions` field type to `AllowAlwaysStore | undefined` — but that weakens the type contract for consumers that pass `undefined` explicitly.
-
----
-
-## AbortSignal timing: pre-aborted signals in `prompt.ts`
-
-**Observation:** When a caller passes an already-aborted signal to `promptUserForPermission`, the `abort` event will not fire (it already fired). The implementation must check `signal.aborted` synchronously after sending the Telegram message.
-
-**Implementation:** After `await bot.api.sendMessage(...)`, the function checks `if (signal?.aborted) { complete('aborted'); return; }` before registering the `signal.addEventListener('abort', ...)` handler. This ensures the prompt resolves immediately without waiting for an event that already fired.
-
-
----
-
-# ADR-9 Revised Permission Test Scenario Catalog
-
-**Revised per ADR-9 acceptance (commit a9451e2). NO TIMEOUT decision drives most changes.**
-
-**Author:** Jun (Test Engineer)  
-**Date:** 2026-05-22  
-**Replaces:** `jun-adr9-permission-test-scenarios.md` (prior 29-scenario catalog, merged into decisions.md §11)  
-**Status:** CATALOG ONLY — vitest files follow once K1–K6 land. Do not write test files from this document alone.
-
----
-
-## Revision Summary
-
-| Change | Detail |
-|---|---|
-| **DELETE** | All 5 original Category 2 "auto-deny after Xs" timer scenarios — no auto-deny timer exists anymore |
-| **DELETE** | Dual-timer race scenarios (daemon timer vs. extension timer) — both sides wait indefinitely |
-| **DELETE** | Branch B / SDK-ceiling scenarios — Branch B is permanently struck |
-| **REVISE** | Category 2 entirely redesigned from "Timeout" → "Cancellation & Abort" |
-| **ADD** | 6 new scenarios: Friday→Monday, no-timer regression assertion, AllowAlways, extension classifier, observability scanner, SDK empirical reference |
-| **RETIRE** | Prior Category 6 (8 protocol ambiguities) — all resolved by ADR-9; closed |
-| **NET** | 29 → 32 scenarios across 7 categories |
-
-The no-timeout safety invariant is: **a pending `promptUserForPermission()` resolves ONLY via (a) user tap, (b) session disconnect → AbortSignal, or (c) daemon restart → map cleared.** Every Category 2 and Category 5 scenario tests one of these three paths.
-
----
-
-## Test Double Contract Updates
-
-### FakeExtensionClient / FakeDaemon — Required Changes for Revised Scenarios
-
-| Requirement | Notes |
-|---|---|
-| `AbortController` injected per session | `FakeDaemon` sessions take an `AbortController`; tests call `.abort()` directly to simulate disconnect |
-| **NO auto-timeout** | Fakes must NOT include any `setTimeout` for prompt lifetime. Match Branch A: real implementation has no timer. |
-| `sendPermissionRequest(permissionId, toolName, args)` | Extension → daemon direction; controllable timing for timing-sensitive tests |
-| `sendPermissionCancelled(permissionId)` | Extension cancels in-flight prompt (extension-side pipe close) |
-| `simulatePipeClose(sessionId)` | Triggers transport disconnect → AbortSignal fires; used in C2-01, C2-02, C2-03 |
-| `pendingPermissions()` | Returns open `permissionId` set; asserts zero-leak post-abort |
-
-**ASSUMES IMPLEMENTATION (flag for Kat):**
-- `BridgeSession` must accept an `AbortController` at construction (K2) — not construct one internally — so tests can trigger abort directly.
-- K5 must export `isDestructive(toolName: string): boolean` and `isKnownSafe(toolName: string): boolean` as named exports for unit testing the classifier in isolation (C4-05, C6-05).
-
----
-
-## Category 1 — Happy Path
-
-*Unchanged from prior catalog. Scenarios carried forward as-is.*
-
-**C1-01 — Approve flows through**  
-Given a `permission.request` arrives for a destructive tool and the `AllowAlwaysStore` has no entry for it;  
-When Aaron taps ✅ Approve in Telegram;  
-Then `permissionCallback` resolves `true`, `permission.response { decision: "allow" }` is sent to the extension, and `AllowAlwaysStore.add(toolName)` is called.
-
-**C1-02 — Deny flows through**  
-Given a `permission.request` arrives for a destructive tool;  
-When Aaron taps ❌ Deny;  
-Then `permissionCallback` resolves `false`, `permission.response { decision: "deny" }` is sent to the extension, and the store is NOT updated.
-
-**C1-03 — Sequential prompts resolve independently**  
-Given two sequential `permission.request` messages for different tools (different `permissionId`s);  
-When Aaron approves both in order;  
-Then each `permissionCallback` resolves correctly and `pendingByRequestId` is empty after both complete.
-
-**C1-04 — Allow-always shortcut at the session layer**  
-Given `AllowAlwaysStore.has(toolName) === true` for the current session;  
-When a `permission.request` arrives for that tool;  
-Then no Telegram message is sent, `promptUserForPermission()` is NOT called, and `permissionCallback` resolves `true` immediately.  
-*(Full coverage in Category 6. This is the happy-path summary.)*
-
----
-
-## Category 2 — Cancellation & Abort
-
-*REDESIGNED. All 5 original timeout/auto-deny scenarios deleted. This category now covers AbortSignal-based cancellation — the only legitimate automatic resolution path under Branch A.*
-
-**C2-01 — Session disconnect → AbortSignal fires within one event loop turn** ⭐ *Keystone test for the no-timeout safety invariant*  
-Given a `permission.request` is in flight with no user response (prompt is a pending Promise);  
-When `session.disconnected` fires (simulated via `simulatePipeClose`);  
-Then the `AbortSignal` on `promptUserForPermission()` fires **within one event loop turn** (`await Promise.resolve()` suffices), the Promise resolves with outcome `'aborted'`, `permission.response { decision: "deny" }` is sent to the extension, and zero `pendingByRequestId` entries remain.  
-*This is the single most important test in the catalog. It proves the no-timeout safety invariant: a dead session cannot leave a hanging Promise that consumes a slot in `pendingByRequestId` forever.*
-
-**C2-02 — Pipe-close on extension side → deny fires, no hang**  
-Given a `permission.request` is in flight;  
-When the extension-side pipe closes (simulated via `simulatePipeClose` on `FakeExtensionClient`);  
-Then the extension's `waitForPermissionResponse(permissionId)` coroutine aborts with deny (`{ kind: 'denied' }`), the pending `permissionCallback` on the daemon side also resolves `false`, and no hang occurs.  
-*Assert: no open promise handles remain after pipe-close.*
-
-**C2-03 — Concurrent prompts — session disconnect aborts each independently**  
-Given two prompts (permissionId A, permissionId B) are in flight concurrently for the same session;  
-When `session.disconnected` fires;  
-Then both AbortSignals fire within one event loop turn each, both callbacks resolve `'aborted'`, and `pendingByRequestId` is empty.  
-*Assert: aborting one does NOT affect the other's lifecycle — the abort is per-permissionId, not shared.*
-
-**C2-04 — Late tap after approve — `answerCallbackQuery` returns gracefully**  
-Given a `permission.request` was approved and the prompt Promise has resolved;  
-When Aaron taps the same ✅ Approve button again (stale Telegram button, network delay, or Aaron taps twice);  
-Then `answerCallbackQuery` is called and returns "no longer active" gracefully with no crash, no error throw, and no state mutation.
-
-**C2-05 — Late tap after deny — same graceful handling**  
-Given a `permission.request` was denied and the prompt Promise has resolved;  
-When Aaron later taps ❌ Deny (or ✅ Approve) on the stale message;  
-Then `answerCallbackQuery` returns "no longer active" gracefully.
-
-**C2-06 — Late tap after abort (disconnect) — graceful handling**  
-Given a prompt was aborted by session disconnect before any user response;  
-When Aaron later opens Telegram and taps either button;  
-Then `answerCallbackQuery` returns "no longer active" gracefully. No second `permission.response` is sent to the (already-disconnected) extension.
-
----
-
-## Category 3 — Correlation & Ordering
-
-*Unchanged from prior catalog.*
-
-**C3-01 — Concurrent prompts: independent requestIds, independent resolution**  
-Given two `permission.request` messages arrive simultaneously with different `permissionId`s;  
-When Aaron approves permissionId-A and denies permissionId-B in any order;  
-Then each `permissionCallback` resolves with the correct decision, with no cross-contamination of state.
-
-**C3-02 — Out-of-order resolution**  
-Given three in-flight prompts (A, B, C) for the same session;  
-When Aaron resolves them in order C → A → B;  
-Then all three callbacks receive the correct decision regardless of resolution order, and `pendingByRequestId` is empty after all three resolve.
-
-**C3-03 — Multi-session prompts multiplexed over one pipe**  
-Given two sessions (sess-1, sess-2) sharing one pipe connection;  
-When each session sends a `permission.request` simultaneously;  
-Then each `BridgeSession` receives only its own request (filtered by `sessionId`), each resolves independently, and neither session receives the other's `permission.response`.
-
-**C3-04 — Data-plane stream continues while permission prompt is in flight**  
-Given an active `stream` sequence is running and a `permission.request` interleaves mid-stream (after chunk 2, before chunk 3);  
-When the stream's `done: true` arrives before the prompt is answered;  
-Then the stream completes correctly, the prompt remains pending (not auto-resolved by stream completion), and the relay's accumulated response is intact.
-
----
-
-## Category 4 — Adversarial & Edge
-
-*Largely unchanged from prior catalog. Extension classifier scenario added (Q5 resolution).*
-
-**C4-01 — Foreign permissionId: ignore, don't process**  
-Given a `permission.response` arrives for a `permissionId` not in `pendingByRequestId` (forged, late, or from a previous daemon run);  
-When the daemon receives it;  
-Then it is silently discarded with a structured log warning, no state mutation occurs, and the connection is NOT dropped.
-
-**C4-02 — Malformed permission frame: reject, log, don't crash**  
-Given a `permission.request` arrives missing required fields (`permissionId`, `toolName`, or `riskLevel`);  
-When the daemon processes it;  
-Then the frame is rejected with a structured log error, the extension connection is NOT dropped (ADR-8 unknown-field tolerance applies), and all other in-flight sessions are unaffected.
-
-**C4-03 — Duplicate response: at-most-once delivery**  
-Given a `permissionId` has already been resolved (user approved);  
-When a second `permission.response` for the same `permissionId` arrives (e.g., duplicate callback delivery);  
-Then it is discarded, the original resolution is not overwritten, and no double-fire occurs.
-
-**C4-04 — Permission flood: rate-limit guard** *(SKIP until Phase 7)*  
-Given more than N concurrent `permission.request` messages arrive for the same session;  
-When the flood exceeds the cap;  
-Then excess prompts are auto-denied with a log warning and no crash.  
-*Note: ADR-9 §13 defers rate limiting to Phase 7. Mark SKIP for now; scenario reserved.*
-
-**C4-05 — Extension classifier: non-destructive tools bypass bridge permission flow entirely (Q5)**  
-Given a non-destructive tool (`read_file`, `list_files`, or any tool in `isKnownSafe()`) is invoked by the CLI;  
-When the extension's `onPermissionRequest` handler fires;  
-Then `isKnownSafe(toolName)` returns `true`, the handler returns `{ kind: 'approved' }` immediately, and zero `permission.request` frames appear on the pipe.  
-*White-box unit test on extension-side classifier. Mock the pipe; assert frame count = 0.*  
-**ASSUMES IMPLEMENTATION:** K5 must export `isKnownSafe` as a standalone named function for isolation testing.
-
----
-
-## Category 5 — No-Timeout Behavioral Verification
-
-*ENTIRELY NEW. Prior Category 6 (8 protocol ambiguities) retired — all resolved by ADR-9. This category provides behavioral regression coverage for the Branch A no-timeout decision.*
-
-**C5-01 — Friday → Monday: prompt survives 72+ simulated hours intact**  
-Given a `permission.request` is in flight;  
-When fake timers advance 72 hours (`vi.advanceTimersByTime(72 * 60 * 60 * 1000)`) with no user response;  
-Then the prompt Promise is **still pending** (not resolved), zero auto-deny has fired, `pendingByRequestId` still holds the entry, and `vi.getTimerCount()` shows no surprise queued timers beyond the observability scanner's `setInterval`.  
-When fake timers are reset and Aaron "taps Approve" (callback fires);  
-Then `permissionCallback` resolves `true`, session state is clean, and zero memory growth or leaked timers are present.  
-*Fake timer scope: `toFake: ['setTimeout','setInterval','clearTimeout','clearInterval','Date']`. Omit `setImmediate` — readline compatibility. This validates ADR-9 §7's "Friday → Monday" documented case.*
-
-**C5-02 — No-timer regression assertion** ⭐ *Regression guard against K3 re-introduction*  
-Given `promptUserForPermission()` is called with a live `AbortSignal`;  
-When the call is made and a pending Promise is returned;  
-Then a `vi.spyOn(globalThis, 'setTimeout')` asserts that `setTimeout` was called **zero times** from the prompt's call site (only the pre-existing observability `setInterval` is permitted).  
-*White-box regression test. Guards against accidental re-introduction of the `timeoutHandle` that K3 removes. Run this test in the same file as K3's prompt.ts changes.*
-
-**C5-03 — Observability scanner: 10-minute warning fires, Promise stays pending**  
-Given a `permission.request` is in flight and `PendingPrompt.createdAt` is set;  
-When fake timers advance 11 minutes (`vi.advanceTimersByTime(11 * 60 * 1000)`);  
-Then `console.warn` is called with a message containing the `requestId`, the 11-minute threshold is reflected in the log, and the prompt Promise is **still pending** (the scanner did not resolve it).  
-*Assert: scanner is read-only — it does NOT call `complete()`, does NOT modify `pendingByRequestId`, and does NOT send any `permission.response`.*
-
-**C5-04 — SDK empirical regression reference** *(Reference scenario — not a new test to write)*  
-*Points to:* `tests/exploratory/sdk-permission-timeout.test.ts` (Carter's probe, 4/4 green as of 2026-05-22).  
-This test verifies that `@github/copilot-sdk` v0.2.2 imposes no internal timeout on `onPermissionRequest` by advancing fake timers 60 000 ms and confirming no SDK-imposed rejection occurs.  
-**NOTE:** If `@github/copilot-sdk` is upgraded in `package.json`, re-run this test before merging the bump PR. If any of the 4 cases go red, treat it as a **breaking change to ADR-9** and re-evaluate the no-timeout decision. Also run the §7 grep check:  
-```bash
-grep -n "setTimeout\|Promise\.race\|AbortController" \
-  node_modules/@github/copilot-sdk/dist/session.js \
-  | grep -A2 -B2 "permissionHandler\|executePermissionAndRespond"
-```
-
----
-
-## Category 6 — AllowAlways Store & Classifier Contracts
-
-*ENTIRELY NEW. Covers ADR-9 Q2 (AllowAlwaysStore) and Q5 (extension classifier) behavioral contracts.*
-
-**C6-01 — Store hit: no prompt, immediate approval**  
-Given `AllowAlwaysStore.has(toolName) === true` for the current session;  
-When `permission.request` arrives for that tool;  
-Then `promptUserForPermission()` is NOT called, no Telegram message is sent, and `permissionCallback` resolves `true` immediately (synchronously from the store check).
-
-**C6-02 — Store miss: normal prompt flow**  
-Given `AllowAlwaysStore.has(toolName) === false`;  
-When `permission.request` arrives for that tool;  
-Then `promptUserForPermission()` IS called, a Telegram inline-keyboard message is sent, and the normal approve/deny flow proceeds.
-
-**C6-03 — Approve adds to store; subsequent call is auto-approved**  
-Given the store is empty and Aaron approves a prompt for `bash`;  
-When a second `permission.request` arrives for `bash` in the same session;  
-Then the second prompt is auto-approved via the store with no Telegram message, and the `promptUserForPermission()` call count is still 1 (from the first invocation only).
-
-**C6-04 — Store is per-session (no cross-session leakage)**  
-Given session-A's store has `bash` approved;  
-When session-B receives a `permission.request` for `bash`;  
-Then session-B's store is empty (independent `InMemoryAllowAlwaysStore` instance), and session-B gets a full prompt.  
-*Assert: `InMemoryAllowAlwaysStore` instances are separate objects; `BridgeSessionFactory` must not share a store across sessions.*  
-**ASSUMES IMPLEMENTATION:** K4's `BridgeSessionFactory` must construct a new `InMemoryAllowAlwaysStore` per `BridgeSession` instantiation.
-
-**C6-05 — Classifier: destructive tool sends permission.request over pipe**  
-Given a destructive tool (`bash`, `write_file`, or any tool matched by `isDestructive()`) is invoked;  
-When the extension's `onPermissionRequest` handler fires;  
-Then `isDestructive(toolName) === true`, the handler sends `permission.request` over the pipe, and awaits a `permission.response` from the daemon.  
-*Pair test with C4-05 (non-destructive path). Both together cover the classifier contract completely.*
-
----
-
-## Category 7 — Regression Guards
-
-*Kept from prior Category 5. Validates that control-plane additions do not disturb established data-plane contracts.*
-
-**C7-01 — Relay 800ms throttle unaffected by interleaved permission frames**  
-Given an active stream with N chunks and a `permission.request` interleaved between chunk 2 and chunk 3;  
-When the relay processes the full sequence;  
-Then total edit count is far below N (throttle intact), and the final edit content contains all N chunks.
-
-**C7-02 — MarkdownV2 escaping unaffected**  
-Given a relay session with `permission.request` frames on the pipe;  
-When streamed content contains MarkdownV2-sensitive characters (`_`, `*`, `[`, `.`, etc.);  
-Then `escapeMarkdownV2()` output is byte-for-byte identical to the no-permission baseline.
-
-**C7-03 — Message splitter unaffected**  
-Given a relay session and a response that requires splitting into multiple Telegram messages;  
-When a `permission.request` arrives between two split segments;  
-Then `splitForTelegram()` output is identical to the no-permission baseline and numbering is correct.
-
-**C7-04 — Prompt text contains no countdown language**  
-Given `promptUserForPermission()` generates a Telegram message text;  
-When the text is captured from the `sendMessage` call;  
-Then it contains language equivalent to "waiting for your decision", and does NOT match `/\d+\s*(second|minute|s\b)/i` (no countdown text).  
-*Regression guard against re-introduction of timer UX text that K6 removes. Run in prompt.ts unit tests.*
-
----
-
-## Retired: Protocol Ambiguities (Prior Category 6)
-
-All 8 protocol ambiguity items are resolved by ADR-9. Closed; not carried forward as test scenarios.
-
-| # | Ambiguity | Resolution |
-|---|---|---|
-| 1 | Wire message type | `permission.request` / `permission.response` top-level discriminated types ✅ |
-| 2 | requestId ownership | `permissionId` generated by extension; separate from data-plane `requestId` ✅ |
-| 3 | Timeout owner | No timeout. AbortSignal for session disconnect only (Branch A) ✅ |
-| 4 | Reconnect behavior | Prompts do not survive reconnect; daemon restart clears `pendingByRequestId` ✅ |
-| 5 | Multiplexing on single pipe | Discriminated dispatch in `_handleInbound` switch (ADR-8 pattern) ✅ |
-| 6 | At-most-once delivery | `permissionId` lookup guard in `pendingByRequestId`; duplicate response discarded ✅ |
-| 7 | Post-terminal race | `permission.request` after `done: true` discarded gracefully; see C3-04 ✅ |
-| 8 | Extension-side timeout | No extension timer; pipe-close abort only; see C2-02 ✅ |
-
----
-
-## Scenario Count Summary
-
-| Category | Count | Change from Prior |
-|---|---|---|
-| 1 — Happy Path | 4 | KEPT (minor wording update) |
-| 2 — Cancellation & Abort | 6 | REDESIGNED; all 5 prior timeout scenarios deleted |
-| 3 — Correlation & Ordering | 4 | KEPT |
-| 4 — Adversarial & Edge | 5 | KEPT + C4-05 classifier added |
-| 5 — No-Timeout Behavioral | 4 | NEW (replaces retired Cat 6) |
-| 6 — AllowAlways & Classifier | 5 | NEW |
-| 7 — Regression Guards | 4 | KEPT from prior Cat 5 |
-| **Total** | **32** | Prior: 29 (net +3) |
-
-**Deleted:**
-- C2-01–C2-05 (prior): "auto-deny after Xs", "dual-timer race", "Branch B ceiling" — 5 deleted
-- Category 6 (prior): 8 protocol ambiguities — retired (all resolved)
-
-**ASSUMES IMPLEMENTATION summary (all for Kat):**
-- K2: `BridgeSession` accepts `AbortController` at construction (not self-constructs)
-- K4: `BridgeSessionFactory` constructs a new `InMemoryAllowAlwaysStore` per session
-- K5: `isDestructive()` and `isKnownSafe()` exported as named functions from `extension.mjs`
-
----
-
-# Carter — Cloud Review Cycle 1 Disposition Notes
-
-**Date:** 2026-05-23  
-**Branch:** `squad/review1-phase6-adr9-fixes`  
-**Commit:** `949269b`  
-**PR:** #6  
-**Test result:** 372 passed / 4 skipped / 0 failed ✅ (12 new tests added)
-
----
-
-## T1 — `relay.ts:114` — ADR-9 Regression (ACCEPTED + FIXED)
-
-**Disposition:** Accepted. This is a real regression. Option A chosen (reference-count pending permissions in BridgeSession; relay defers eviction when `isBusy()` returns true).
-
-**Why Option A over Option B:** Option A keeps a single `dispose()` contract and requires no knowledge of "which kind of dispose" at the relay call site. The `isBusy()` predicate is a clean capability query that any consumer can use. Option B (split dispose paths) would require callers to track which variant to call, coupling the relay more deeply to bridge internals.
-
-**What changed:**
-- `CopilotSession` interface: added `isBusy?(): boolean` (optional — SDK sessions omit it).
-- `BridgeSession`: added `isBusy(): boolean { return this._pendingByPermId.size > 0; }`.
-- `relay.ts` idle eviction: replaced the inline callback with a named `scheduleIdle()` closure. If `evicted.session.isBusy?.()` returns true, logs and re-arms the timer instead of calling `dispose()`.
-- **ADR-9 compliance:** A Telegram user answering a permission prompt now has unlimited time; idle eviction will never fire while the prompt is pending.
-
-**Tests added (T1, 5 tests):** `isBusy()` false/true/reset unit tests; `dispose NOT called while busy`; `dispose called once no longer busy`.
-
----
-
-## T3 — `pipeAuth.ts:71` — Windows Rename (ACCEPTED + FIXED)
-
-**Disposition:** Accepted. On Windows `fs.rename(tmp, dst)` throws `EPERM` when `dst` already exists. The original code had no fallback, so a second daemon startup could crash in `generatePipeAuth()`.
-
-**Fix chosen:** `try { rename } catch (EPERM|EEXIST) { unlink dst; rename }`. The outer `try/catch` also cleans up the `.tmp` file on any hard failure so stale temporaries don't accumulate.
-
-**Why not `fs.writeFile` with `flag: 'w'`:** Direct write to the final path sacrifices the atomic "never see a partial file" guarantee. A reader could observe a half-written token if it reads between the truncation and the new content being flushed. The write-to-tmp + rename pattern is the right approach; we just needed the Windows-compat fallback.
-
-**Note on mock-based tests:** `node:fs/promises` ESM bindings are non-configurable; `vi.spyOn` cannot wrap them (throws "Cannot redefine property"). Kept two real-filesystem behavioral tests instead: first-write creates file, second-write-over-existing succeeds. On Windows this actually exercises the fallback path.
-
-**Tests added (T3, 2 tests):** first write creates file; second write over existing succeeds.
-
----
-
-## T4 — `main.ts:123` — Auth File Cleanup on Bridge Start Failure (ACCEPTED + FIXED)
-
-**Disposition:** Accepted. Straightforward lifecycle fix: if `generatePipeAuth()` succeeds but `bridge.start()` throws, the catch block now calls `cleanupPipeAuth()` before logging and falling back to SDK-only mode. `cleanupPipeAuth()` is ENOENT-safe so it's harmless if `generatePipeAuth` itself failed before writing the file.
-
-**Tests added (T4, 2 tests):** `cleanupPipeAuth` removes file; `cleanupPipeAuth` is a no-op when file is already gone (ENOENT). These test the operation that `main.ts` now performs in the catch block.
-
----
-
-## T6 — `bridgeSession.ts:276` — Stream Queue Overflow Latch (ACCEPTED + FIXED)
-
-**Disposition:** Accepted. The original I5 fix capped the queue at 1000 items but left the listener registered, so a sustained misbehaving extension could keep adding error items to the queue indefinitely.
-
-**Fix:** After pushing the first overflow error item, immediately call `this.bridge.off('stream', streamListener)` and `this.bridge.off('stream.error', errorListener)`. This latches into a terminal state. The generator's `finally` block will call `off()` again when the consumer unwinds — which is a safe no-op on an already-removed listener.
-
-**Tests added (T6, 3 tests):** All synchronous (FakeBridge emitter is synchronous; the overflow path calls `off()` synchronously so we can check `bridge.offCalls` without awaiting anything): `stream` listener removed on overflow; `stream.error` listener removed on overflow; post-overflow frames trigger no new `off()` calls.
-
----
-
-## Threads not assigned to Carter
-
-T2 and T5 were not in Carter's assignment list.
-
-
----
-
-# Cloud Review Cycle 3 — Carter (T9 Test Methodology Fix)
-
-**Date:** 2026-05-23  
-**Commit:** `1d027da`  
-**Branch:** `squad/review1-phase6-adr9-fixes`
-
----
-
-## Thread
-
-**T9** — `tests/bridge/permission-prompting.test.ts:279`  
-Copilot flagged that C7-03 uses two `BridgeSession` instances sharing the same
-`FakeBridge` + `SESSION_ID`, with the second session's permission callback set
-to `mockResolvedValue(true)`. Since both sessions listen for `permission.request`
-on the same emitter, the second auto-resolving session could handle the event
-before the first session's hanging callback was ever needed. The stream completing
-proved nothing about data-plane / control-plane independence.
-
-## Fix
-
-Consolidated to a single `BridgeSession` created via `makePermSession` with the
-hanging callback (`new Promise<boolean>((r) => { resolvePermission = r; })`).
-
-The test now:
-1. Creates one session with a hanging permission callback.
-2. Starts a stream on that same session (`session.send('hello')`).
-3. Emits `permission.request` while the stream is open.
-4. Emits two stream chunks — they arrive normally while permission is unresolved.
-5. Awaits `streamDone` and asserts `chunks === ['chunk-1', 'chunk-2']`.
-6. Resolves the permission, awaits `flush()`, asserts `sendResponseFn` called with `'allow'`.
-
-This correctly tests the invariant: the data plane (stream) is not blocked by a
-pending control-plane permission prompt.
-
-## Disposition
-
-✅ **Accepted and fixed.** No design decision required. Pure test correctness.
-
-Test results: **374 passed / 4 skipped / 0 failed** (unchanged count — test
-replacement, not addition).
-
-
----
-
-# Carter — Review Cycle 1 Dispositions
-
-**Date:** 2026-05-22  
-**Branch:** `squad/review1-phase6-adr9-fixes`  
-**Worktree:** `D:\git\verbose-invention-review1`  
-
----
-
-## Summary
-
-Processed all 14 findings assigned to Carter's domain. 12 accepted+fixed, 0 escalated, 2 deferred (minor — net-safe as-is).
-
----
-
-## Findings
-
-### BLOCKING
-
-| ID | Disposition | Summary |
-|----|------------|---------|
-| B1 | ✅ ACCEPT | Added `dispose()` to `BridgeSession`; relay calls it on idle eviction, stale-name eviction, crash recovery, and graceful shutdown |
-| B2 | ✅ ACCEPT | Added `session.disconnected` listener inside `_generateStream`; pushes error into queue and calls `wake()` |
-| B3 | ✅ ACCEPT | ADR-10 implemented: random pipe name + per-run token in `bridge-auth.json` (Option A primary auth); owner-only file ACL via `icacls` (Option B partial). Extension reads auth file on every connect. Token validated in `handleHello`; mismatch closes silently (no oracle). |
-
-**B1 detail:**  
-- `BridgeSession` stores listener refs in `_permListeners: Array<{event, listener}>`.  
-- `dispose()` iterates the array, calls `bridge.off()` for each, sets array to `null`, and aborts `_sessionAbortController`.  
-- `onDisconnected` now calls `this.dispose()` instead of inline `bridge.off()` calls — same cleanup path for both triggers.  
-- `CopilotSession` interface gains optional `dispose?(): void`.  
-- `relay.ts` calls `session.dispose?.()` at: idle eviction callback, stale-name eviction, SDK crash recovery `activeSessions.clear()`, single-topic timeout eviction, and `relay.dispose()`.
-
-**B2 detail:**  
-- `disconnectListener` registered via `bridge.on('session.disconnected', ...)` inside `_generateStream`.  
-- On fire: pushes `{kind:'error', err: new Error('Session … disconnected mid-stream')}` into the queue and calls `wake()`.  
-- Cleaned up in the same `finally` block as `stream` and `stream.error` listeners.
-
-**B3 implementation:**  
-- New `src/bridge/pipeAuth.ts`: `generatePipeAuth()` generates random pipe name (`reach-bridge-{16hex}`) + 32-byte CSPRNG token, writes `%LOCALAPPDATA%\reach\bridge-auth.json` atomically, sets owner-only ACL via `icacls`.  
-- `ExtensionBridge` constructor now takes `PipeAuthConfig`; `start()` listens on `config.pipePath`. Token validated in `handleHello`: mismatch destroys socket without sending any error frame (no oracle).  
-- `main.ts`: calls `generatePipeAuth()` before `ExtensionBridge` creation.  
-- `extension.mjs`: reads `bridge-auth.json` before each connect attempt (picks up daemon restarts); includes `authToken` in `hello` message.  
-- Option B SID verification (full `GetNamedPipeClientProcessId` + SID comparison) deferred — requires a native addon (`koffi` or equivalent); `%LOCALAPPDATA%` directory ACL provides equivalent protection in ADR-5 single-user deployment.  
-- `permissionId` hijack concern: moot per ADR-10 — any attacker connecting to the pipe must read `bridge-auth.json`, which requires being the same OS user.  
-- 6 new tests in `tests/bridge/b3-pipe-auth.test.ts`.
-
-**B3 escalation note (superseded):**  
-Noble Six inbox checked at 2026-05-22T22:47 — no `noble-six-pipe-auth.md` found at that time. ADR-10 filed and implemented in follow-up commit.
-
----
-
-### IMPORTANT
-
-| ID | Disposition | Summary |
-|----|------------|---------|
-| I1 | ✅ ACCEPT | Replaced `currentRequestId` global with `activeInjectIds: Set<string>`. `getActiveRequestId()` returns insertion-order last. |
-| I2 | ✅ ACCEPT (partial) | Added `req.signal` AbortSignal handler in `onPermissionRequest`: sends `permission.cancelled` and resolves the pending promise on abort. |
-| I5 | ✅ ACCEPT | `MAX_STREAM_QUEUE_SIZE = 1000` — overflow pushes error item and wakes generator. Extension streaming path awaits `drain` when `socket.write()` returns false. |
-| I6 | ✅ ACCEPT | `handleHello` rejects a new connection whose `sessionName` is already held by a different `sessionId`. |
-| I9 | ✅ ACCEPT | `MAX_PENDING_PERMISSIONS = 5` cap in `_wirePermissionHandlers`. Overflow auto-denies with warn log. |
-
-**I1 note:** The `requestId` field in `permission.request` is "context only" per ADR-9 §3.1. For concurrent injects (rare in single-user operation), the last-in-flight requestId is used — acceptable per spec.
-
-**I2 partial:** The finding also mentions emitting `permission.cancelled` when the SDK session terminates mid-inject. That scenario (SDK terminates but pipe stays up) is handled by `abortPendingPermissions()` on pipe close. The `req.signal` path covers the SDK's explicit abandonment signal. Full coverage deferred if SDK exposes richer lifecycle hooks in future versions.
-
----
-
-### MINOR
-
-| ID | Disposition | Summary |
-|----|------------|---------|
-| raceAbortSignals listener growth | ✅ ACCEPT | Added `signal: controller.signal` to `addEventListener` options — auto-removes remaining listeners when the first signal fires. |
-| handlePong unreachable branch | ✅ ACCEPT | Added explanatory comment: session deleted from map before grace expires; `findConnectionBySocket` returns undefined. |
-| pendingSockets slow-loris | ✅ ACCEPT | Added 10-count cap and 10-second auth timeout on pre-hello sockets. |
-| waitForPermissionResponse fallback | ✅ ACCEPT | Added 10-minute fallback `setTimeout` that resolves deny and logs a warning. |
-| `void _model;` idiom | ✅ ACCEPT | Replaced with `// _model unused: bridge sessions are model-agnostic` comment in `bridgeSessionFactory.ts`. |
-| Duplicate section header | ✅ ACCEPT | Renamed second `// ─── Session event forwarding ─────` to `// ─── SDK permission hook (ADR-9) ──────────────`. |
-| `allowAlwaysStore?` optional | ⏸️ DEFER | Making it required would require updating 4+ test helper functions across the test suite. The current `?.` optional-chain usage is type-safe and correct. Deferred — low risk. |
-| permissionId hijack defense | ⏸️ DEFER | Coupled to B3 (pipe ACL/auth). Will implement alongside B3 once Noble Six's decision lands. |
-
----
-
-## Files Changed
-
-| File | Changes |
-|------|---------|
-| `src/copilot/factory.ts` | Added optional `dispose?(): void` to `CopilotSession` |
-| `src/bridge/bridgeSession.ts` | B1 dispose, B2 stream disconnect, I5 queue cap, I9 rate limit, raceAbortSignals minor |
-| `src/bridge/extensionBridge.ts` | I6 duplicate sessionName, pendingSockets slow-loris, handlePong comment |
-| `src/bridge/bridgeSessionFactory.ts` | `void _model` → comment |
-| `src/relay/relay.ts` | B1 — `dispose?.()` on all eviction paths |
-| `extension.mjs` | I1 activeInjectIds, I2 permission.cancelled, I5 drain, duplicate header, 10-min fallback |
-| `tests/bridge/review1-fixes.test.ts` | **NEW** — 8 tests: B1 (4), B2 (3), I9 (1) |
-
-## Test Results
-
-- TypeScript: ✅ clean (`npx tsc --noEmit`)
-- Lint: ✅ clean (`npm run lint`)
-- Tests: ✅ **371 passed, 4 skipped** (was 363 + 8 new)
-
----
-
-## Coordination Notes
-
-- **Noble Six**: B3 (pipe ACL) and permissionId hijack defense are waiting on you. When your decision lands in the inbox, Carter will implement.
-- **Kat**: `CopilotSession` interface now has `dispose?(): void` — if `SdkCopilotSession` or any other factory implementer caches bridge listeners, implement it there too. SDK sessions (no bridge listeners) can safely omit it.
-
-
----
-
-# Jun — Review Cycle 1 Dispositions
-
-**Date:** 2026-05-22  
-**Branch:** `squad/review1-phase6-adr9-fixes`  
-**Commit:** 328f48a
-
----
-
-## I3 — DESTRUCTIVE_TOOLS / SAFE_TOOLS drift detection missing
-
-**Disposition:** ACCEPT and fix.
-
-**Reasoning:** The concern is real and material. `extension.mjs` carries hardcoded copies of both sets with a "MUST be mirrored" comment that relies entirely on author discipline. Any tool added to `permissions.ts` without a matching update in `extension.mjs` would silently bypass risk classification — the extension's `isDestructive()` call would return false and the tool would execute without a Telegram approval prompt. That is a privilege escalation bug, and there is currently zero automation preventing it.
-
-**Approach chosen:** (b) — keep two sources, add a drift-detection test. Faster to land and avoids rearchitecting the extension's module format just for this concern. The test parses `extension.mjs` as raw text via regex and compares to the TypeScript exports. If the sets drift, the test fails at CI time before the branch can merge.
-
-**Current state:** Sets are **in sync** today. Both assertions pass green. The third assertion (no overlap between DESTRUCTIVE and SAFE) also passes and guards against a different category of classification error.
-
-**Fix delivered:** `tests/copilot/permissions-drift.test.ts` (3 tests, all green).
-
----
-
-## I8 — FakeDaemon ships unresolved TODO + missing PermissionResponseMessage
-
-**Disposition:** ACCEPT and fix.
-
-**Reasoning:** The stale TODO was valid during initial construction (Carter hadn't merged the pipe protocol). As of Phase 6, ADR-8 is final and ADR-9 is accepted — the canonical types are locked in `src/bridge/extensionBridge.ts`. The TODO is now false advertising, and the missing ADR-9 types (`PermissionRequestMessage`, `PermissionCancelledMessage`, `PermissionResponseMessage`) mean the FakeDaemon cannot be used to write ADR-9 integration tests without casting. That blocks Category 2 and 3 permission test scenarios.
-
-**Audit result (InboundMessage — extension → daemon):**
-| Type | In FakeDaemon before | Status |
-|---|---|---|
-| `hello` (HelloMessage) | ✅ | OK |
-| `pong` (PongMessage) | ✅ | OK |
-| `stream` (StreamChunkMessage) | ✅ | OK |
-| `stream.error` (StreamErrorMessage) | ✅ | OK |
-| `session.event` (SessionEventMessage) | ✅ | OK (added Phase 6 Day 2) |
-| `permission.request` (PermissionRequestMessage) | ❌ | **ADDED** |
-| `permission.cancelled` (PermissionCancelledMessage) | ❌ | **ADDED** |
-
-**Audit result (OutboundMessage — daemon → extension):**
-| Type | In FakeDaemon before | Status |
-|---|---|---|
-| `ping` (PingMessage) | ✅ | OK |
-| `session.registered` (SessionRegisteredMessage) | ✅ | OK |
-| `inject` (InjectMessage) | ✅ | OK |
-| `permission.response` (PermissionResponseMessage) | ❌ | **ADDED** |
-
-**Wire shapes confirmed** to match `extensionBridge.ts` field-for-field. Types defined locally in FakeDaemon (not imported from production) — maintains test isolation, consistent with existing pattern.
-
-**TODO removed.** The contracts are now aligned; the TODO was no longer describing open work.
-
-**Fix delivered:** `tests/helpers/FakeDaemon.ts` updated (+3 types, +3 union members, TODO removed).
-
----
-
-## Integration test hang — discovery
-
-**Not a finding I was assigned**, but surfaced during `npx vitest run` (full suite): `tests/integration/pairing-flow.test.ts` hangs indefinitely. This is pre-existing — nothing in my changes touches integration test infrastructure or the pairing flow. All 340 non-integration tests pass cleanly.
-
-**Recommendation:** Escalate to Carter or Noble Six. The pairing-flow integration test is likely blocking on a real named-pipe connection that cannot be established in the CI environment.
-
----
-
-## Verification Summary
-
-| Check | Result |
-|---|---|
-| `npx tsc --noEmit` | ✅ clean |
-| `npm run lint` | ✅ clean (0 warnings) |
-| `npx vitest run` (excluding integration) | ✅ 340 passed / 4 skipped / 0 failed |
-| New I3 drift tests | ✅ 3/3 green |
-| Existing FakeDaemon-dependent tests | ✅ all green (no regressions) |
-
-
----
-
-# ADR-9 Implementation Reconciliation — Kat → Jun
-
-**Date:** 2026-05-22  
-**From:** Kat (Bot Dev)  
-**To:** Jun (Test Author)  
-**Re:** 3 ASSUMES IMPLEMENTATION flags from Jun's revised test catalog (merged cb7f5fc)
-
----
-
-## K2 — Constructor Injection of AbortController
-
-**Verdict: Implementation correct. Catalog assumption overstated — no code change.**
-
-The shipped `BridgeSession` self-constructs `_sessionAbortController` as a private `readonly` field. Jun assumed direct injection was required for C2-01–C2-03 abort tests. It is not. The `_wirePermissionHandlers` method attaches a `session.disconnected` listener that calls `_sessionAbortController.abort()` internally. Jun's `FakeBridge` already has (per the test doubles contract) `emitDisconnected(sessionId)` — emitting `session.disconnected` on the fake bridge triggers the abort within one event loop turn, exactly as C2-01 requires. The test doubles contract is sufficient; direct AbortController injection would be white-box overreach and is not needed.
-
-**Action for Jun:** Revise the C2-01–C2-03 test setup. Use `fakeBridge.emitDisconnected(sessionId)` (or the equivalent `bridge.emit('session.disconnected', sessionId)` call) instead of `abortController.abort()`. Remove the "accepts AbortController at construction" assumption from the test catalog summary.
-
----
-
-## K4 — Per-Session AllowAlwaysStore Instantiation
-
-**Verdict: Real bug. Catalog correct. Code changed — minimal diff.**
-
-The shipped implementation created a single `InMemoryAllowAlwaysStore` in `main.ts` and passed it to `BridgeSessionFactory`, which reused the same instance for every `BridgeSession`. This violated ADR-9 §Q2 ("per-session in-memory") and the C6-04 store-isolation security contract. Jun's test would have caught cross-session leakage correctly.
-
-**Fix applied:**
-- `src/bridge/bridgeSessionFactory.ts`: Removed `allowAlwaysStore?: AllowAlwaysStore` constructor param. `_makeSession()` now creates `new InMemoryAllowAlwaysStore()` per session when wiring permission options. Also updated the import (removed `AllowAlwaysStore` type import; added `InMemoryAllowAlwaysStore` concrete import).
-- `src/main.ts`: Removed the shared `allowAlwaysStore` constant and its `InMemoryAllowAlwaysStore` import. `BridgeSessionFactory` now takes only `bridge`.
-
-**Tests:** 321 passed / 4 skipped / 0 failed. tsc clean. lint clean.
-
-**Note for Phase 7:** The per-session seam is now inside `_makeSession`. When Phase 7 introduces a persisted store, refactor `BridgeSessionFactory` to accept a `storeFactory: () => AllowAlwaysStore` parameter (factory-of-factories pattern) rather than a shared instance.
-
----
-
-## K5 — Named Classifier Exports from extension.mjs
-
-**Verdict: Real gap. Catalog correct. Code changed — minimal diff.**
-
-`isDestructive(toolName)` and `isKnownSafe(toolName)` were defined as module-private functions in `extension.mjs` — no `export` keyword. Jun cannot import them in C4-05 and C6-05 classifier unit tests without named exports.
-
-**Fix applied:**
-- `extension.mjs`: Added `export` keyword to both `isDestructive` and `isKnownSafe`.
-
-**Tests:** Full suite still 321 passed / 4 skipped / 0 failed. tsc and lint clean.
-
----
-
-## 4th Issue — Surfaced: Top-Level Side Effects in extension.mjs
-
-**Not flagged by Jun, but will block test writing if unaddressed.**
-
-`extension.mjs` calls `main().catch(...)` at the module top level (line ~583). When Jun does `import { isDestructive, isKnownSafe } from '../extension.mjs'` in a vitest test, the module executes: `joinSession()` is called (throws or hangs without CLI context), `runConnectionLoop()` fires (attempts named pipe connect), and process signal handlers are registered.
-
-**Required test setup pattern for Jun:**  
-Before any `import` of `extension.mjs` in test files, use `vi.mock` to stub the side-effecting modules:
-
-```js
-// At the top of the test file — hoisted by vitest
-vi.mock('@github/copilot-sdk/extension', () => ({
-  joinSession: vi.fn().mockResolvedValue({ onPermissionRequest: vi.fn(), log: vi.fn() }),
-}));
-vi.mock('node:net', () => ({
-  createConnection: vi.fn(() => ({
-    setEncoding: vi.fn(),
-    on: vi.fn(),
-    write: vi.fn(),
-    destroy: vi.fn(),
-    destroyed: false,
-  })),
-}));
-```
-
-With these mocks in place, `main()` completes without error and `runConnectionLoop()` is neutered (the mock socket never fires `connect`). The classifier functions (`isDestructive`, `isKnownSafe`) are then importable and testable in isolation.
-
-If this setup is too noisy, an alternative is to extract the two classifier functions into a separate `src/bridge/extensionClassifier.mjs` (no side effects, no SDK imports) and have `extension.mjs` import from there. That extraction is out of scope for this reconciliation pass — surfacing it here for Jun and Noble Six to decide.
-
----
-
-## Summary for Jun
-
-| Flag | Verdict | Code Change | Jun Action Required |
-|---|---|---|---|
-| K2 constructor injection | Implementation correct | None | Revise C2-01–C2-03: use `fakeBridge.emitDisconnected()` not `.abort()` |
-| K4 per-session store | Bug — catalog correct | ✅ Fixed | None — C6-04 will pass as written |
-| K5 named exports | Gap — catalog correct | ✅ Fixed | Add vi.mock setup for side effects (see §4 above) |
-| Side-effects (4th) | New issue — unblocks C4-05/C6-05 | None | Adopt mock setup pattern OR request classifier extraction |
-
-**All 32 vitest scenarios are unblocked.** Jun may proceed writing the test files.
-
-
----
 
 # ADR-10: Named Pipe Authentication (Pipe ACL + Per-Install Token)
 
@@ -2703,66 +1645,6 @@ immediately (no error message sent — avoid oracle).
 
 ---
 
-# Review Cycle 1 — Noble Six Dispositions
-
-**Author:** Noble Six  
-**Date:** 2026-05-22
-
-## B3: Named pipe has no ACL or authentication — RESOLVED
-
-Decision: Option A+B (token + SID verification). Written as ADR-10 in
-`noble-six-pipe-auth.md`. Carter is unblocked to implement.
-
-## I4: Safety parity regression (bridge auto-approves unknown tools) — FIXED
-
-Root cause: `extension.mjs` line 385 used `isKnownSafe(tool) || !isDestructive(tool)`
-which auto-approved any tool NOT in the destructive list, including unknowns.
-The SDK (`impl.ts:65-66`) denies unknowns. Fixed to match SDK: only known-safe
-auto-approves; unknowns get `denied`; destructive goes to daemon prompt.
-
-## I7: install.ts scope concern — ACKNOWLEDGED
-
-No code action. Process note written to `noble-six-review1-process.md`.
-
-## Minor: BridgeSessionFactory coupling to concrete ExtensionBridge — DEFERRED (YAGNI)
-
-No second transport exists or is planned for Phase 6/7. Extracting a
-`BridgeTransportPort` interface now adds indirection without a consumer.
-Decision: defer until a second transport materializes. If Phase 7+ adds
-TCP/WebSocket, extract the port at that time.
-
-## Minor: permissionId hijack defense-in-depth — SUBSUMED BY B3
-
-Once ADR-10 pipe auth is implemented, unauthenticated connections are rejected
-before any session interaction. The permissionId hijack vector is eliminated
-at the transport layer. No additional application-layer defense needed.
-
-
----
-
-# Review Cycle 1 — Process Improvement Note
-
-**Author:** Noble Six  
-**Date:** 2026-05-22  
-**Finding:** I7 — `install.ts` service-account refactor mixed in with Phase 6
-
-## Disposition
-
-The `install.ts` refactor (Kat, ADR-5) was correctly scoped to ADR-5's decision
-but shipped in the same branch as Phase 6 bridge work. This made the diff larger
-than necessary for reviewers.
-
-## Process Improvement (Future PRs)
-
-- Orthogonal refactors that serve an ADR but don't depend on other Phase 6 code
-  should ship in a separate PR, merged first, so the main Phase 6 PR is smaller.
-- Not actionable retroactively — the code is correct, tested, and merged.
-
-
-
-
-
----
 
 # ADR-11: /afk Mode + Multi-Session Mirror Bridge
 
@@ -3027,6 +1909,7 @@ The protocol surface is designed so Phase 8 stories can reuse existing infrastru
 
 ---
 
+
 # Skill Spike: Can /afk Be a Pure skill.md?
 
 **Date:** 2026-05-24  
@@ -3283,6 +2166,7 @@ CLI) would make it 100%.
 
 ---
 
+
 # /afk Realignment Analysis — Noble Six (2026-05-24)
 
 ## What We Have
@@ -3440,6 +2324,7 @@ Spawn-from-Telegram and resume-from-Telegram share infrastructure with /afk: top
 
 ---
 
+
 # /afk Mode Protocol Opens — Carter (2026-05-24, post-realignment)
 
 **Date:** 2026-05-24  
@@ -3492,6 +2377,7 @@ Five sessions streaming simultaneously could hit Telegram's 20 msg/sec per-chat 
 
 
 ---
+
 
 # /afk–/back Protocol Gap Analysis — Carter (2026-05-24)
 
@@ -3578,6 +2464,7 @@ Followed by the same `back.confirmed` from the daemon.
 
 
 ---
+
 
 # Telegram-Side Gaps for /afk & /back (CLI-Initiated Flow)
 
@@ -3685,6 +2572,7 @@ Recommendation: Add all four fields now; `mode` and `afkSince` are daemon-level 
 
 ---
 
+
 # Test Coverage Audit: /afk → Topic Open/Resume → /back Flow
 
 **Date:** 2026-05-24  
@@ -3764,149 +2652,6 @@ Once decisions are locked, all 8 test cases are high-confidence and require no f
 
 ---
 
-# Carter — Permission Prompt Dogfood Bug Investigation
-
-**Date:** 2026-05-23  
-**Author:** Carter  
-**Status:** Diagnostic deployed. Awaiting Aaron's rerun to confirm root cause.
-
----
-
-## Bug Summary
-
-Aaron sent `bash ls` from Telegram with `REACH_PERMISSION_POLICY=interactiveDestructive`. The command executed successfully and returned output, but no Allow/Deny inline keyboard appeared in Telegram. ADR-9 prompting did not fire.
-
----
-
-## Root Cause Analysis
-
-### PRIMARY SUSPECT: CLI auto-approves read-only shell commands → `resolvedByHook=true`
-
-In `@github/copilot-sdk` v0.2.2 `session.js`:
-
-```javascript
-} else if (event.type === "permission.requested") {
-  const { requestId, permissionRequest, resolvedByHook } = event.data;
-  if (resolvedByHook) {
-    return; // Our onPermissionRequest is NEVER called
-  }
-  if (this.permissionHandler) {
-    void this._executePermissionAndRespond(requestId, permissionRequest);
-  }
-}
-```
-
-When `resolvedByHook: true`, the SDK skips `onPermissionRequest` entirely. `bash ls` executed successfully without prompting, so `resolvedByHook=true` is the most likely explanation.
-
-**Revised hook hypothesis:** Aaron confirmed that:
-- `~/.copilot/permissions-config.json` does NOT list `D:\git\verbose-invention`
-- The cairn-archivist `preToolUse` hook targets files that don't exist on this machine; `curate.ps1` exits 0 with no stdout
-
-**New leading hypothesis: CLI built-in read-only command detection**
-
-The `kind='shell'` permission event contains `commands[].readOnly: boolean` per `session-events.d.ts`. `bash ls` — `ls` is a read-only command. The Copilot CLI likely has a built-in policy: **"if all commands in the shell request are read-only → auto-approve → `resolvedByHook=true`."** This would be independent of any user-configured hooks.
-
-Alternative: even if `curate.ps1` exits 0 with no stdout, the CLI may treat "preToolUse hook exited 0, produced no JSON" as `permissionDecision: "allow"` (implicit allow on successful hook invocation). This is unconfirmed without CLI source access.
-
-**Wiring was correct.** `makePermissionHandler` with `policy=interactiveDestructive` correctly routes `kind='shell'` → `'bash'`/`'powershell'` → `isDestructive=true` → calls `promptCallback`. If our handler were called, the Telegram prompt WOULD have fired.
-
-**Implication:** For `bash ls`, the CLI's read-only detection may be correct behavior. ADR-9 is most relevant for destructive shell commands (`bash rm`, `bash mv`, `bash git push`, etc.) which would NOT be flagged as read-only.
-
-### SECONDARY BUGS found during investigation (fixed)
-
-1. **`kind: 'hook'` not classified** — `session-events.d.ts` reveals a `'hook'` PermissionRequest kind (a pre-tool-use hook asking for user confirmation on the gated tool). Not in exported `PermissionRequest` type. Our classifier returned `denied-by-rules`. Fixed: delegate to `req.toolName` (the actual gated tool name).
-
-2. **`kind: 'memory'` not classified** — `session-events.d.ts` reveals a `'memory'` kind for `store_memory` tool. Our classifier returned `denied-by-rules`. Fixed: added `'memory'` to `SAFE_TOOLS`.
-
-3. **Shell args were empty** — Real SDK `kind='shell'` sends `fullCommandText` (not `args`). Our args serialization returned `'{}'` for real calls. Fixed: prefer `fullCommandText` for display when present.
-
----
-
-## Diagnostic Instrumentation Added
-
-**`src/copilot/impl.ts`** now emits these log lines on every session:
-
-```
-[copilot:perm] SDK permission.requested: session=X requestId=Y kind=Z resolvedByHook=true/false cmd=...
-```
-→ This fires via `onEvent` in session config. The `onEvent` wildcard handler is called by `_dispatchEvent` AFTER `_handleBroadcastEvent`, meaning it fires **even when `resolvedByHook=true`**. Shows EVERY permission event including bypassed ones.
-
-```
-[copilot:perm] onPermissionRequest: kind=Z toolName=W args=...
-[copilot:perm] decision=prompting-user toolName=W
-[copilot:perm] user decision=approved/denied toolName=W
-```
-→ These fire only when `onPermissionRequest` is actually called (i.e., `resolvedByHook=false`).
-
-**Diagnostic rule:**
-- If `SDK permission.requested ... resolvedByHook=true` → CLI resolved it (built-in read-only detection OR hook auto-allow). Handler never reached.
-- If `SDK permission.requested ... resolvedByHook=false` AND no `onPermissionRequest` logs → SDK not calling our handler (registration bug)
-- If `onPermissionRequest` logs appear with `decision=prompting-user` but no Telegram button → bug in `prompt.ts` or relay wiring
-
-**Retry protocol:** Rebuild → restart bot → send `bash ls` → paste `[copilot:perm]` log lines. Then send a DESTRUCTIVE command (e.g., `bash echo test >> /tmp/x`) to validate the prompt fires for write-capable commands.
-
----
-
-## ADR-9 Impact Assessment
-
-ADR-9 is sound. The implementation is correct. The `resolvedByHook` bypass is **expected SDK behavior** — the CLI gate runs before the SDK dispatch layer.
-
-**New scope clarification for ADR-9:**
-
-The `interactiveDestructive` policy gates Reach's permission layer. However, the Copilot CLI independently classifies commands before they reach the SDK client. Specifically:
-- **Read-only shell commands** (`ls`, `cat`, `grep`, etc.) may be auto-approved by the CLI itself, producing `resolvedByHook=true` before our handler is invoked. This is likely correct behavior and not a defect.
-- **Destructive shell commands** (`rm`, `mv`, `git push`, file writes, etc.) should NOT be auto-approved by the CLI, and our handler should fire for those.
-
-**Action for Scribe:** Add a note to ADR-9 §7 (or a new §14) documenting this:
-> The Copilot CLI may auto-approve read-only tool calls (particularly shell commands with `readOnly=true` commands) before the SDK client receives them. Reach's `interactiveDestructive` policy governs only what reaches the SDK client. This is expected behavior for read-only commands. Destructive commands should still trigger the Telegram prompt.
-
-No ADR revision needed for the core design. A clarifying footnote is appropriate.
-
----
-
-## Files Changed
-
-- `src/copilot/permissions.ts` — Added `'memory'` to `SAFE_TOOLS`
-- `src/copilot/impl.ts` — Diagnostic logging, `kind: 'hook'` classifier fix, shell `fullCommandText` fix
-- `extension.mjs` — Added `'memory'` to `SAFE_TOOLS` (mirrors permissions.ts; fixes drift test)
-
-
----
-
-# Decision: Eager Prompt Registry Installation
-
-**Author:** Kat  
-**Date:** 2026-05-23  
-**Status:** Implemented  
-
-## Context
-
-Live dogfood session. Aaron sent `bash echo "test" >> reach-test.txt` from Telegram. ADR-9 permissionCallback fired correctly (decision=prompting-user logged), but crashed with:
-
-```
-Error: It looks like you are registering more listeners on your bot from within other listeners!
-```
-
-## Decision
-
-`ensurePromptRegistry(bot)` is now called **eagerly** inside `registerHandlers()` in `src/bot/handlers.ts`, gated on `permissionPolicy === 'interactiveDestructive'`. It runs alongside the other `bot.command()` / `bot.on()` setup calls — before `bot.start()` begins polling.
-
-**Previous behaviour:** `ensurePromptRegistry` was called lazily from inside `promptUserForPermission`, which runs in an active grammY handler — violating grammY's single-pass listener registration contract.
-
-## Contract Change
-
-`ensurePromptRegistry` is now **exported** from `src/bot/prompt.ts`. It remains idempotent (WeakMap guard). Callers outside this module may call it during setup — do NOT call it from within active message handlers.
-
-`disposePromptRegistry` behaviour is unchanged: clears the interval and evicts the registry, but does NOT remove the `callback_query:data` listener (which must outlive registry recreation per the WeakSet design).
-
-## Impact on Other Agents
-
-- **Carter:** No change to pipe protocol or session lifecycle.
-- **Jun:** Test doubles don't call `registerHandlers` directly; no impact. If adding tests that construct a prompter directly, continue calling `promptUserForPermission` via a bot that already has `ensurePromptRegistry` called, or call `ensurePromptRegistry` in test setup.
-- **Noble Six:** Main.ts wiring unchanged — `registerHandlers` is the only call site.
-
-
----
 
 # Decision: Dogfood Gate Criteria for Phase 6 Ship Validation
 
@@ -3992,4 +2737,5 @@ If NO-PASS:
 ---
 
 **Next:** Scribe merges this into decisions.md post-dogfood with outcome notes.
+
 

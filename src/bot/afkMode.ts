@@ -1,7 +1,8 @@
 import type { Bot, Context } from 'grammy';
 import type { ISessionRegistry } from '../sessions/registry.js';
-import type { ExtensionBridge } from '../bridge/extensionBridge.js';
-import type { ModeState } from '../bridge/extensionBridge.js';
+import type { ModeState } from '../bridge/protocol.js';
+import type { RegistrationExtras } from '../bridge/extensionBridge.js';
+import type { AfkBridgePort } from './afkBridgePort.js';
 
 export interface BridgeSessionInfo {
   sessionId: string;
@@ -85,20 +86,20 @@ export class AfkModeController {
 
   constructor(
     private readonly bot: Bot<Context>,
-    private readonly bridge: ExtensionBridge,
+    private readonly bridge: AfkBridgePort,
     private readonly registry: ISessionRegistry,
     private readonly chatId: number,
     private readonly delay: (ms: number) => Promise<void> = sleep,
     private readonly options: AfkModeOptions = {},
   ) {
     this.bridge.on('afk.request', (sessionId) => {
-      this.activate(sessionId).catch((err) => { console.error('[afk] activate failed:', errorText(err)); });
+      this.activate(sessionId).catch((err) => { console.error('[afk] activate failed (session %s):', sessionId, errorText(err)); });
     });
     this.bridge.on('back.request', (sessionId) => {
-      this.deactivate(sessionId).catch((err) => { console.error('[afk] deactivate failed:', errorText(err)); });
+      this.deactivate(sessionId).catch((err) => { console.error('[afk] deactivate failed (session %s):', sessionId, errorText(err)); });
     });
     this.bridge.on('session.disconnected', (sessionId) => {
-      this.handleDisconnect(sessionId).catch((err) => { console.error('[afk] handleDisconnect failed:', errorText(err)); });
+      this.handleDisconnect(sessionId).catch((err) => { console.error('[afk] handleDisconnect failed (session %s):', sessionId, errorText(err)); });
     });
     this.bridge.on('stream', (sessionId, requestId, chunk, done) => {
       this.enqueueStream(sessionId, requestId, chunk, done);
@@ -106,11 +107,19 @@ export class AfkModeController {
     this.bridge.on('stream.error', (sessionId, requestId, error) => {
       this.enqueueStreamError(sessionId, requestId, error);
     });
-    this.bridge.setRegistrationAugmenter?.((session) => this.registrationExtras(session));
+    this.bridge.setRegistrationAugmenter((session) => this.registrationExtras(session));
   }
 
   isActive(): boolean {
     return this.mode.active;
+  }
+
+  /**
+   * @visibleForTesting — Returns a shallow copy of the current mode state.
+   * Jun consumes this in afkContract to remove the controller.mode private-field cast.
+   */
+  getMode(): ModeState {
+    return { ...this.mode };
   }
 
   async handleTelegramMessage(ctx: Context): Promise<boolean> {
@@ -128,9 +137,10 @@ export class AfkModeController {
       return true;
     }
 
-    // Fail-closed: refuse if no userId or user is not in the explicit allow-list.
+    // Fail-closed when an allow-list is configured: block if userId absent or not listed.
+    // When no allow-list is configured (allowedUserIds === undefined), all users are permitted.
     const userId = ctx.from?.id;
-    if (userId === undefined || !this.options.allowedUserIds?.has(userId)) {
+    if (this.options.allowedUserIds !== undefined && (userId === undefined || !this.options.allowedUserIds.has(userId))) {
       await ctx.reply('⛔ You are not authorized to control this Reach session.', { message_thread_id: topicId });
       return true;
     }
@@ -202,6 +212,7 @@ export class AfkModeController {
       this.topicSessions.clear();
       this.sessionRequestIds.clear();
       // Best-effort registry rollback: revert any entries we flipped to 'afk'.
+      // Sequential by intent — caller is rare-path (activation failure), ordering aids debugging.
       for (const binding of addedBindings) {
         const entry = this.registry.findByName(binding.sessionName);
         if (entry) {
@@ -260,6 +271,7 @@ export class AfkModeController {
     }
 
     const bindings = Array.from(this.sessionTopics.values());
+    const deactivateErrors: string[] = [];
     for (const binding of bindings) {
       try {
         await this.safeSendMessage('🖥️ Session resumed locally', binding.topicId);
@@ -273,8 +285,11 @@ export class AfkModeController {
           await this.registry.upsert(backEntry);
         }
       } catch (err) {
-        console.warn(`[afk] Error during deactivate cleanup for session ${binding.sessionId}:`, errorText(err));
+        deactivateErrors.push(`${binding.sessionId}: ${errorText(err)}`);
       }
+    }
+    if (deactivateErrors.length > 0) {
+      console.warn('[afk] Deactivate completed with errors:', deactivateErrors.join('; '));
     }
 
     await this.editGeneralSummary('🖥️ Back at desk.');
@@ -285,6 +300,7 @@ export class AfkModeController {
     this.streamStates.clear();
     this.streamChains.clear();
     this.mirrorRates.clear();
+    this.globalMirrorRate = { windowStartMs: 0, count: 0 };
     this.sessionRequestIds.clear();
 
     for (const session of this.bridge.listSessions()) {
@@ -294,10 +310,10 @@ export class AfkModeController {
   }
 
   private resolveBindingEntry(binding: TopicBinding) {
-    return this.registry.resolve?.(binding.topicId) ?? this.registry.findByName(binding.sessionName);
+    return this.registry.resolve(binding.topicId) ?? this.registry.findByName(binding.sessionName);
   }
 
-  private async registrationExtras(session: BridgeSessionInfo): Promise<Record<string, unknown>> {
+  private async registrationExtras(session: BridgeSessionInfo): Promise<RegistrationExtras> {
     if (!this.mode.active) return {};
     const binding = await this.ensureTopic(session);
     return { mode: { active: true, since: this.mode.since }, topicId: binding.topicId };

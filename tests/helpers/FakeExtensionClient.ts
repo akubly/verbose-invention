@@ -31,6 +31,7 @@ import type {
   FakeDaemon,
   InboundMessage,
   OutboundMessage,
+  ErrorMessage,
   HelloMessage,
   PongMessage,
   StreamChunkMessage,
@@ -55,6 +56,9 @@ export class FakeExtensionClient {
 
   /** All messages this client has received from the daemon, in arrival order. */
   private _received: OutboundMessage[] = [];
+
+  /** Error frames received from the daemon, in arrival order. */
+  private _errors: ErrorMessage[] = [];
 
   /** When true, the client automatically responds to each `ping` with a `pong`. */
   private _autoPong = true;
@@ -276,6 +280,30 @@ export class FakeExtensionClient {
     return msg;
   }
 
+  /** All error frames received from the daemon, in arrival order. */
+  get errors(): ErrorMessage[] {
+    return this._errors;
+  }
+
+  /** Last error frame received from the daemon, or undefined. */
+  get lastError(): ErrorMessage | undefined {
+    return this._errors[this._errors.length - 1];
+  }
+
+  /** Returns the first error frame matching the optional filter criteria, or throws. */
+  expectError(match?: Partial<Pick<ErrorMessage, 'error' | 'code'>>): ErrorMessage {
+    const candidates = match
+      ? this._errors.filter(
+          (e) =>
+            (match.error === undefined || e.error === match.error) &&
+            (match.code === undefined || e.code === match.code),
+        )
+      : this._errors;
+    const msg = candidates[0];
+    if (!msg) throw new Error(`Expected error frame${match ? ` matching ${JSON.stringify(match)}` : ''}`);
+    return msg;
+  }
+
   get sessionId(): string {
     return this._sessionId;
   }
@@ -301,6 +329,7 @@ export class FakeExtensionClient {
   clearLogs(): void {
     this._sent = [];
     this._received = [];
+    this._errors = [];
   }
 
   // ── Private ──────────────────────────────────────────────────────────────────
@@ -319,6 +348,9 @@ export class FakeExtensionClient {
     if (msg.type === 'ping' && this._autoPong) {
       // Auto-respond to heartbeat pings.
       this.sendPong(msg.id);
+    }
+    if (msg.type === 'error') {
+      this._errors.push(msg);
     }
   }
 }

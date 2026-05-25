@@ -1,5 +1,6 @@
 import { vi } from 'vitest';
 import { AfkModeController, type TopicBinding } from '../../src/bot/afkMode.js';
+import type { ModeState } from '../../src/bridge/protocol.js';
 import type { FakeDaemon } from './FakeDaemon.js';
 import type { FakeExtensionClient } from './FakeExtensionClient.js';
 
@@ -156,7 +157,7 @@ export interface AfkContractDriver {
   handleBackRequest(sessionId: string): Promise<void>;
   handleTelegramMessage(topicId: number, text: string): Promise<void>;
   handleCliStream?(sessionId: string, text: string): Promise<void>;
-  getMode?(): { active: boolean; since?: string };
+  getMode?(): ModeState;
 }
 
 export function loadAfkContractDriver(deps: AfkContractDeps): AfkContractDriver {
@@ -185,10 +186,6 @@ function createBotAfkDriver(Ctor: unknown, deps: AfkContractDeps): AfkContractDr
     },
     async handleBackRequest(sessionId: string): Promise<void> {
       seedActiveState(controller, deps.registry);
-      if (!(controller.isActive as () => boolean).call(controller)) {
-        deps.showCliMessage(sessionId, 'Not in AFK mode.');
-        return;
-      }
       bridge.emit('back.request', sessionId);
       await new Promise<void>((resolve) => setImmediate(resolve));
     },
@@ -199,9 +196,8 @@ function createBotAfkDriver(Ctor: unknown, deps: AfkContractDeps): AfkContractDr
         makeTelegramCtx(topicId, text),
       );
     },
-    getMode(): { active: boolean; since?: string } {
-      const mode = controller.mode as { active: boolean; since?: string } | undefined;
-      return mode ?? { active: false };
+    getMode(): ModeState {
+      return (controller.getMode as () => ModeState).call(controller);
     },
   };
 }

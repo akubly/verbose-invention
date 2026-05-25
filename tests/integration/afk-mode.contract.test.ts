@@ -217,8 +217,8 @@ describe('ADR-11 AFK mode contract', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('T7 — /back outside AFK mode reports Not in AFK mode and leaves state unchanged', async () => {
-    const { client, telegram, registry, relayTargets, showCliMessage, driver } = await makeHarness([
+  it('T7 — /back outside AFK mode delivers error frame to extension and leaves state unchanged', async () => {
+    const { client, telegram, registry, relayTargets, driver } = await makeHarness([
       makeSessionEntry({ mode: 'back' }),
     ]);
 
@@ -227,7 +227,7 @@ describe('ADR-11 AFK mode contract', () => {
     await driver.handleBackRequest('sess-1');
     await flush();
 
-    expect(showCliMessage).toHaveBeenCalledWith('sess-1', 'Not in AFK mode.');
+    expect(client.lastError).toMatchObject({ type: 'error', sessionId: 'sess-1', error: 'Not in AFK mode.' });
     expect(client.receivedOfType('back.confirmed')).toHaveLength(0);
     expect(client.receivedOfType('mode.changed')).toHaveLength(0);
     expect(telegram.api.closeForumTopic).not.toHaveBeenCalled();
@@ -253,5 +253,27 @@ describe('ADR-11 AFK mode contract', () => {
     expect(registry.list()).toHaveLength(1);
     expect(registry.findBySessionId('sess-1')).toMatchObject({ mode: 'afk', topicId, lastTopicId: topicId });
     expect(relayTargets.topicTargets('sess-1')).toEqual([topicId]);
+  });
+
+  it('T9 — Telegram API failure during activate rolls back state and delivers error frame to extension', async () => {
+    const { client, telegram, registry, driver } = await makeHarness();
+
+    // Simulate Telegram API failure on the first topic creation.
+    telegram.api.createForumTopic.mockRejectedValueOnce(new Error('Telegram API unavailable'));
+
+    await driver.handleAfkRequest('sess-1');
+    await flush();
+
+    // Mode must have been rolled back to inactive.
+    expect(driver.getMode?.()).toMatchObject({ active: false });
+    // Registry must not show the session as afk (rolled back).
+    expect(registry.findBySessionId('sess-1')).not.toMatchObject({ mode: 'afk' });
+    // Extension must receive an error frame — not silently drop the failure.
+    expect(client.lastError).toMatchObject({
+      type: 'error',
+      sessionId: 'sess-1',
+      error: expect.any(String),
+    });
+    // NOTE: code:'afk.activation_failed' assertion deferred — waiting for Carter's producer-side code.
   });
 });

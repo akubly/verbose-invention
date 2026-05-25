@@ -9,16 +9,24 @@ interface RegistryData {
   entries: Record<string, SessionEntry>;
 }
 
-export interface ISessionRegistry {
+/**
+ * Query-extended surface of the session registry.
+ * Separates the lookup methods from the mutation surface so callers can declare
+ * exactly what they need.  `SessionRegistry` always implements both interfaces.
+ */
+export interface IRegistryQuery {
+  /** Resolves a Telegram topic ID to its session entry. */
+  resolve(telegramTopicId: number): SessionEntry | undefined;
+  /** Returns every entry whose sessionName matches (normally at most one). */
+  findAllByName(sessionName: string): SessionEntry[];
+}
+
+export interface ISessionRegistry extends IRegistryQuery {
   load(): Promise<void>;
   register(topicId: number, chatId: number, sessionName: string, model?: string, cwd?: string): Promise<void>;
   /** Upserts an AFK-managed entry; if the session name moved topics, replaces the prior topic binding. */
   upsert(entry: SessionEntry): Promise<void>;
-  /** Resolves a topic ID to its session entry. Optional: some lightweight fakes may omit it. */
-  resolve?: (telegramTopicId: number) => SessionEntry | undefined;
   findByName(sessionName: string): SessionEntry | undefined;
-  /** Returns every entry whose sessionName matches. Optional: some lightweight fakes may omit it. */
-  findAllByName?: (sessionName: string) => SessionEntry[];
   list(): SessionEntry[];
   remove(telegramTopicId: number): Promise<boolean>;
   /**

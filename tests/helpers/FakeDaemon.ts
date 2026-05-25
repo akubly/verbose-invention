@@ -183,6 +183,14 @@ export type RelayCommandMessage = {
   args: string[];
 };
 
+/** ADR-11/Carter: daemon sends an error frame to the extension. */
+export type ErrorMessage = {
+  type: 'error';
+  sessionId: string;
+  error: string;
+  code?: string;
+};
+
 /** All message shapes the daemon can send to an extension. */
 export type OutboundMessage =
   | PingMessage
@@ -193,7 +201,8 @@ export type OutboundMessage =
   | BackConfirmedMessage
   | ModeChangedMessage
   | MirrorInputMessage
-  | RelayCommandMessage;
+  | RelayCommandMessage
+  | ErrorMessage;
 
 export type AnyPipeMessage = InboundMessage | OutboundMessage;
 
@@ -415,6 +424,11 @@ export class FakeDaemon {
   /** Sends ADR-11 mirror.input to a registered session. */
   sendMirrorInput(sessionId: string, text: string, topicId: number): void {
     this.sendTo(sessionId, { type: 'mirror.input', sessionId, text, source: 'telegram', topicId });
+  }
+
+  /** Sends an error frame to a registered session. */
+  sendError(sessionId: string, error: string, code?: string): void {
+    this.sendTo(sessionId, { type: 'error', sessionId, error, ...(code !== undefined && { code }) });
   }
 
   // ── Heartbeat ────────────────────────────────────────────────────────────────

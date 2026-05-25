@@ -1,4 +1,5 @@
 import { vi } from 'vitest';
+import { AfkModeController } from '../../src/bot/afkMode.js';
 import type { FakeDaemon } from './FakeDaemon.js';
 import type { FakeExtensionClient } from './FakeExtensionClient.js';
 
@@ -156,32 +157,8 @@ export interface AfkContractDriver {
   getMode?(): { active: boolean; since?: string };
 }
 
-const candidateModules = [
-  '../../src/bot/afkMode.js',
-  '../../src/afk/afkModeController.js',
-  '../../src/bridge/afkModeController.js',
-  '../../src/control/afkModeController.js',
-  '../../src/control/session0.js',
-  '../../src/afkModeController.js',
-];
-
-export async function loadAfkContractDriver(deps: AfkContractDeps): Promise<AfkContractDriver> {
-  for (const modulePath of candidateModules) {
-    try {
-      const mod = await import(modulePath) as Record<string, unknown>;
-      if (modulePath.endsWith('/bot/afkMode.js') && typeof mod.AfkModeController === 'function') {
-        return createBotAfkDriver(mod.AfkModeController, deps);
-      }
-      const factory = mod.createAfkModeController ?? mod.createAfkController ?? mod.createController;
-      if (typeof factory === 'function') return factory(deps) as AfkContractDriver;
-      const Ctor = mod.AfkModeController ?? mod.AfkController ?? mod.Session0Controller;
-      if (typeof Ctor === 'function') return new Ctor(deps) as AfkContractDriver;
-    } catch (error) {
-      if (!isMissingModule(error)) throw error;
-    }
-  }
-
-  return missingDriver();
+export function loadAfkContractDriver(deps: AfkContractDeps): AfkContractDriver {
+  return createBotAfkDriver(AfkModeController, deps);
 }
 
 function createBotAfkDriver(Ctor: unknown, deps: AfkContractDeps): AfkContractDriver {
@@ -200,7 +177,8 @@ function createBotAfkDriver(Ctor: unknown, deps: AfkContractDeps): AfkContractDr
         deps.showCliMessage(sessionId, '⚠ Reach daemon not running — start it first.');
         return;
       }
-      await (controller.activate as (sid: string) => Promise<void>).call(controller, sessionId);
+      bridge.emit('afk.request', sessionId);
+      await new Promise<void>((resolve) => setImmediate(resolve));
     },
     async handleBackRequest(sessionId: string): Promise<void> {
       seedActiveState(controller, deps.registry);
@@ -208,7 +186,8 @@ function createBotAfkDriver(Ctor: unknown, deps: AfkContractDeps): AfkContractDr
         deps.showCliMessage(sessionId, 'Not in AFK mode.');
         return;
       }
-      await (controller.deactivate as (sid: string) => Promise<void>).call(controller, sessionId);
+      bridge.emit('back.request', sessionId);
+      await new Promise<void>((resolve) => setImmediate(resolve));
     },
     async handleTelegramMessage(topicId: number, text: string): Promise<void> {
       seedActiveState(controller, deps.registry);
@@ -301,22 +280,4 @@ function makeTelegramCtx(topicId: number, text: string) {
     message: { message_thread_id: topicId, text },
     chat: { id: CHAT_ID },
   };
-}
-
-function missingDriver(): AfkContractDriver {
-  const fail = async (): Promise<void> => {
-    throw new Error(
-      'AFK mode production controller is not implemented/exported yet. Expected a createAfkModeController-style factory compatible with ADR-11 contract tests.',
-    );
-  };
-  return {
-    handleAfkRequest: fail,
-    handleBackRequest: fail,
-    handleTelegramMessage: fail,
-  };
-}
-
-function isMissingModule(error: unknown): boolean {
-  if (!(error instanceof Error)) return false;
-  return /Cannot find module|ERR_MODULE_NOT_FOUND|Failed to load url|Does the file exist/.test(error.message);
 }

@@ -8,9 +8,16 @@
 
 import type { BridgeSessionInfo, OutboundMessage, RegistrationAugmenter } from '../bridge/protocol.js';
 
+export interface AfkBridgeEvents {
+  'afk.request': [sessionId: string];
+  'back.request': [sessionId: string];
+  'session.disconnected': [sessionId: string];
+  stream: [sessionId: string, requestId: string, chunk: string, done: boolean];
+  'stream.error': [sessionId: string, requestId: string, error: string];
+}
+
 export interface AfkBridgePort {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  on(event: 'afk.request' | 'back.request' | 'session.disconnected' | 'stream' | 'stream.error', listener: (...args: any[]) => void): void;
+  on<K extends keyof AfkBridgeEvents>(event: K, listener: (...args: AfkBridgeEvents[K]) => void): void;
   sendToSession(sessionId: string, msg: OutboundMessage): void;
   broadcastToSessions(msg: OutboundMessage): void;
   listSessions(): BridgeSessionInfo[];

@@ -1,14 +1,7 @@
 import type { Bot, Context } from 'grammy';
 import type { ISessionRegistry } from '../sessions/registry.js';
-import type { ModeState } from '../bridge/protocol.js';
-import type { RegistrationExtras } from '../bridge/extensionBridge.js';
+import { ERROR_CODES, type BridgeSessionInfo, type ModeState, type RegistrationExtras } from '../bridge/protocol.js';
 import type { AfkBridgePort } from './afkBridgePort.js';
-
-export interface BridgeSessionInfo {
-  sessionId: string;
-  sessionName: string;
-  cwd: string;
-}
 
 export interface TopicBinding extends BridgeSessionInfo {
   topicId: number;
@@ -22,9 +15,30 @@ interface StreamState {
   lastEditAt: number;
 }
 
-interface AfkModeOptions {
+export interface AfkModeOptions {
   allowedUserIds?: ReadonlySet<number>;
   allowTelegramInput?: boolean;
+}
+
+export interface AfkModeControllerDeps {
+  bot: Bot<Context>;
+  bridge: AfkBridgePort;
+  registry: ISessionRegistry;
+  chatId: number;
+  delay?: (ms: number) => Promise<void>;
+  options?: AfkModeOptions;
+}
+
+export interface AfkSeedDTO {
+  mode?: ModeState;
+  sessions?: Array<{
+    sessionId: string;
+    topicId: number;
+    sessionName?: string;
+    cwd?: string;
+    topicUrl?: string;
+    mirroring?: boolean;
+  }>;
 }
 
 interface MirrorRateState {
@@ -114,10 +128,7 @@ export class AfkModeController {
     return this.mode.active;
   }
 
-  /**
-   * @visibleForTesting — Returns a shallow copy of the current mode state.
-   * Jun consumes this in afkContract to remove the controller.mode private-field cast.
-   */
+  /** @visibleForTesting — Returns a shallow copy of the current mode state. */
   getMode(): ModeState {
     return { ...this.mode };
   }
@@ -201,13 +212,15 @@ export class AfkModeController {
     }
 
     this.mode = { active: true, since: new Date().toISOString() };
-    this.activationPromise = this.activateAllSessions();
+    const activated: Array<{ sessionId: string; topicId: number }> = [];
+    this.activationPromise = this.activateAllSessions(activated);
     try {
       await this.activationPromise;
     } catch (err) {
       // Rollback in-memory state so the daemon can retry cleanly.
       const addedBindings = Array.from(this.sessionTopics.values());
       this.mode = { active: false, since: '' };
+      await this.compensatePartialActivation(activated, addedBindings);
       this.sessionTopics.clear();
       this.topicSessions.clear();
       this.sessionRequestIds.clear();
@@ -230,7 +243,7 @@ export class AfkModeController {
         type: 'error',
         sessionId: requestingSessionId,
         error: errorText(err),
-        code: 'afk.activation_failed',
+        code: ERROR_CODES.AFK_ACTIVATION_FAILED,
       });
       throw err;
     } finally {
@@ -238,12 +251,13 @@ export class AfkModeController {
     }
   }
 
-  private async activateAllSessions(): Promise<void> {
+  private async activateAllSessions(activated: Array<{ sessionId: string; topicId: number }>): Promise<void> {
     const sessions = this.bridge.listSessions();
 
     for (const session of sessions) {
       const binding = await this.ensureTopic(session);
       this.sendAfkActivated(binding);
+      activated.push({ sessionId: binding.sessionId, topicId: binding.topicId });
       await this.safeSendMessage(
         `📡 AFK mode active. Telegram mirror ready for ${binding.sessionName} (${binding.sessionId}).`,
         binding.topicId,
@@ -252,6 +266,40 @@ export class AfkModeController {
 
     await this.postGeneralSummary();
     this.bridge.broadcastToSessions({ type: 'mode.changed', active: true, since: this.mode.since });
+  }
+
+  private async compensatePartialActivation(
+    notified: Array<{ sessionId: string; topicId: number }>,
+    createdBindings: TopicBinding[],
+  ): Promise<void> {
+    if (notified.length === 0 && createdBindings.length === 0) return;
+    const notifiedSessionIds = new Set(notified.map(({ sessionId }) => sessionId));
+    const results = await Promise.allSettled(createdBindings.map(async ({ sessionId, topicId }) => {
+      const errors: string[] = [];
+      if (notifiedSessionIds.has(sessionId)) {
+        try {
+          this.bridge.sendToSession(sessionId, { type: 'back.confirmed', sessionId });
+          this.bridge.sendToSession(sessionId, { type: 'mode.changed', active: false, since: '' });
+        } catch (err) {
+          errors.push(`notify ${sessionId}: ${errorText(err)}`);
+        }
+      }
+      try {
+        await this.serializedTopicOperation(() => this.withRateLimitRetry(() =>
+          this.bot.api.closeForumTopic(this.chatId, topicId),
+        ));
+      } catch (err) {
+        console.warn('[afk] Failed to close partially activated topic %d for %s: %s', topicId, sessionId, errorText(err));
+        errors.push(`close ${topicId}: ${errorText(err)}`);
+      }
+      return errors;
+    }));
+    const failures = results.flatMap((result) =>
+      result.status === 'fulfilled' ? result.value : [errorText(result.reason)],
+    );
+    if (failures.length > 0) {
+      console.warn('[afk] Partial activation compensation completed with errors:', failures.join('; '));
+    }
   }
 
   private async deactivate(requestingSessionId?: string): Promise<void> {
@@ -264,7 +312,7 @@ export class AfkModeController {
           type: 'error',
           sessionId: requestingSessionId,
           error: 'Not in AFK mode.',
-          code: 'afk.not_active',
+          code: ERROR_CODES.AFK_NOT_ACTIVE,
         });
       }
       return;
@@ -310,7 +358,7 @@ export class AfkModeController {
   }
 
   private resolveBindingEntry(binding: TopicBinding) {
-    return this.registry.resolve(binding.topicId) ?? this.registry.findByName(binding.sessionName);
+    return this.registry.resolve?.(binding.topicId) ?? this.registry.findByName(binding.sessionName);
   }
 
   private async registrationExtras(session: BridgeSessionInfo): Promise<RegistrationExtras> {
@@ -323,7 +371,7 @@ export class AfkModeController {
     const existingBinding = this.sessionTopics.get(session.sessionId);
     if (existingBinding) return existingBinding;
 
-    const matches = this.registry.findAllByName(session.sessionName);
+    const matches = this.registry.findAllByName?.(session.sessionName) ?? [];
     if (matches.length > 1) {
       console.warn(`[afk] Duplicate registry entries for "${session.sessionName}"; creating a fresh AFK topic instead of reusing lastTopicId`);
     }
@@ -562,30 +610,37 @@ export class AfkModeController {
     }
   }
 
-  /**
-   * @visibleForTesting — Restores snapshotted AFK state (mode + topic maps) without
-   * going through activate(). Used by test helpers to seed pre-existing AFK sessions
-   * without reaching into private fields directly.
-   *
-   * Note: `streamStates`, `streamChains`, and `sessionRequestIds` are NOT restored —
-   * they self-populate on new stream events and are not relevant to the seeded state.
-   *
-   * Architect note: currently accepts raw Map shapes for Jun's convenience. A future
-   * refactor could take `{ mode: ModeState; bindings: TopicBinding[] }` DTO and rebuild
-   * maps internally — discuss with Jun before changing.
-   */
-  restoreSnapshot(snapshot: {
-    mode: ModeState;
-    sessionTopics: Map<string, TopicBinding>;
-    topicSessions: Map<number, string>;
-  }): void {
+  /** @visibleForTesting — Test-only factory that seeds AFK state from a DTO. */
+  public static forTesting(deps: AfkModeControllerDeps, seed: AfkSeedDTO = {}): AfkModeController {
     if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
-      throw new Error('restoreSnapshot is @visibleForTesting only');
+      throw new Error('AfkModeController.forTesting is test-only');
     }
-    this.mode = { ...snapshot.mode };
-    this.sessionTopics.clear();
-    for (const [k, v] of snapshot.sessionTopics) this.sessionTopics.set(k, v);
-    this.topicSessions.clear();
-    for (const [k, v] of snapshot.topicSessions) this.topicSessions.set(k, v);
+
+    const controller = new AfkModeController(
+      deps.bot,
+      deps.bridge,
+      deps.registry,
+      deps.chatId,
+      deps.delay,
+      deps.options,
+    );
+
+    if (seed.mode !== undefined) controller.mode = { ...seed.mode };
+    controller.sessionTopics.clear();
+    controller.topicSessions.clear();
+    for (const session of seed.sessions ?? []) {
+      const bridgeInfo = deps.bridge.getSessionInfo(session.sessionId);
+      const registryEntry = deps.registry.resolve?.(session.topicId);
+      const binding: TopicBinding = {
+        sessionId: session.sessionId,
+        sessionName: session.sessionName ?? bridgeInfo?.sessionName ?? registryEntry?.sessionName ?? session.sessionId,
+        cwd: session.cwd ?? bridgeInfo?.cwd ?? registryEntry?.cwd ?? process.cwd(),
+        topicId: session.topicId,
+        topicUrl: session.topicUrl ?? topicUrl(deps.chatId, session.topicId),
+      };
+      controller.sessionTopics.set(session.sessionId, binding);
+      controller.topicSessions.set(session.topicId, session.sessionId);
+    }
+    return controller;
   }
 }

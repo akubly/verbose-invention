@@ -1,5 +1,5 @@
 import { vi } from 'vitest';
-import { AfkModeController, type TopicBinding } from '../../src/bot/afkMode.js';
+import { AfkModeController, type AfkModeControllerDeps, type AfkSeedDTO } from '../../src/bot/afkMode.js';
 import type { ModeState } from '../../src/bridge/protocol.js';
 import type { FakeDaemon } from './FakeDaemon.js';
 import type { FakeExtensionClient } from './FakeExtensionClient.js';
@@ -172,16 +172,17 @@ export function loadAfkContractDriver(deps: AfkContractDeps): AfkContractDriver 
   return createBotAfkDriver(AfkModeController, deps);
 }
 
-function createBotAfkDriver(Ctor: unknown, deps: AfkContractDeps): AfkContractDriver {
+function createBotAfkDriver(Ctor: typeof AfkModeController, deps: AfkContractDeps): AfkContractDriver {
   const bridge = makeBridgeAdapter(deps);
-  const controller = new (Ctor as new (...args: unknown[]) => unknown)(
-    deps.telegram,
+  const controllerDeps: AfkModeControllerDeps = {
+    bot: deps.telegram as never,
     bridge,
-    deps.registry,
-    deps.chatId,
-    async () => undefined,
-    { allowedUserIds: new Set([TEST_TELEGRAM_USER_ID]) },
-  ) as Record<string, unknown>;
+    registry: deps.registry as never,
+    chatId: deps.chatId,
+    delay: async () => undefined,
+    options: { allowedUserIds: new Set([TEST_TELEGRAM_USER_ID]) },
+  };
+  const controller = Ctor.forTesting(controllerDeps, seedActiveState(deps.registry)) as Record<string, unknown>;
 
   return {
     async handleAfkRequest(sessionId: string): Promise<void> {
@@ -193,12 +194,10 @@ function createBotAfkDriver(Ctor: unknown, deps: AfkContractDeps): AfkContractDr
       await new Promise<void>((resolve) => setImmediate(resolve));
     },
     async handleBackRequest(sessionId: string): Promise<void> {
-      seedActiveState(controller, deps.registry);
       bridge.emit('back.request', sessionId);
       await new Promise<void>((resolve) => setImmediate(resolve));
     },
     async handleTelegramMessage(topicId: number, text: string): Promise<void> {
-      seedActiveState(controller, deps.registry);
       await (controller.handleTelegramMessage as (ctx: unknown) => Promise<boolean>).call(
         controller,
         makeTelegramCtx(topicId, text),
@@ -256,25 +255,23 @@ function makeBridgeAdapter(deps: AfkContractDeps) {
   };
 }
 
-function seedActiveState(controller: Record<string, unknown>, registry: MemoryAfkRegistry): void {
+function seedActiveState(registry: MemoryAfkRegistry): AfkSeedDTO {
   const activeEntries = registry.list().filter((entry) => entry.mode === 'afk' && entry.lastTopicId !== undefined);
-  if (activeEntries.length === 0) return;
+  if (activeEntries.length === 0) return {};
 
-  const mode = { active: true, since: activeEntries[0]?.afkSince ?? ADR11_TIMESTAMP };
-  const sessionTopics = new Map<string, TopicBinding>();
-  const topicSessions = new Map<number, string>();
-  for (const entry of activeEntries) {
-    const topicId = entry.topicId ?? entry.lastTopicId!;
-    sessionTopics.set(entry.sessionId, {
-      sessionId: entry.sessionId,
-      sessionName: entry.sessionName,
-      cwd: entry.cwd,
-      topicId,
-      topicUrl: `https://t.me/c/test/${topicId}`,
-    });
-    topicSessions.set(topicId, entry.sessionId);
-  }
-  (controller as unknown as AfkModeController).restoreSnapshot({ mode, sessionTopics, topicSessions });
+  return {
+    mode: { active: true, since: activeEntries[0]?.afkSince ?? ADR11_TIMESTAMP },
+    sessions: activeEntries.map((entry) => {
+      const topicId = entry.topicId ?? entry.lastTopicId!;
+      return {
+        sessionId: entry.sessionId,
+        sessionName: entry.sessionName,
+        cwd: entry.cwd,
+        topicId,
+        topicUrl: `https://t.me/c/test/${topicId}`,
+      };
+    }),
+  };
 }
 
 function makeTelegramCtx(topicId: number, text: string) {

@@ -48,7 +48,7 @@ async function main(): Promise<void> {
 
   // Resolve chat ID: env var > config.json > pairing mode
   let chatId: number | undefined;
-  let allowedUserIds: number[] = [];
+  let allowedUserIdSet: ReadonlySet<number> | undefined;
   const config = await loadConfig(configPath);
 
   const rawChatId = process.env.TELEGRAM_CHAT_ID;
@@ -63,12 +63,23 @@ async function main(): Promise<void> {
     console.log(`[reach] Using chat ID from config: ***${String(chatId).slice(-4)}`);
   }
 
-  if (process.env.TELEGRAM_ALLOWED_USER_IDS) {
-    allowedUserIds = process.env.TELEGRAM_ALLOWED_USER_IDS.split(',')
-      .map((id) => Number(id.trim()))
-      .filter((id) => Number.isInteger(id));
-  } else if (Array.isArray(config.telegramAllowedUserIds)) {
-    allowedUserIds = config.telegramAllowedUserIds.filter((id) => Number.isInteger(id));
+  if (process.env.TELEGRAM_ALLOWED_USER_IDS !== undefined) {
+    const rawAllowedUserIds = process.env.TELEGRAM_ALLOWED_USER_IDS.trim();
+    if (rawAllowedUserIds.length > 0) {
+      const tokens = rawAllowedUserIds.split(',').map((id) => id.trim());
+      const parsedIds = tokens.map((id) => Number(id));
+      if (tokens.some((id) => id.length === 0) || parsedIds.some((id) => !Number.isInteger(id) || id <= 0)) {
+        console.error('[reach] Fatal: TELEGRAM_ALLOWED_USER_IDS must be a comma-separated list of positive integer Telegram user IDs');
+        process.exit(1);
+      }
+      allowedUserIdSet = new Set(parsedIds);
+    }
+  } else if (Object.prototype.hasOwnProperty.call(config, 'telegramAllowedUserIds')) {
+    if (!Array.isArray(config.telegramAllowedUserIds) || config.telegramAllowedUserIds.some((id) => !Number.isInteger(id) || id <= 0)) {
+      console.error('[reach] Fatal: telegramAllowedUserIds in config must be an array of positive integer Telegram user IDs');
+      process.exit(1);
+    }
+    allowedUserIdSet = new Set(config.telegramAllowedUserIds);
   }
 
   // If no chat ID, enter pairing mode
@@ -149,8 +160,8 @@ async function main(): Promise<void> {
   await registry.load();
 
   const bot = createBot(token, chatId);
-  if (allowedUserIds.length === 0) {
-    console.warn('[reach] No Telegram user allow-list configured; AFK mirror input from Telegram will be blocked. Re-pair or set TELEGRAM_ALLOWED_USER_IDS.');
+  if (allowedUserIdSet === undefined) {
+    console.warn('[reach] ⚠️  TELEGRAM_ALLOWED_USER_IDS not configured — relying on chat ID guard only for AFK input');
   }
   if (permissionPolicy === 'approveAll') {
     console.warn('[reach] REACH_PERMISSION_POLICY=approveAll; AFK mirror input from Telegram will be blocked for safety. Use interactiveDestructive for remote input.');
@@ -158,7 +169,7 @@ async function main(): Promise<void> {
 
   const afkMode = bridge
     ? new AfkModeController(bot, bridge, registry, chatId, undefined, {
-      allowedUserIds: new Set(allowedUserIds),
+      ...(allowedUserIdSet !== undefined && { allowedUserIds: allowedUserIdSet }),
       allowTelegramInput: permissionPolicy !== 'approveAll',
     })
     : undefined;

@@ -15,6 +15,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ERROR_CODES } from '../../src/bridge/protocol.js';
 import { FakeDaemon } from '../helpers/FakeDaemon.js';
 import { FakeExtensionClient } from '../helpers/FakeExtensionClient.js';
 import {
@@ -34,11 +35,16 @@ async function flush(): Promise<void> {
   await Promise.resolve();
 }
 
-async function makeHarness(entries = [makeSessionEntry()]) {
+async function makeHarness(
+  entries = [makeSessionEntry()],
+  clientDefs = [{ sessionId: 'sess-1', sessionName: 'reach-myapp' }],
+) {
   const daemon = new FakeDaemon();
-  const client = new FakeExtensionClient('sess-1', 'reach-myapp');
-  client.connect(daemon);
-  client.sendHello();
+  const clients = clientDefs.map(({ sessionId, sessionName }) => new FakeExtensionClient(sessionId, sessionName));
+  for (const connectedClient of clients) {
+    connectedClient.connect(daemon);
+    connectedClient.sendHello();
+  }
   await flush();
 
   const telegram = makeMockTelegramBot();
@@ -47,7 +53,7 @@ async function makeHarness(entries = [makeSessionEntry()]) {
   const showCliMessage = vi.fn();
   const driver = await loadAfkContractDriver({
     daemon,
-    clients: [client],
+    clients,
     telegram,
     registry,
     relayTargets,
@@ -56,7 +62,7 @@ async function makeHarness(entries = [makeSessionEntry()]) {
     showCliMessage,
   });
 
-  return { daemon, client, telegram, registry, relayTargets, showCliMessage, driver };
+  return { daemon, client: clients[0]!, clients, telegram, registry, relayTargets, showCliMessage, driver };
 }
 
 async function activate(driver: AfkContractDriver, client: FakeExtensionClient, sessionId = 'sess-1') {
@@ -227,7 +233,12 @@ describe('ADR-11 AFK mode contract', () => {
     await driver.handleBackRequest('sess-1');
     await flush();
 
-    expect(client.lastError).toMatchObject({ type: 'error', sessionId: 'sess-1', error: 'Not in AFK mode.' });
+    expect(client.lastError).toMatchObject({
+      type: 'error',
+      sessionId: 'sess-1',
+      error: 'Not in AFK mode.',
+      code: ERROR_CODES.AFK_NOT_ACTIVE,
+    });
     expect(client.receivedOfType('back.confirmed')).toHaveLength(0);
     expect(client.receivedOfType('mode.changed')).toHaveLength(0);
     expect(telegram.api.closeForumTopic).not.toHaveBeenCalled();
@@ -273,7 +284,43 @@ describe('ADR-11 AFK mode contract', () => {
       type: 'error',
       sessionId: 'sess-1',
       error: expect.any(String),
+      code: ERROR_CODES.AFK_ACTIVATION_FAILED,
     });
-    // NOTE: code:'afk.activation_failed' assertion deferred — waiting for Carter's producer-side code.
+  });
+
+  it('T10 — partial activation rollback closes opened topics and notifies extensions', async () => {
+    const topicId = 9101;
+    const { clients, telegram, driver } = await makeHarness(
+      [
+        makeSessionEntry({ sessionId: 'sess-1', sessionName: 'reach-myapp' }),
+        makeSessionEntry({ sessionId: 'sess-2', sessionName: 'reach-api' }),
+      ],
+      [
+        { sessionId: 'sess-1', sessionName: 'reach-myapp' },
+        { sessionId: 'sess-2', sessionName: 'reach-api' },
+      ],
+    );
+    const client1 = clients[0]!;
+    const client2 = clients[1]!;
+
+    telegram.api.createForumTopic
+      .mockResolvedValueOnce({ message_thread_id: topicId })
+      .mockRejectedValueOnce(new Error('Telegram API unavailable for sess-2'));
+
+    await driver.handleAfkRequest('sess-1');
+    await flush();
+
+    expect(driver.getMode?.()).toMatchObject({ active: false });
+    expect(telegram.api.closeForumTopic).toHaveBeenCalledWith(CHAT_ID, topicId);
+    expect(client1.expectModeChanged(false)).toMatchObject({ active: false });
+    expect(client1.receivedOfType('afk.activated')).toHaveLength(1);
+    expect(client1.receivedOfType('back.confirmed')).toHaveLength(1);
+    expect(client2.receivedOfType('afk.activated')).toHaveLength(0);
+    expect(client1.lastError).toMatchObject({
+      type: 'error',
+      sessionId: 'sess-1',
+      error: expect.any(String),
+      code: ERROR_CODES.AFK_ACTIVATION_FAILED,
+    });
   });
 });

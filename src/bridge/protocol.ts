@@ -111,6 +111,22 @@ export interface ModeState {
   since: string;
 }
 
+/** Public wire-adjacent summary of a registered bridge session. */
+export interface BridgeSessionInfo {
+  readonly sessionId: string;
+  readonly sessionName: string;
+  readonly cwd: string;
+}
+
+/** Optional daemon-side registration fields added to the `session.registered` acknowledgement. */
+export interface RegistrationExtras {
+  mode?: ModeState;
+  topicId?: number;
+}
+
+/** Hook for daemon features that augment the registration acknowledgement. */
+export type RegistrationAugmenter = (session: BridgeSessionInfo) => Promise<RegistrationExtras>;
+
 /** Acknowledgement sent after successful `hello`. */
 export interface RegisteredMessage {
   type: 'session.registered';
@@ -179,17 +195,31 @@ export interface RelayCommandMessage {
   args: string[];
 }
 
+/**
+ * Well-known daemon → extension error codes.
+ *
+ * The protocol keeps `ErrorMessage.code` as an open string so producers can add
+ * advisory codes without breaking older consumers; use these constants when you
+ * want narrowing or typo resistance for codes known to this package.
+ */
+export const ERROR_CODES = {
+  AFK_ACTIVATION_FAILED: 'afk.activation_failed',
+  AFK_NOT_ACTIVE: 'afk.not_active',
+} as const;
+
+/** Narrowed union of currently well-known error-code constants. */
+export type ErrorCode = typeof ERROR_CODES[keyof typeof ERROR_CODES];
+
 /** Daemon → extension: an operation failed; the extension should surface the error to the user. */
 export interface ErrorMessage {
   type: 'error';
   sessionId: string;
   error: string;
   /**
-   * Machine-readable error code for programmatic handling.
-   * Well-known values: 'afk.activation_failed', 'afk.not_active'.
-   * Open-ended (`| string`) to allow future codes without breaking the union.
+   * Machine-readable advisory error code.
+   * See `ERROR_CODES` for well-known values; advisory only — the extension does not branch on this.
    */
-  code?: 'afk.activation_failed' | 'afk.not_active' | string;
+  code?: string;
 }
 
 export type OutboundMessage =

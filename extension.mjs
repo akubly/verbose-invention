@@ -261,18 +261,19 @@ function sendToDaemon(msg) {
   }
 }
 
-/**
- * Surface a user-facing one-line message in the CLI session when possible.
- *
- * @param {string} message
- * @param {'info' | 'warning' | 'error'} [level]
- */
+// Keep daemon-provided text to one plain terminal line.
 function sanitizeForCliLine(value) {
   return String(value)
     .replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '')
     .replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
 }
 
+/**
+ * Surface a user-facing one-line message in the CLI session when possible.
+ *
+ * @param {string} message
+ * @param {'info' | 'warning' | 'error'} [level]
+ */
 function showCliMessage(message, level = 'info') {
   const safeMessage = sanitizeForCliLine(message);
   if (sdkSession !== null && typeof sdkSession.log === 'function') {
@@ -349,7 +350,7 @@ function handleMessage(msg) {
 
     case 'error':
       if (isForCurrentSession(msg, 'error')) {
-        showCliMessage(msg.error, 'error');
+        showCliMessage(msg.error || '(daemon reported an error)', 'error');
       }
       break;
 

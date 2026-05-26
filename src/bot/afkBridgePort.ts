@@ -6,8 +6,7 @@
  * ExtensionBridge satisfies this interface structurally — no explicit `implements` needed.
  */
 
-import type { OutboundMessage } from '../bridge/protocol.js';
-import type { BridgeSessionInfo, RegistrationAugmenter } from '../bridge/extensionBridge.js';
+import type { BridgeSessionInfo, OutboundMessage, RegistrationAugmenter } from '../bridge/protocol.js';
 
 export interface AfkBridgePort {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

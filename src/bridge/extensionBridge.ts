@@ -38,7 +38,9 @@ import type {
   PermissionCancelledMessage,
   AfkRequestMessage,
   BackRequestMessage,
-  ModeState,
+  BridgeSessionInfo,
+  RegistrationAugmenter,
+  RegistrationExtras,
   OutboundMessage,
 } from './protocol.js';
 
@@ -56,19 +58,6 @@ const MAX_LINE_BYTES = 64 * 1024;
 
 /** Status of an extension session. */
 export type ConnectionStatus = 'registered' | 'unreachable';
-
-export interface BridgeSessionInfo {
-  readonly sessionId: string;
-  readonly sessionName: string;
-  readonly cwd: string;
-}
-
-export interface RegistrationExtras {
-  mode?: ModeState;
-  topicId?: number;
-}
-
-export type RegistrationAugmenter = (session: BridgeSessionInfo) => Promise<RegistrationExtras>;
 
 /** Public handle for a registered extension connection. */
 export interface ExtensionConnection extends BridgeSessionInfo {

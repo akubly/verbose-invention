@@ -21,9 +21,12 @@ import { runPairingMode } from './bot/pairing.js';
 
 export async function main(): Promise<void> {
   const cfg = await parseEnv();
-  if (cfg.isPairingMode) { await runPairingMode(cfg); return; }
+  if (cfg.isPairingMode) {
+    await runPairingMode(cfg);
+    return;
+  }
 
-  const chatId = cfg.chatId!;
+  const chatId = cfg.chatId!; // guaranteed by isPairingMode === false above
   const registry = new SessionRegistry(cfg.registryPath);
 
   let bridge: ExtensionBridge | null = null;

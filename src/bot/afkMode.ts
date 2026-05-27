@@ -101,7 +101,7 @@ export class AfkModeController {
   private readonly sessionRequestIds = new Map<string, Set<string>>();
   /** Deduplication gate: sessionId → in-flight ensureTopic promise. Prevents concurrent calls
    *  from creating multiple topics for the same session (B7-1 sub-claim A). */
-  private readonly ensuringTopics = new Map<string, Promise<TopicBinding>>();
+  private readonly pendingTopicEnsures = new Map<string, Promise<TopicBinding>>();
 
   constructor(
     private readonly bot: Bot<Context>,
@@ -241,9 +241,12 @@ export class AfkModeController {
       this.sessionTopics.clear();
       this.topicSessions.clear();
       this.sessionRequestIds.clear();
+      this.pendingTopicEnsures.clear();
       // Best-effort registry rollback: revert any entries we flipped to 'afk'.
       // Runs BEFORE compensatePartialActivation so that if registrationExtras triggers
       // ensureTopic during compensation, it reads clean registry state (no stale lastTopicId).
+      // I7-1 rollback ordering: compensation sends back.confirmed to sessions, which may
+      // trigger a new afk.request → registrationExtras → ensureTopic chain.
       // Sequential by intent — caller is rare-path (activation failure), ordering aids debugging.
       for (const binding of addedBindings) {
         const entry = this.registry.findByName(binding.sessionName);
@@ -414,22 +417,24 @@ export class AfkModeController {
     const existingBinding = this.sessionTopics.get(session.sessionId);
     if (existingBinding) return existingBinding;
 
-    // Fix B (B7-1 sub-claim A): dedupe concurrent calls for the same session.
+    // B7-1 sub-claim A (deduplication gate): dedupe concurrent calls for the same session.
     // Two rapid activate() calls both pass the !sessionTopics.has() guard; this gate
-    // ensures only the first reaches doEnsureTopic — the second awaits its result.
-    const inFlight = this.ensuringTopics.get(session.sessionId);
+    // ensures only the first reaches createOrReopenTopic — the second awaits its result.
+    // Failure propagation: if the first caller's createOrReopenTopic throws, that same
+    // rejection propagates to the second caller since it awaits the same promise.
+    const inFlight = this.pendingTopicEnsures.get(session.sessionId);
     if (inFlight) return await inFlight;
 
-    const work = this.doEnsureTopic(session);
-    this.ensuringTopics.set(session.sessionId, work);
+    const work = this.createOrReopenTopic(session);
+    this.pendingTopicEnsures.set(session.sessionId, work);
     try {
       return await work;
     } finally {
-      this.ensuringTopics.delete(session.sessionId);
+      this.pendingTopicEnsures.delete(session.sessionId);
     }
   }
 
-  private async doEnsureTopic(session: BridgeSessionInfo): Promise<TopicBinding> {
+  private async createOrReopenTopic(session: BridgeSessionInfo): Promise<TopicBinding> {
     const matches = this.registry.findAllByName(session.sessionName);
     if (matches.length > 1) {
       console.warn(`[afk] Duplicate registry entries for "${session.sessionName}"; creating a fresh AFK topic instead of reusing lastTopicId`);
@@ -455,19 +460,28 @@ export class AfkModeController {
       topicUrl: topicUrl(this.chatId, topicId),
     };
 
-    // Fix A (B7-1 sub-claim B): persist to registry BEFORE writing in-memory maps.
+    // B7-1 sub-claim B (registry-before-maps): persist to registry BEFORE writing in-memory maps.
     // If upsert throws, maps remain unwritten → no stale binding → session can retry cleanly.
-    await this.registry.upsert({
-      sessionName: session.sessionName,
-      topicId,
-      chatId: this.chatId,
-      createdAt: persisted?.createdAt ?? new Date().toISOString(),
-      cwd: session.cwd,
-      ...(persisted?.model !== undefined && { model: persisted.model }),
-      mode: 'afk',
-      afkSince: this.mode.since,
-      lastTopicId: topicId,
-    });
+    try {
+      await this.registry.upsert({
+        sessionName: session.sessionName,
+        topicId,
+        chatId: this.chatId,
+        createdAt: persisted?.createdAt ?? new Date().toISOString(),
+        cwd: session.cwd,
+        ...(persisted?.model !== undefined && { model: persisted.model }),
+        mode: 'afk',
+        afkSince: this.mode.since,
+        lastTopicId: topicId,
+      });
+    } catch (err) {
+      // F1: Orphan prevention — if upsert fails, close the created topic.
+      // Fire-and-forget: don't block the error path on cleanup; don't mask the original error.
+      this.bot.api.closeForumTopic(this.chatId, topicId).catch((e) => {
+        console.warn(`[afk] Failed to close orphan topic ${topicId}:`, errorText(e));
+      });
+      throw err;
+    }
 
     this.sessionTopics.set(session.sessionId, binding);
     this.topicSessions.set(topicId, session.sessionId);

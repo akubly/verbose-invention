@@ -37,4 +37,4 @@ Original D4/D5 language ("compensation must terminate") was ambiguous about whet
 
 **Implementation:** `src/bot/afkMode.ts` — `activate()` activationPromise hoist + rollback `delete lastTopicId` (Cycle 6, commit landed by Kat).
 
-**Note (Cycle 7):** The three conditions (activationPromise serialization, lastTopicId hygiene, COMPENSATION_TIMEOUT_MS cap) are jointly necessary — removing any one reopens a race.
+**Note (Cycle 7):** The three conditions (activationPromise serialization, lastTopicId hygiene, COMPENSATION_TIMEOUT_MS cap) are jointly necessary — removing any one reopens a correctness vulnerability: either the resurrection race (conditions 1 and 2) or indefinite blocking (condition 3).

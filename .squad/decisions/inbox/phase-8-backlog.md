@@ -17,10 +17,10 @@ address opportunistically), **Triggered watch** (no action until trigger fires).
 
 | Item | Bucket | Size | Notes |
 |---|---|---|---|
-| A8 REOPENED | P1 | M | Gates Phase 8 composition-root closure; two integration tests needed |
-| A7 | P1 | S | Inbound shape coverage missing; small addition to existing drift test |
-| N2 | P1 | S | Guard code already drafted; env-var test variant also needed |
-| N3 | P1 | S | End-to-end config-branch path through main() unverified |
+| A8 REOPENED | P1 | M | Gates Phase 8 composition-root closure; two integration tests needed — **Why P1:** composition-root branches untested → regression risk during Phase 8 wiring changes |
+| A7 | P1 | S | Inbound shape coverage missing; small addition to existing drift test — **Why P1:** shape mismatch at runtime is undetectable without coverage |
+| N2 | P1 | S | Guard code drafted in backlog, not yet landed; env-var test variant also needed — **Why P1:** deny-all misconfiguration via config JSON goes undetected → silent lockout risk |
+| N3 | P1 | S | End-to-end config-branch path through main() unverified — **Why P1:** config-layer allowed IDs path never exercised → silent breakage if wiring changes |
 | A2 | P2 | — | Defer until first relay error code is added; single rename then is cheap |
 | F8 | P2 | — | No `/approve` commands yet; extract when dynamic auth arrives |
 | F4 watch | Triggered watch | — | Trigger: second compensation path OR afkMode.ts ≥ 700 LOC |
@@ -113,7 +113,8 @@ ADR-11 D3 notes that `allowedUserIds: Set([])` is an explicit deny-all state
 and should be treated as a misconfiguration, not as unset. The current startup
 check catches the empty-string case at the env-var layer (`TELEGRAM_ALLOWED_USER_IDS=""`
 after trim → fatal exit), but `Set([])` produced by config JSON `telegramAllowedUserIds: []`
-is not detected. A follow-up should add a guard:
+is not detected. **Status:** Guard code drafted below but not yet landed in production.
+A follow-up should add a guard:
 
 ```ts
 if (allowedUserIdSet !== undefined && allowedUserIdSet.size === 0) {

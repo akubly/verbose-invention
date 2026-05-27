@@ -62,12 +62,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function withCompensationTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
-  const timeout = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error(`Compensation timed out after ${COMPENSATION_TIMEOUT_MS}ms: ${label}`)), COMPENSATION_TIMEOUT_MS),
-  );
-  return Promise.race([promise, timeout]);
-}
 
 function topicUrl(chatId: number, topicId: number): string {
   const internalChatId = String(chatId).replace(/^-100/, '');
@@ -143,6 +137,7 @@ export class AfkModeController {
 
   async handleTelegramMessage(ctx: Context): Promise<boolean> {
     if (!this.mode.active) return false;
+    if (ctx.chat?.id !== this.chatId) return false;
     const topicId = ctx.message?.message_thread_id;
     const text = ctx.message?.text;
     if (!topicId || !text) return false;
@@ -220,7 +215,8 @@ export class AfkModeController {
     }
 
     this.mode = { active: true, since: new Date().toISOString() };
-    this.activationPromise = this.activateAllSessions().then(() => {});
+    const notified: Array<{ sessionId: string; topicId: number }> = [];
+    this.activationPromise = this.activateAllSessions(notified);
     try {
       await this.activationPromise;
     } catch (err) {
@@ -230,7 +226,7 @@ export class AfkModeController {
       this.sessionTopics.clear();
       this.topicSessions.clear();
       this.sessionRequestIds.clear();
-      await this.compensatePartialActivation(addedBindings);
+      await this.compensatePartialActivation(addedBindings, notified);
       // Best-effort registry rollback: revert any entries we flipped to 'afk'.
       // Sequential by intent — caller is rare-path (activation failure), ordering aids debugging.
       for (const binding of addedBindings) {
@@ -258,14 +254,13 @@ export class AfkModeController {
     }
   }
 
-  private async activateAllSessions(): Promise<Array<{ sessionId: string; topicId: number }>> {
-    const activated: Array<{ sessionId: string; topicId: number }> = [];
+  private async activateAllSessions(notified: Array<{ sessionId: string; topicId: number }>): Promise<void> {
     const sessions = this.bridge.listSessions();
 
     for (const session of sessions) {
       const binding = await this.ensureTopic(session);
       this.sendAfkActivated(binding);
-      activated.push({ sessionId: binding.sessionId, topicId: binding.topicId });
+      notified.push({ sessionId: binding.sessionId, topicId: binding.topicId });
       await this.safeSendMessage(
         `📡 AFK mode active. Telegram mirror ready for ${binding.sessionName} (${binding.sessionId}).`,
         binding.topicId,
@@ -274,39 +269,51 @@ export class AfkModeController {
 
     await this.postGeneralSummary();
     this.bridge.broadcastToSessions({ type: 'mode.changed', active: true, since: this.mode.since });
-    return activated;
   }
 
   private async compensatePartialActivation(
     createdBindings: TopicBinding[],
+    notified: Array<{ sessionId: string; topicId: number }>,
   ): Promise<void> {
     if (createdBindings.length === 0) return;
-    // Every binding in createdBindings received an afk.activated notification
-    // (sendAfkActivated is called in the same loop iteration as sessionTopics.set).
-    const results = await Promise.allSettled(createdBindings.map(async ({ sessionId, topicId }) => {
-      const errors: string[] = [];
+    const failures: string[] = [];
+
+    // Back-notify only sessions that received afk.activated — sessions in
+    // createdBindings that were not notified never got afk.activated, so
+    // sending back.confirmed would be spurious and confuse the extension.
+    for (const { sessionId } of notified) {
       try {
         this.bridge.sendToSession(sessionId, { type: 'back.confirmed', sessionId });
         this.bridge.sendToSession(sessionId, { type: 'mode.changed', active: false, since: '' });
       } catch (err) {
-        errors.push(`notify ${sessionId}: ${errorText(err)}`);
+        failures.push(`notify ${sessionId}: ${errorText(err)}`);
       }
-      try {
-        await withCompensationTimeout(
-          this.serializedTopicOperation(() => this.withRateLimitRetry(() =>
-            this.bot.api.closeForumTopic(this.chatId, topicId),
-          )),
-          `closeForumTopic ${topicId}`,
-        );
-      } catch (err) {
+    }
+
+    // Close all topics that were created (regardless of notification status).
+    // Compensation closes run OUTSIDE topicQueue — detached from future enqueued
+    // operations — so a late-completing close cannot race a subsequent activation
+    // that reopens the same topic. Promise.race caps wall time per close.
+    const compensationClose = (topicId: number): Promise<void> => {
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error(`Compensation timed out after ${COMPENSATION_TIMEOUT_MS}ms: closeForumTopic ${topicId}`)),
+          COMPENSATION_TIMEOUT_MS,
+        ),
+      );
+      return Promise.race([
+        this.withRateLimitRetry(() => this.bot.api.closeForumTopic(this.chatId, topicId)).then(() => undefined),
+        timeout,
+      ]);
+    };
+
+    await Promise.all(createdBindings.map(({ sessionId, topicId }) =>
+      compensationClose(topicId).catch((err) => {
         console.warn('[afk] Failed to close partially activated topic %d for %s: %s', topicId, sessionId, errorText(err));
-        errors.push(`close ${topicId}: ${errorText(err)}`);
-      }
-      return errors;
-    }));
-    const failures = results.flatMap((result) =>
-      result.status === 'fulfilled' ? result.value : [errorText(result.reason)],
-    );
+        failures.push(`close ${topicId}: ${errorText(err)}`);
+      }),
+    ));
+
     if (failures.length > 0) {
       console.warn('[afk] Partial activation compensation completed with errors:', failures.join('; '));
     }

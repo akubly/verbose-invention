@@ -165,7 +165,7 @@ export interface AfkContractDeps {
 export interface AfkContractDriver {
   handleAfkRequest(sessionId: string): Promise<void>;
   handleBackRequest(sessionId: string): Promise<void>;
-  handleTelegramMessage(topicId: number, text: string, fromUserId?: number): Promise<void>;
+  handleTelegramMessage(topicId: number, text: string, fromUserId?: number, fromChatId?: number): Promise<void>;
   handleCliStream?(sessionId: string, text: string): Promise<void>;
   getMode?(): ModeState;
 }
@@ -204,10 +204,10 @@ function createBotAfkDriver(Ctor: typeof AfkModeController, deps: AfkContractDep
       bridge.emit('back.request', sessionId);
       await new Promise<void>((resolve) => setImmediate(resolve));
     },
-    async handleTelegramMessage(topicId: number, text: string, fromUserId?: number): Promise<void> {
+    async handleTelegramMessage(topicId: number, text: string, fromUserId?: number, fromChatId?: number): Promise<void> {
       await (controller.handleTelegramMessage as (ctx: unknown) => Promise<boolean>).call(
         controller,
-        makeTelegramCtx(topicId, text, fromUserId),
+        makeTelegramCtx(topicId, text, fromUserId, fromChatId),
       );
     },
     getMode(): ModeState {
@@ -281,10 +281,10 @@ function seedActiveState(registry: MemoryAfkRegistry): AfkSeedDTO {
   };
 }
 
-function makeTelegramCtx(topicId: number, text: string, fromUserId = TEST_TELEGRAM_USER_ID) {
+function makeTelegramCtx(topicId: number, text: string, fromUserId = TEST_TELEGRAM_USER_ID, fromChatId = CHAT_ID) {
   return {
     message: { message_thread_id: topicId, text },
-    chat: { id: CHAT_ID },
+    chat: { id: fromChatId },
     from: { id: fromUserId },
   };
 }

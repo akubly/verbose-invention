@@ -25,7 +25,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 function getScriptPath(): string {
-  return path.resolve(__dirname, '..', 'main.js');
+  return path.resolve(__dirname, '..', 'bin.js');
 }
 
 function getProjectRoot(): string {
@@ -36,7 +36,7 @@ function getProjectRoot(): string {
     }
     dir = path.dirname(dir);
   }
-  // Fallback: getScriptPath() points at dist/main.js → dirname gives dist/, one level up is project root
+  // Fallback: getScriptPath() points at dist/bin.js → dirname gives dist/, one level up is project root
   return path.resolve(path.dirname(getScriptPath()), '..');
 }
 

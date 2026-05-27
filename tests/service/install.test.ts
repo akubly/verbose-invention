@@ -110,7 +110,7 @@ describe('Service installer', () => {
     // Path-aware default: all key files exist
     mockExistsSync.mockImplementation((filePath: unknown) => {
       const p = String(filePath);
-      if (p.endsWith('main.js')) return true;        // script exists
+      if (p.endsWith('bin.js')) return true;        // script exists
       // Only match project root package.json, not subdirectory ones
       if (p.endsWith('package.json')) return p === path.join(process.cwd(), 'package.json');
       if (p.endsWith('.env')) return true;            // .env exists
@@ -143,10 +143,10 @@ describe('Service installer', () => {
       expect(constructedConfig!.name).toBe('Reach');
     });
 
-    it('exits with error when dist/main.js is missing', async () => {
+    it('exits with error when dist/bin.js is missing', async () => {
       mockExistsSync.mockImplementation((filePath: unknown) => {
         const p = String(filePath);
-        if (p.endsWith('main.js')) return false;       // script missing
+        if (p.endsWith('bin.js')) return false;       // script missing
         if (p.endsWith('package.json')) return p === path.join(process.cwd(), 'package.json');
         if (p.endsWith('.env')) return true;             // .env exists
         return false;
@@ -163,7 +163,7 @@ describe('Service installer', () => {
     it('exits with error when .env file is missing and env vars are not set', async () => {
       mockExistsSync.mockImplementation((filePath: unknown) => {
         const p = String(filePath);
-        if (p.endsWith('main.js')) return true;        // script exists
+        if (p.endsWith('bin.js')) return true;        // script exists
         if (p.endsWith('package.json')) return p === path.join(process.cwd(), 'package.json');
         if (p.endsWith('.env')) return false;           // .env missing
         return false;
@@ -182,7 +182,7 @@ describe('Service installer', () => {
     it('exits with error when .env is missing and only TELEGRAM_BOT_TOKEN is set', async () => {
       mockExistsSync.mockImplementation((filePath: unknown) => {
         const p = String(filePath);
-        if (p.endsWith('main.js')) return true;        // script exists
+        if (p.endsWith('bin.js')) return true;        // script exists
         if (p.endsWith('package.json')) return p === path.join(process.cwd(), 'package.json');
         if (p.endsWith('.env')) return false;           // .env missing
         return false;
@@ -201,7 +201,7 @@ describe('Service installer', () => {
     it('exits with error when .env is missing and only TELEGRAM_CHAT_ID is set', async () => {
       mockExistsSync.mockImplementation((filePath: unknown) => {
         const p = String(filePath);
-        if (p.endsWith('main.js')) return true;        // script exists
+        if (p.endsWith('bin.js')) return true;        // script exists
         if (p.endsWith('package.json')) return p === path.join(process.cwd(), 'package.json');
         if (p.endsWith('.env')) return false;           // .env missing
         return false;
@@ -220,7 +220,7 @@ describe('Service installer', () => {
     it('warns but continues when .env is missing but env vars are set', async () => {
       mockExistsSync.mockImplementation((filePath: unknown) => {
         const p = String(filePath);
-        if (p.endsWith('main.js')) return true;        // script exists
+        if (p.endsWith('bin.js')) return true;        // script exists
         if (p.endsWith('package.json')) return p === path.join(process.cwd(), 'package.json');
         if (p.endsWith('.env')) return false;           // .env missing
         return false;
@@ -400,7 +400,7 @@ describe('Service installer', () => {
       expect(svc).toBeDefined();
       expect(constructedConfig).toBeDefined();
       expect(constructedConfig!.name).toBe('Reach');
-      expect(constructedConfig!.script).toMatch(/main\.js$/);
+      expect(constructedConfig!.script).toMatch(/bin\.js$/);
       expect(constructedConfig!.workingDirectory).toBe(process.cwd());
     });
 

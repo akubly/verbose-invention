@@ -218,10 +218,3 @@ export async function main(): Promise<void> {
     allowed_updates: ['message', 'edited_message', 'callback_query'],
   });
 }
-
-if (process.env.VITEST !== 'true') {
-  main().catch((err) => {
-    console.error('[reach] Fatal:', err);
-    process.exit(1);
-  });
-}

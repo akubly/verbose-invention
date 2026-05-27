@@ -137,6 +137,9 @@ export class AfkModeController {
 
   async handleTelegramMessage(ctx: Context): Promise<boolean> {
     if (!this.mode.active) return false;
+    // Defense-in-depth (I5-5): reject updates from any chat other than the
+    // configured one. Without this, a bot-accessible group whose topic ID
+    // happens to collide could inject mirror input into a registered session.
     if (ctx.chat?.id !== this.chatId) return false;
     const topicId = ctx.message?.message_thread_id;
     const text = ctx.message?.text;
@@ -201,13 +204,14 @@ export class AfkModeController {
   }
 
   private async activate(requestingSessionId: string): Promise<void> {
+    if (this.activationPromise !== undefined) {
+      await this.activationPromise.catch(() => {});
+    }
     if (this.mode.active) {
-      if (this.activationPromise !== undefined) {
-        await this.activationPromise;
-        return;
-      }
+      // Only run ensureTopic/sendAfkActivated for sessions not yet bound (late-register).
+      // If this session is already in sessionTopics the first activation handled it — no-op.
       const info = this.bridge.getSessionInfo(requestingSessionId);
-      if (info) {
+      if (info && !this.sessionTopics.has(requestingSessionId)) {
         const binding = await this.ensureTopic(info);
         this.sendAfkActivated(binding);
       }
@@ -215,6 +219,7 @@ export class AfkModeController {
     }
 
     this.mode = { active: true, since: new Date().toISOString() };
+    // notified accumulator captures partial progress for compensatePartialActivation
     const notified: Array<{ sessionId: string; topicId: number }> = [];
     this.activationPromise = this.activateAllSessions(notified);
     try {
@@ -234,6 +239,7 @@ export class AfkModeController {
         if (entry) {
           const rolledBack = { ...entry, mode: 'back' as const };
           delete rolledBack.afkSince;
+          delete rolledBack.lastTopicId;
           await this.registry.upsert(rolledBack).catch((e) => {
             console.warn('[afk] Registry rollback failed for', binding.sessionName, ':', errorText(e));
           });
@@ -254,6 +260,8 @@ export class AfkModeController {
     }
   }
 
+  // out-parameter: populated with each session that received afk.activated,
+  // so the catch block in activate() knows which sessions to back-notify.
   private async activateAllSessions(notified: Array<{ sessionId: string; topicId: number }>): Promise<void> {
     const sessions = this.bridge.listSessions();
 
@@ -291,9 +299,14 @@ export class AfkModeController {
     }
 
     // Close all topics that were created (regardless of notification status).
-    // Compensation closes run OUTSIDE topicQueue — detached from future enqueued
-    // operations — so a late-completing close cannot race a subsequent activation
-    // that reopens the same topic. Promise.race caps wall time per close.
+    // Compensation closes run OUTSIDE topicQueue. This is safe because:
+    //   1. activate() now awaits any in-flight activationPromise before
+    //      retry (see hoisted guard above), so concurrent re-activation
+    //      cannot start before compensation completes.
+    //   2. The rollback also clears lastTopicId from the registry, so even
+    //      if a late close resolves after a retry, the retry's ensureTopic
+    //      has created a fresh topicId — the orphan close targets a dead ID.
+    //   3. Promise.race caps wall time per close to COMPENSATION_TIMEOUT_MS.
     const compensationClose = (topicId: number): Promise<void> => {
       const timeout = new Promise<never>((_, reject) =>
         setTimeout(

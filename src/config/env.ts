@@ -52,6 +52,10 @@ export async function parseEnv(): Promise<EnvConfig> {
       console.error('[reach] Fatal: TELEGRAM_CHAT_ID must be a valid integer');
       process.exit(1);
     }
+    if (chatId === 0) {
+      console.error('[reach] Fatal: TELEGRAM_CHAT_ID cannot be 0 — set to a real chat ID or leave unset for pairing mode.');
+      process.exit(1);
+    }
   } else if (config.telegramChatId) {
     chatId = config.telegramChatId;
     console.log(`[reach] Using chat ID from config: ***${String(chatId).slice(-4)}`);

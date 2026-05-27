@@ -15,9 +15,9 @@ export interface ISessionRegistry {
   /** Upserts an AFK-managed entry; if the session name moved topics, replaces the prior topic binding. */
   upsert(entry: SessionEntry): Promise<void>;
   /** Resolves a Telegram topic ID to its session entry. */
-  resolve?(telegramTopicId: number): SessionEntry | undefined;
+  resolve(telegramTopicId: number): SessionEntry | undefined;
   /** Returns every entry whose sessionName matches (normally at most one). */
-  findAllByName?(sessionName: string): SessionEntry[];
+  findAllByName(sessionName: string): SessionEntry[];
   findByName(sessionName: string): SessionEntry | undefined;
   list(): SessionEntry[];
   remove(telegramTopicId: number): Promise<boolean>;

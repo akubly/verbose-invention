@@ -34,6 +34,7 @@ function makeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry {
     register: vi.fn(),
     resolve: vi.fn((topicId: number) => map.get(topicId)),
     findByName: vi.fn((name: string) => Array.from(map.values()).find((e) => e.sessionName === name)),
+    findAllByName: vi.fn((name: string) => Array.from(map.values()).filter((e) => e.sessionName === name)),
     list: vi.fn(() => Array.from(map.values())),
     remove: vi.fn(async (topicId: number) => map.delete(topicId)),
     load: vi.fn(),

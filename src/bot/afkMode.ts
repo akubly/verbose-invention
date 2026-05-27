@@ -37,7 +37,6 @@ export interface AfkSeedDTO {
     sessionName?: string;
     cwd?: string;
     topicUrl?: string;
-    mirroring?: boolean;
   }>;
 }
 
@@ -56,9 +55,18 @@ const GLOBAL_MIRROR_RATE_LIMIT = 100;
 /** Cap Telegram retry_after to 30 s; an uncapped server value (e.g. 3600 s) would block the
  *  topic queue for the full duration on each retry, stalling every other session. */
 const MAX_RATE_LIMIT_DELAY_MS = 30_000;
+/** Compensation operations are best-effort; cap wall time so the rollback always completes. */
+const COMPENSATION_TIMEOUT_MS = 7_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function withCompensationTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  const timeout = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`Compensation timed out after ${COMPENSATION_TIMEOUT_MS}ms: ${label}`)), COMPENSATION_TIMEOUT_MS),
+  );
+  return Promise.race([promise, timeout]);
 }
 
 function topicUrl(chatId: number, topicId: number): string {
@@ -212,18 +220,17 @@ export class AfkModeController {
     }
 
     this.mode = { active: true, since: new Date().toISOString() };
-    const activated: Array<{ sessionId: string; topicId: number }> = [];
-    this.activationPromise = this.activateAllSessions(activated);
+    this.activationPromise = this.activateAllSessions().then(() => {});
     try {
       await this.activationPromise;
     } catch (err) {
       // Rollback in-memory state so the daemon can retry cleanly.
       const addedBindings = Array.from(this.sessionTopics.values());
       this.mode = { active: false, since: '' };
-      await this.compensatePartialActivation(activated, addedBindings);
       this.sessionTopics.clear();
       this.topicSessions.clear();
       this.sessionRequestIds.clear();
+      await this.compensatePartialActivation(addedBindings);
       // Best-effort registry rollback: revert any entries we flipped to 'afk'.
       // Sequential by intent — caller is rare-path (activation failure), ordering aids debugging.
       for (const binding of addedBindings) {
@@ -251,7 +258,8 @@ export class AfkModeController {
     }
   }
 
-  private async activateAllSessions(activated: Array<{ sessionId: string; topicId: number }>): Promise<void> {
+  private async activateAllSessions(): Promise<Array<{ sessionId: string; topicId: number }>> {
+    const activated: Array<{ sessionId: string; topicId: number }> = [];
     const sessions = this.bridge.listSessions();
 
     for (const session of sessions) {
@@ -266,28 +274,30 @@ export class AfkModeController {
 
     await this.postGeneralSummary();
     this.bridge.broadcastToSessions({ type: 'mode.changed', active: true, since: this.mode.since });
+    return activated;
   }
 
   private async compensatePartialActivation(
-    notified: Array<{ sessionId: string; topicId: number }>,
     createdBindings: TopicBinding[],
   ): Promise<void> {
-    if (notified.length === 0 && createdBindings.length === 0) return;
-    const notifiedSessionIds = new Set(notified.map(({ sessionId }) => sessionId));
+    if (createdBindings.length === 0) return;
+    // Every binding in createdBindings received an afk.activated notification
+    // (sendAfkActivated is called in the same loop iteration as sessionTopics.set).
     const results = await Promise.allSettled(createdBindings.map(async ({ sessionId, topicId }) => {
       const errors: string[] = [];
-      if (notifiedSessionIds.has(sessionId)) {
-        try {
-          this.bridge.sendToSession(sessionId, { type: 'back.confirmed', sessionId });
-          this.bridge.sendToSession(sessionId, { type: 'mode.changed', active: false, since: '' });
-        } catch (err) {
-          errors.push(`notify ${sessionId}: ${errorText(err)}`);
-        }
+      try {
+        this.bridge.sendToSession(sessionId, { type: 'back.confirmed', sessionId });
+        this.bridge.sendToSession(sessionId, { type: 'mode.changed', active: false, since: '' });
+      } catch (err) {
+        errors.push(`notify ${sessionId}: ${errorText(err)}`);
       }
       try {
-        await this.serializedTopicOperation(() => this.withRateLimitRetry(() =>
-          this.bot.api.closeForumTopic(this.chatId, topicId),
-        ));
+        await withCompensationTimeout(
+          this.serializedTopicOperation(() => this.withRateLimitRetry(() =>
+            this.bot.api.closeForumTopic(this.chatId, topicId),
+          )),
+          `closeForumTopic ${topicId}`,
+        );
       } catch (err) {
         console.warn('[afk] Failed to close partially activated topic %d for %s: %s', topicId, sessionId, errorText(err));
         errors.push(`close ${topicId}: ${errorText(err)}`);
@@ -358,7 +368,7 @@ export class AfkModeController {
   }
 
   private resolveBindingEntry(binding: TopicBinding) {
-    return this.registry.resolve?.(binding.topicId) ?? this.registry.findByName(binding.sessionName);
+    return this.registry.resolve(binding.topicId) ?? this.registry.findByName(binding.sessionName);
   }
 
   private async registrationExtras(session: BridgeSessionInfo): Promise<RegistrationExtras> {
@@ -371,7 +381,7 @@ export class AfkModeController {
     const existingBinding = this.sessionTopics.get(session.sessionId);
     if (existingBinding) return existingBinding;
 
-    const matches = this.registry.findAllByName?.(session.sessionName) ?? [];
+    const matches = this.registry.findAllByName(session.sessionName);
     if (matches.length > 1) {
       console.warn(`[afk] Duplicate registry entries for "${session.sessionName}"; creating a fresh AFK topic instead of reusing lastTopicId`);
     }
@@ -610,7 +620,12 @@ export class AfkModeController {
     }
   }
 
-  /** @visibleForTesting — Test-only factory that seeds AFK state from a DTO. */
+  /**
+   * @visibleForTesting — Test-only factory that seeds AFK state from a DTO.
+   *
+   * Note: streamStates, streamChains, and sessionRequestIds are not seeded —
+   * they self-populate on new events.
+   */
   public static forTesting(deps: AfkModeControllerDeps, seed: AfkSeedDTO = {}): AfkModeController {
     if (process.env.NODE_ENV !== 'test' && process.env.VITEST !== 'true') {
       throw new Error('AfkModeController.forTesting is test-only');
@@ -630,7 +645,7 @@ export class AfkModeController {
     controller.topicSessions.clear();
     for (const session of seed.sessions ?? []) {
       const bridgeInfo = deps.bridge.getSessionInfo(session.sessionId);
-      const registryEntry = deps.registry.resolve?.(session.topicId);
+      const registryEntry = deps.registry.resolve(session.topicId);
       const binding: TopicBinding = {
         sessionId: session.sessionId,
         sessionName: session.sessionName ?? bridgeInfo?.sessionName ?? registryEntry?.sessionName ?? session.sessionId,

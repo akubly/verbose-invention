@@ -207,9 +207,6 @@ export const ERROR_CODES = {
   AFK_NOT_ACTIVE: 'afk.not_active',
 } as const;
 
-/** Narrowed union of currently well-known error-code constants. */
-export type ErrorCode = typeof ERROR_CODES[keyof typeof ERROR_CODES];
-
 /** Daemon → extension: an operation failed; the extension should surface the error to the user. */
 export interface ErrorMessage {
   type: 'error';

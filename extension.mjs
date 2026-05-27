@@ -350,7 +350,7 @@ function handleMessage(msg) {
 
     case 'error':
       if (isForCurrentSession(msg, 'error')) {
-        showCliMessage(msg.error || '(daemon reported an error)', 'error');
+        showCliMessage(msg.error || 'The daemon reported an error', 'error');
       }
       break;
 

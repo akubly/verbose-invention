@@ -10,6 +10,9 @@ const protocolSource = readFileSync(path.resolve(repoRoot, 'src/bridge/protocol.
 const extensionSource = readFileSync(path.resolve(repoRoot, 'extension.mjs'), 'utf8');
 
 function parseOutboundProtocolTypes(source: string): string[] {
+  // ASSUMES: no semicolons in member type expressions or comments inside the OutboundMessage union.
+  // The lazy `[\s\S]*?` stops at the first `;` — safe as long as union members are bare interface
+  // references with no inline semicolons (true for this protocol file's style).
   const unionMatch = /export type OutboundMessage =([\s\S]*?);/.exec(source);
   if (!unionMatch || unionMatch[1] === undefined) {
     throw new Error('extension-protocol-drift: could not locate OutboundMessage union');

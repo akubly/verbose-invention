@@ -40,6 +40,7 @@ async function flush(): Promise<void> {
 async function makeHarness(
   entries = [makeSessionEntry()],
   clientDefs = [{ sessionId: 'sess-1', sessionName: 'reach-myapp' }],
+  { allowAll = false }: { allowAll?: boolean } = {},
 ) {
   const daemon = new FakeDaemon();
   const clients = clientDefs.map(({ sessionId, sessionName }) => new FakeExtensionClient(sessionId, sessionName));
@@ -53,7 +54,8 @@ async function makeHarness(
   const registry = new MemoryAfkRegistry(entries);
   const relayTargets = new RelayTargetSpy();
   const showCliMessage = vi.fn();
-  const driver = await loadAfkContractDriver({
+  const loadDriver = allowAll ? loadAllowAllAfkContractDriver : loadAfkContractDriver;
+  const driver = loadDriver({
     daemon,
     clients,
     telegram,
@@ -268,8 +270,7 @@ describe('ADR-11 AFK mode contract', () => {
     expect(relayTargets.topicTargets('sess-1')).toEqual([topicId]);
   });
 
-  it('T9 — Telegram API failure during activate rolls back state and delivers error frame to extension', async () => {
-    const { client, telegram, registry, driver } = await makeHarness();
+  it('T9 — Telegram API failure during activate rolls back state and delivers error frame to extension', async () => {    const { client, telegram, registry, driver } = await makeHarness();
 
     // Simulate Telegram API failure on the first topic creation.
     telegram.api.createForumTopic.mockRejectedValueOnce(new Error('Telegram API unavailable'));
@@ -288,6 +289,51 @@ describe('ADR-11 AFK mode contract', () => {
       error: expect.any(String),
       code: ERROR_CODES.AFK_ACTIVATION_FAILED,
     });
+  });
+
+  it('T9b — partial activation: only notified sessions receive back.confirmed/mode.changed compensation', async () => {
+    // B5-1: validates the notified-only compensation invariant introduced in Cycle 5.
+    // registry.upsert succeeds for sess-1 (topic created, afk.activated sent, notified[]),
+    // then throws for sess-2 (upsert in ensureTopic throws — sess-2 binding was stored but
+    // sendAfkActivated never ran). compensatePartialActivation must only back-notify sess-1.
+    const { clients, registry, telegram, driver } = await makeHarness(
+      [
+        makeSessionEntry({ sessionId: 'sess-1', sessionName: 'reach-myapp' }),
+        makeSessionEntry({ sessionId: 'sess-2', sessionName: 'reach-api' }),
+      ],
+      [
+        { sessionId: 'sess-1', sessionName: 'reach-myapp' },
+        { sessionId: 'sess-2', sessionName: 'reach-api' },
+      ],
+    );
+    const client1 = clients[0]!;
+    const client2 = clients[1]!;
+
+    vi.spyOn(registry, 'upsert')
+      .mockResolvedValueOnce(undefined)           // sess-1 upsert succeeds → afk.activated sent
+      .mockRejectedValueOnce(new Error('upsert-fail')); // sess-2 upsert throws → activation aborts
+
+    await driver.handleAfkRequest('sess-1');
+    await flush(); // drain the rejection from the mock
+    await flush(); // allow compensatePartialActivation's async ops (detached closeForumTopic) to settle
+
+    // Internal activate() rejected — mode is rolled back to inactive.
+    expect(driver.getMode?.()).toMatchObject({ active: false });
+
+    // Only sess-1 received afk.activated (it was notified before the upsert failure).
+    expect(client1.receivedOfType('afk.activated')).toHaveLength(1);
+    expect(client2.receivedOfType('afk.activated')).toHaveLength(0);
+
+    // Compensation must only reach sessions that were notified.
+    expect(client1.receivedOfType('back.confirmed')).toHaveLength(1);
+    expect(client2.receivedOfType('back.confirmed')).toHaveLength(0);
+
+    expect(client1.receivedOfType('mode.changed').filter((msg) => msg.active === false)).toHaveLength(1);
+    expect(client2.receivedOfType('mode.changed').filter((msg) => msg.active === false)).toHaveLength(0);
+
+    // Both topics were opened and should be closed (cleanup covers all created bindings,
+    // regardless of notification status).
+    expect(telegram.api.closeForumTopic).toHaveBeenCalledTimes(2);
   });
 
   it('T10 — partial activation rollback closes opened topics and notifies extensions', async () => {
@@ -310,8 +356,8 @@ describe('ADR-11 AFK mode contract', () => {
       .mockRejectedValueOnce(new Error('Telegram API unavailable for sess-2'));
 
     await driver.handleAfkRequest('sess-1');
-    await flush();
-    await flush();
+    await flush(); // drain the rejection from the mock
+    await flush(); // allow compensatePartialActivation's async ops (detached closeForumTopic) to settle
 
     expect(driver.getMode?.()).toMatchObject({ active: false });
     expect(telegram.api.closeForumTopic).toHaveBeenCalledWith(CHAT_ID, topicId);
@@ -328,25 +374,7 @@ describe('ADR-11 AFK mode contract', () => {
   });
 
   it('T11 — allow-all variant: message from non-configured user is mirrored when allowedUserIds is undefined', async () => {
-    const daemon = new FakeDaemon();
-    const client = new FakeExtensionClient('sess-1', 'reach-myapp');
-    client.connect(daemon);
-    client.sendHello();
-    await flush();
-
-    const telegram = makeMockTelegramBot();
-    const registry = new MemoryAfkRegistry([makeSessionEntry()]);
-    const relayTargets = new RelayTargetSpy();
-    const driver = await loadAllowAllAfkContractDriver({
-      daemon,
-      clients: [client],
-      telegram,
-      registry,
-      relayTargets,
-      chatId: CHAT_ID,
-      now: () => ADR11_TIMESTAMP,
-      showCliMessage: vi.fn(),
-    });
+    const { client, telegram, driver } = await makeHarness(undefined, undefined, { allowAll: true });
 
     await activate(driver, client);
     const topicId = telegram.createdTopicIds[0]!;
@@ -361,5 +389,20 @@ describe('ADR-11 AFK mode contract', () => {
       sessionId: 'sess-1',
       text: 'hello from unknown user',
     });
+  });
+
+  it('T12 — handleTelegramMessage rejects messages from wrong chat ID', async () => {
+    // I5-5 defense-in-depth: chat.id check in handleTelegramMessage must reject context
+    // objects whose chat.id does not match the configured chatId, even for a known topicId.
+    const { client, telegram, driver } = await makeHarness();
+
+    await activate(driver, client);
+    const topicId = telegram.createdTopicIds[0]!;
+
+    const WRONG_CHAT = CHAT_ID - 1;
+    await driver.handleTelegramMessage(topicId, 'evil input', TEST_TELEGRAM_USER_ID, WRONG_CHAT);
+    await flush();
+
+    expect(client.receivedOfType('mirror.input')).toHaveLength(0);
   });
 });

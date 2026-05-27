@@ -141,8 +141,8 @@ export class AfkModeController {
   async handleTelegramMessage(ctx: Context): Promise<boolean> {
     // Guard ordering: mode-active is checked first for early-exit efficiency (most messages
     // arrive while inactive). This is safe: both guards return false with no side effects,
-    // so the ordering reveals nothing to unauthorized callers — chat-id is validated before
-    // any real work (topic lookup, auth, bridge dispatch).
+    // so the ordering has no security impact — chat-id is validated before any real work
+    // (topic lookup, auth, bridge dispatch).
     if (!this.mode.active) return false;
     // Defense-in-depth (I5-5): reject updates from any chat other than the
     // configured one. Without this, a bot-accessible group whose topic ID
@@ -441,6 +441,7 @@ export class AfkModeController {
     }
     const persisted = matches.length === 1 ? matches[0] : undefined;
     let topicId = persisted?.lastTopicId;
+    let createdNewTopicId: number | null = null;
 
     if (topicId !== undefined) {
       const reopened = await this.tryReopenTopic(topicId);
@@ -452,6 +453,7 @@ export class AfkModeController {
         this.bot.api.createForumTopic(this.chatId, `${session.sessionName} (${session.sessionId})`),
       ));
       topicId = created.message_thread_id;
+      createdNewTopicId = topicId;
     }
 
     const binding: TopicBinding = {
@@ -477,9 +479,13 @@ export class AfkModeController {
     } catch (err) {
       // F1: Orphan prevention — if upsert fails, close the created topic.
       // Fire-and-forget: don't block the error path on cleanup; don't mask the original error.
-      this.bot.api.closeForumTopic(this.chatId, topicId).catch((e) => {
-        console.warn(`[afk] Failed to close orphan topic ${topicId}:`, errorText(e));
-      });
+      if (createdNewTopicId !== null) {
+        this.serializedTopicOperation(() => this.withRateLimitRetry(() =>
+          this.bot.api.closeForumTopic(this.chatId, createdNewTopicId),
+        )).catch((e) => {
+          console.warn(`[afk] Failed to close orphan topic ${createdNewTopicId} for session ${session.sessionId}:`, errorText(e));
+        });
+      }
       throw err;
     }
 

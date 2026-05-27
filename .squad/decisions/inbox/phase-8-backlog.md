@@ -5,13 +5,41 @@ here for follow-up planning before or during Phase 8.
 
 Updated after Cycle 5 (architect5 findings incorporated).
 Updated after Cycle 6 (Skeptic6 flag on A8, architect6 A6-6 watch).
+Updated after Cycle 7 (triage pass, W7-3 design note, M7-5 citation).
+
+---
+
+## Triage (Cycle 7)
+
+Classification of all open items before Phase 8 implementation begins.
+Buckets: **P1** (must address before Phase 8 ships), **P2** (nice-to-have,
+address opportunistically), **Triggered watch** (no action until trigger fires).
+
+| Item | Bucket | Size | Notes |
+|---|---|---|---|
+| A8 REOPENED | P1 | M | Gates Phase 8 composition-root closure; two integration tests needed |
+| A7 | P1 | S | Inbound shape coverage missing; small addition to existing drift test |
+| N2 | P1 | S | Guard code already drafted; env-var test variant also needed |
+| N3 | P1 | S | End-to-end config-branch path through main() unverified |
+| A2 | P2 | — | Defer until first relay error code is added; single rename then is cheap |
+| F8 | P2 | — | No `/approve` commands yet; extract when dynamic auth arrives |
+| F4 watch | Triggered watch | — | Trigger: second compensation path OR afkMode.ts ≥ 700 LOC |
+| F5 watch | Triggered watch | — | Trigger: AfkBridgePort event count ≥ 8 or two unrelated domains |
+| A6-6 watch | Triggered watch | — | Trigger: session count > 15 or observable 429 retries in logs |
+| Module isolation note | P2 | — | Guidance for future main.ts test authors; no active work needed |
+
+**Test-coverage sprint:** A7, N2, and N3 are all S and mechanically similar
+(add assertions / guard / integration test with no new production logic).
+Group them into a single sprint. A8 is M and architecturally distinct
+(integration harness for main() branches) — tackle immediately after or in
+parallel, but track separately.
 
 ---
 
 ## A8 — Composition root validation (REOPENED Cycle 6)
 
 Previously closed on LOC reduction (main.ts 221→90). Skeptic6 correctly
-flagged that LOC alone is not "composition root proven clean." Still missing:
+flagged (Cycle 6 persona-review) that LOC alone is not "composition root proven clean." Still missing:
 
 - End-to-end smoke test for `main()` pairing-mode early-return path
 - End-to-end smoke test for `main()` config-file env resolution branch
@@ -59,6 +87,12 @@ When a second compensation path appears (e.g., relay activation rollback) OR
 `afkMode.ts` exceeds 700 LOC, extract `compensatePartialActivation` into a
 shared utility. Currently a single-use internal method; premature extraction
 would obscure the data flow without benefit.
+
+**Design note (architect7):** If compensation becomes independently callable
+(not just an activate-failure artifact), evaluate splitting `activationPromise`
+into separate `activationPromise` + `compensationPromise` so callers can await
+each concern independently. Today unified is correct because compensation is
+structurally embedded in activate's catch.
 
 ### F5 watch — AfkBridgePort split
 

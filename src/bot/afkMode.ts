@@ -139,6 +139,10 @@ export class AfkModeController {
   }
 
   async handleTelegramMessage(ctx: Context): Promise<boolean> {
+    // Guard ordering (security note): mode-active fires before chat-id. Both
+    // return false unconditionally with no observable side effects, so the order
+    // carries no security signal — chat-id is still checked before any real
+    // processing (topic lookup, auth, bridge dispatch).
     if (!this.mode.active) return false;
     // Defense-in-depth (I5-5): reject updates from any chat other than the
     // configured one. Without this, a bot-accessible group whose topic ID

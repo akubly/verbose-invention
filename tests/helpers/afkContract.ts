@@ -97,6 +97,38 @@ export class MemoryAfkRegistry {
   findAllByName(sessionName: string): AfkSessionFixture[] {
     return Array.from(this.bySessionId.values()).filter((entry) => entry.sessionName === sessionName);
   }
+
+  async load(): Promise<void> {
+    // No-op for in-memory implementation; matches real SessionRegistry async signature.
+  }
+
+  async register(topicId: number, chatId: number, sessionName: string, model?: string, cwd?: string): Promise<void> {
+    const entry: AfkSessionFixture = {
+      sessionId: sessionName, // tests use sessionName as sessionId convention
+      sessionName,
+      topicId,
+      chatId,
+      cwd: cwd ?? '',
+      createdAt: new Date().toISOString(),
+      ...(model !== undefined && { model }),
+    };
+    await this.upsert(entry);
+  }
+
+  async remove(topicId: number): Promise<boolean> {
+    const entry = this.resolve(topicId);
+    if (!entry) return false;
+    this.bySessionId.delete(entry.sessionId);
+    return true;
+  }
+
+  async move(fromTopicId: number, toTopicId: number): Promise<void> {
+    const entry = this.resolve(fromTopicId);
+    if (!entry) throw new Error(`No session found for topic ${fromTopicId}`);
+    const moved: AfkSessionFixture = { ...entry, topicId: toTopicId };
+    this.bySessionId.delete(entry.sessionId);
+    await this.upsert(moved);
+  }
 }
 
 export class RelayTargetSpy {

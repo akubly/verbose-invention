@@ -17,6 +17,10 @@
  * for months — the old `{ ...prior, ...entry }` semantics caused deleted fields (e.g.,
  * lastTopicId cleared by compensatePartialActivation) to silently reappear from the prior
  * registry entry when the in-memory test double was consulted on the retry path.
+ *
+ * NOTE (R9-3): register/remove/move added to MemoryAfkRegistry; contract widening deferred
+ * to Phase 8 when they become production-exercised. Current tests cover core upsert/find
+ * semantics which are most critical for AFK mode correctness.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';

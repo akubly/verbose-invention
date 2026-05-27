@@ -549,7 +549,7 @@ describe('ADR-11 AFK mode contract', () => {
     expect(telegram.api.createForumTopic).toHaveBeenCalledTimes(2);
   });
 
-  it('F1a — late-register: upsert failure after topic creation triggers orphan cleanup', async () => {
+  it('orphan cleanup: late-register upsert failure closes created topic', async () => {
     // F1 fix: createOrReopenTopic catches upsert failure and closes the orphan topic before re-throwing.
     // Previously (Cycle 8 F1 bug): the topic was created but never added to sessionTopics, so compensation
     // had no record of it. The orphan was never closed. After Kat's commit 60afb67, the orphan is cleaned up.
@@ -582,7 +582,7 @@ describe('ADR-11 AFK mode contract', () => {
     expect(telegram.api.closeForumTopic).toHaveBeenCalledWith(-1001234567890, 9001);
   });
 
-  it('F1b — first-activation: upsert failure after topic creation triggers orphan cleanup', async () => {
+  it('orphan cleanup: first-activation upsert failure closes created topic', async () => {
     // F1 fix variant: orphan cleanup also protects first-activation (activateAllSessions).
     // Previously: if a topic was created but upsert threw, compensation had no record and the
     // orphan was never closed. After Kat's commit 60afb67, createOrReopenTopic closes the orphan.
@@ -616,5 +616,24 @@ describe('ADR-11 AFK mode contract', () => {
     expect(telegram.createdTopicIds).toEqual([9001, 9002, 9003]);
     expect(telegram.api.closeForumTopic).toHaveBeenCalledTimes(1);
     expect(telegram.api.closeForumTopic).toHaveBeenCalledWith(-1001234567890, 9001);
+  });
+
+  it('F1c — reopen path must not close pre-existing topic when upsert fails', async () => {
+    // Cycle 9 Skeptic discovery: F1 fix from Cycle 8 closes a pre-existing topic on the reopen path.
+    // Scenario: mode='back' + lastTopicId set (prior AFK topic exists), upsert fails during activation.
+    // Expected: reopen the existing topic, leave it open (because upsert failed, never entered AFK).
+    // Bug: F1 orphan cleanup closes the pre-existing topic even though we never created a new one.
+    // Kat's fix (fe6a1f3): F1 catch now guards on `createdNewTopicId` so reopen path's upsert failure
+    // does NOT close the pre-existing topic. This test proves B9-1 regression is fixed.
+    const existingTopicId = 4242;
+    const { client, telegram, registry, driver } = await makeHarness([
+      makeSessionEntry({ topicId: existingTopicId, lastTopicId: existingTopicId, mode: 'back' }),
+    ]);
+    vi.spyOn(registry, 'upsert').mockRejectedValueOnce(new Error('disk full'));
+    await activate(driver, client);
+    for (let i = 0; i < 4; i++) await flush();
+    expect(telegram.api.reopenForumTopic).toHaveBeenCalledWith(CHAT_ID, existingTopicId);
+    expect(telegram.api.createForumTopic).not.toHaveBeenCalled();
+    expect(telegram.api.closeForumTopic).not.toHaveBeenCalledWith(CHAT_ID, existingTopicId);
   });
 });

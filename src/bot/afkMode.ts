@@ -99,6 +99,9 @@ export class AfkModeController {
   private globalMirrorRate: MirrorRateState = { windowStartMs: 0, count: 0 };
   /** Per-session index of active request IDs for O(1) disconnect cleanup. */
   private readonly sessionRequestIds = new Map<string, Set<string>>();
+  /** Deduplication gate: sessionId → in-flight ensureTopic promise. Prevents concurrent calls
+   *  from creating multiple topics for the same session (B7-1 sub-claim A). */
+  private readonly ensuringTopics = new Map<string, Promise<TopicBinding>>();
 
   constructor(
     private readonly bot: Bot<Context>,
@@ -208,8 +211,11 @@ export class AfkModeController {
       await this.activationPromise.catch(() => {});
     }
     if (this.mode.active) {
-      // Only run ensureTopic/sendAfkActivated for sessions not yet bound (late-register).
-      // If this session is already in sessionTopics the first activation handled it — no-op.
+      // Two reasons we might be here with mode already active:
+      //   1. Late-register: a session came online after activateAllSessions finished.
+      //   2. Rapid re-activate: the same session activated again before being removed
+      //      from sessionTopics. In both cases, if the session already has a topic
+      //      bound (and no ensure is in flight), there is nothing more to do.
       const info = this.bridge.getSessionInfo(requestingSessionId);
       if (info && !this.sessionTopics.has(requestingSessionId)) {
         const binding = await this.ensureTopic(info);
@@ -231,8 +237,9 @@ export class AfkModeController {
       this.sessionTopics.clear();
       this.topicSessions.clear();
       this.sessionRequestIds.clear();
-      await this.compensatePartialActivation(addedBindings, notified);
       // Best-effort registry rollback: revert any entries we flipped to 'afk'.
+      // Runs BEFORE compensatePartialActivation so that if registrationExtras triggers
+      // ensureTopic during compensation, it reads clean registry state (no stale lastTopicId).
       // Sequential by intent — caller is rare-path (activation failure), ordering aids debugging.
       for (const binding of addedBindings) {
         const entry = this.registry.findByName(binding.sessionName);
@@ -245,6 +252,7 @@ export class AfkModeController {
           });
         }
       }
+      await this.compensatePartialActivation(addedBindings, notified);
       // Cleanup any pinned General summary that was partially posted.
       await this.editGeneralSummary('❌ AFK mode activation failed.');
       // Notify the requesting extension so it can surface the error to the user.
@@ -300,9 +308,10 @@ export class AfkModeController {
 
     // Close all topics that were created (regardless of notification status).
     // Compensation closes run OUTSIDE topicQueue. This is safe because:
-    //   1. activate() now awaits any in-flight activationPromise before
-    //      retry (see hoisted guard above), so concurrent re-activation
-    //      cannot start before compensation completes.
+    //   1. activate() serializes activateAllSessions calls; a retry cannot run a new
+    //      activateAllSessions while a prior one is in flight. A retry that fires after
+    //      activateAllSessions rejects passes through immediately and may run during
+    //      compensation — see point 2.
     //   2. The rollback also clears lastTopicId from the registry, so even
     //      if a late close resolves after a retry, the retry's ensureTopic
     //      has created a fresh topicId — the orphan close targets a dead ID.
@@ -401,6 +410,22 @@ export class AfkModeController {
     const existingBinding = this.sessionTopics.get(session.sessionId);
     if (existingBinding) return existingBinding;
 
+    // Fix B (B7-1 sub-claim A): dedupe concurrent calls for the same session.
+    // Two rapid activate() calls both pass the !sessionTopics.has() guard; this gate
+    // ensures only the first reaches doEnsureTopic — the second awaits its result.
+    const inFlight = this.ensuringTopics.get(session.sessionId);
+    if (inFlight) return await inFlight;
+
+    const work = this.doEnsureTopic(session);
+    this.ensuringTopics.set(session.sessionId, work);
+    try {
+      return await work;
+    } finally {
+      this.ensuringTopics.delete(session.sessionId);
+    }
+  }
+
+  private async doEnsureTopic(session: BridgeSessionInfo): Promise<TopicBinding> {
     const matches = this.registry.findAllByName(session.sessionName);
     if (matches.length > 1) {
       console.warn(`[afk] Duplicate registry entries for "${session.sessionName}"; creating a fresh AFK topic instead of reusing lastTopicId`);
@@ -425,9 +450,9 @@ export class AfkModeController {
       topicId,
       topicUrl: topicUrl(this.chatId, topicId),
     };
-    this.sessionTopics.set(session.sessionId, binding);
-    this.topicSessions.set(topicId, session.sessionId);
 
+    // Fix A (B7-1 sub-claim B): persist to registry BEFORE writing in-memory maps.
+    // If upsert throws, maps remain unwritten → no stale binding → session can retry cleanly.
     await this.registry.upsert({
       sessionName: session.sessionName,
       topicId,
@@ -439,6 +464,9 @@ export class AfkModeController {
       afkSince: this.mode.since,
       lastTopicId: topicId,
     });
+
+    this.sessionTopics.set(session.sessionId, binding);
+    this.topicSessions.set(topicId, session.sessionId);
 
     return binding;
   }

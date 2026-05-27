@@ -36,3 +36,5 @@ Original D4/D5 language ("compensation must terminate") was ambiguous about whet
 **Rationale:** Detached compensation provides stronger latency guarantees than queued serialization (queue can be blocked indefinitely by in-flight ops), while the activationPromise hoist + lastTopicId hygiene together eliminate the resurrection race that queued serialization was implicitly relying on.
 
 **Implementation:** `src/bot/afkMode.ts` — `activate()` activationPromise hoist + rollback `delete lastTopicId` (Cycle 6, commit landed by Kat).
+
+**Note (Cycle 7):** The three conditions (activationPromise serialization, lastTopicId hygiene, COMPENSATION_TIMEOUT_MS cap) are jointly necessary — removing any one reopens a race.

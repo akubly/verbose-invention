@@ -364,8 +364,10 @@ describe('ADR-11 AFK mode contract', () => {
   it('T9b — partial activation: only notified sessions receive back.confirmed/mode.changed compensation', async () => {
     // B5-1: validates the notified-only compensation invariant introduced in Cycle 5.
     // registry.upsert succeeds for sess-1 (topic created, afk.activated sent, notified[]),
-    // then throws for sess-2 (upsert in ensureTopic throws — sess-2 binding was stored but
-    // sendAfkActivated never ran). compensatePartialActivation must only back-notify sess-1.
+    // then throws for sess-2 (upsert in ensureTopic throws — with Fix A, sess-2's binding is
+    // never written to sessionTopics because upsert runs before the map write).
+    // compensatePartialActivation must only back-notify sess-1, and only sess-1's topic is closed
+    // (sess-2's topic was created in Telegram but never committed to the in-memory maps).
     const { clients, registry, telegram, driver } = await makeHarness(
       [
         makeSessionEntry({ sessionId: 'sess-1', sessionName: 'reach-myapp' }),
@@ -401,9 +403,9 @@ describe('ADR-11 AFK mode contract', () => {
     expect(client1.receivedOfType('mode.changed').filter((msg) => msg.active === false)).toHaveLength(1);
     expect(client2.receivedOfType('mode.changed').filter((msg) => msg.active === false)).toHaveLength(0);
 
-    // Both topics were opened and should be closed (cleanup covers all created bindings,
-    // regardless of notification status).
-    expect(telegram.api.closeForumTopic).toHaveBeenCalledTimes(2);
+    // Fix A (B7-1): upsert now runs before sessionTopics.set, so sess-2's binding was never
+    // stored in the map. Only sess-1's topic (which fully committed) is closed by compensation.
+    expect(telegram.api.closeForumTopic).toHaveBeenCalledTimes(1);
   });
 
   it('T10 — partial activation rollback closes opened topics and notifies extensions', async () => {
@@ -482,5 +484,64 @@ describe('ADR-11 AFK mode contract', () => {
     expect(telegram.api.sendMessage).not.toHaveBeenCalled();
     // Note: console.error/console.warn log-level assertions are not added here because the
     // wrong-chat guard is a silent early-return (no log emitted by design per I6-3 comment).
+  });
+
+  it('T13a — B7-1 race: two rapid activate calls for an unbound session both bypass the sessionTopics guard', async () => {
+    // B7-1 sub-claim 1: while mode.active === true, two rapid activate('late-1') calls both pass
+    // !sessionTopics.has('late-1') because the map is only written inside ensureTopic() AFTER
+    // createForumTopic resolves (line 428), not before. Both calls enter ensureTopic() and queue
+    // a createForumTopic via serializedTopicOperation. Expected: exactly one topic created.
+    const { telegram, driver } = await makeHarness(
+      [makeSessionEntry({ sessionId: 'sess-1', sessionName: 'reach-myapp', topicId: 9001, lastTopicId: 9001, mode: 'afk', afkSince: ADR11_TIMESTAMP })],
+      [
+        { sessionId: 'sess-1', sessionName: 'reach-myapp' },
+        { sessionId: 'late-1', sessionName: 'reach-late' },
+      ],
+    );
+
+    // Mode is already active (seeded). Fire two rapid late-register requests without awaiting
+    // between them so both calls reach activate() before any microtask processes the first.
+    void driver.handleAfkRequest('late-1');
+    void driver.handleAfkRequest('late-1');
+
+    // Drain the full async chain (topic queue, upsert, afk.activated).
+    for (let i = 0; i < 8; i++) await flush();
+
+    // If the race exists: createForumTopic is called twice (two topics for late-1).
+    // Correct behaviour: exactly one topic created.
+    expect(telegram.api.createForumTopic).toHaveBeenCalledOnce();
+  });
+
+  it('T13b — B7-1 stuck-state: upsert failure after sessionTopics.set leaves session permanently stuck', async () => {
+    // B7-1 sub-claim 2: ensureTopic() writes sessionTopics (line 428) BEFORE registry.upsert()
+    // (line 431). If upsert throws, the in-memory binding remains. Subsequent activate() calls
+    // see sessionTopics.has('late-1') === true and no-op via the fast-path guard.
+    const { telegram, registry, driver } = await makeHarness(
+      [makeSessionEntry({ sessionId: 'sess-1', sessionName: 'reach-myapp', topicId: 9001, lastTopicId: 9001, mode: 'afk', afkSince: ADR11_TIMESTAMP })],
+      [
+        { sessionId: 'sess-1', sessionName: 'reach-myapp' },
+        { sessionId: 'late-1', sessionName: 'reach-late' },
+      ],
+    );
+
+    // Inject a one-shot upsert failure. createForumTopic will succeed, sessionTopics.set
+    // will run (the binding is stored), then upsert throws — activate().catch() absorbs the error.
+    vi.spyOn(registry, 'upsert').mockRejectedValueOnce(new Error('upsert-fail'));
+
+    await driver.handleAfkRequest('late-1');
+    for (let i = 0; i < 4; i++) await flush();
+
+    // Mode stays active; the error was swallowed by the .catch on activate().
+    expect(driver.getMode?.()).toMatchObject({ active: true });
+
+    // Registry is healthy again. Second activation attempt for late-1.
+    // If stuck-state bug exists: sessionTopics.has('late-1') === true → fast-path no-op,
+    // createForumTopic never called again, afk.activated never sent.
+    await driver.handleAfkRequest('late-1');
+    for (let i = 0; i < 4; i++) await flush();
+
+    // Expected: createForumTopic called a second time (retry succeeds).
+    // Stuck-state bug: createForumTopic called only once total.
+    expect(telegram.api.createForumTopic).toHaveBeenCalledTimes(2);
   });
 });

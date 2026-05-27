@@ -25,7 +25,7 @@ function getRegistryPath(): string {
   return path.join(getReachDataDir(), 'registry.json');
 }
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) {
     console.error('[reach] Fatal: TELEGRAM_BOT_TOKEN is required');
@@ -219,7 +219,9 @@ async function main(): Promise<void> {
   });
 }
 
-main().catch((err) => {
-  console.error('[reach] Fatal:', err);
-  process.exit(1);
-});
+if (process.env.VITEST !== 'true') {
+  main().catch((err) => {
+    console.error('[reach] Fatal:', err);
+    process.exit(1);
+  });
+}

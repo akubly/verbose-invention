@@ -23,7 +23,9 @@ import {
   CHAT_ID,
   MemoryAfkRegistry,
   RelayTargetSpy,
+  TEST_TELEGRAM_USER_ID,
   loadAfkContractDriver,
+  loadAllowAllAfkContractDriver,
   makeMockTelegramBot,
   makeSessionEntry,
   type AfkContractDriver,
@@ -309,6 +311,7 @@ describe('ADR-11 AFK mode contract', () => {
 
     await driver.handleAfkRequest('sess-1');
     await flush();
+    await flush();
 
     expect(driver.getMode?.()).toMatchObject({ active: false });
     expect(telegram.api.closeForumTopic).toHaveBeenCalledWith(CHAT_ID, topicId);
@@ -321,6 +324,42 @@ describe('ADR-11 AFK mode contract', () => {
       sessionId: 'sess-1',
       error: expect.any(String),
       code: ERROR_CODES.AFK_ACTIVATION_FAILED,
+    });
+  });
+
+  it('T11 — allow-all variant: message from non-configured user is mirrored when allowedUserIds is undefined', async () => {
+    const daemon = new FakeDaemon();
+    const client = new FakeExtensionClient('sess-1', 'reach-myapp');
+    client.connect(daemon);
+    client.sendHello();
+    await flush();
+
+    const telegram = makeMockTelegramBot();
+    const registry = new MemoryAfkRegistry([makeSessionEntry()]);
+    const relayTargets = new RelayTargetSpy();
+    const driver = await loadAllowAllAfkContractDriver({
+      daemon,
+      clients: [client],
+      telegram,
+      registry,
+      relayTargets,
+      chatId: CHAT_ID,
+      now: () => ADR11_TIMESTAMP,
+      showCliMessage: vi.fn(),
+    });
+
+    await activate(driver, client);
+    const topicId = telegram.createdTopicIds[0]!;
+
+    const unknownUserId = TEST_TELEGRAM_USER_ID + 9999;
+    await driver.handleTelegramMessage(topicId, 'hello from unknown user', unknownUserId);
+    await flush();
+
+    expect(client.receivedOfType('mirror.input')).toHaveLength(1);
+    expect(client.receivedOfType('mirror.input')[0]).toMatchObject({
+      type: 'mirror.input',
+      sessionId: 'sess-1',
+      text: 'hello from unknown user',
     });
   });
 });

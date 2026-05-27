@@ -1,6 +1,8 @@
 import { vi } from 'vitest';
+import type { Bot, Context } from 'grammy';
 import { AfkModeController, type AfkModeControllerDeps, type AfkSeedDTO } from '../../src/bot/afkMode.js';
 import type { ModeState } from '../../src/bridge/protocol.js';
+import type { ISessionRegistry } from '../../src/sessions/registry.js';
 import type { FakeDaemon } from './FakeDaemon.js';
 import type { FakeExtensionClient } from './FakeExtensionClient.js';
 
@@ -163,24 +165,29 @@ export interface AfkContractDeps {
 export interface AfkContractDriver {
   handleAfkRequest(sessionId: string): Promise<void>;
   handleBackRequest(sessionId: string): Promise<void>;
-  handleTelegramMessage(topicId: number, text: string): Promise<void>;
+  handleTelegramMessage(topicId: number, text: string, fromUserId?: number): Promise<void>;
   handleCliStream?(sessionId: string, text: string): Promise<void>;
   getMode?(): ModeState;
 }
 
 export function loadAfkContractDriver(deps: AfkContractDeps): AfkContractDriver {
-  return createBotAfkDriver(AfkModeController, deps);
+  return createBotAfkDriver(AfkModeController, deps, new Set([TEST_TELEGRAM_USER_ID]));
 }
 
-function createBotAfkDriver(Ctor: typeof AfkModeController, deps: AfkContractDeps): AfkContractDriver {
+/** Allow-all variant: no allowedUserIds restriction — any user in the chat can send AFK input. */
+export function loadAllowAllAfkContractDriver(deps: AfkContractDeps): AfkContractDriver {
+  return createBotAfkDriver(AfkModeController, deps, undefined);
+}
+
+function createBotAfkDriver(Ctor: typeof AfkModeController, deps: AfkContractDeps, allowedUserIds: ReadonlySet<number> | undefined): AfkContractDriver {
   const bridge = makeBridgeAdapter(deps);
   const controllerDeps: AfkModeControllerDeps = {
-    bot: deps.telegram as never,
+    bot: deps.telegram as unknown as Bot<Context>,
     bridge,
-    registry: deps.registry as never,
+    registry: deps.registry as unknown as ISessionRegistry,
     chatId: deps.chatId,
     delay: async () => undefined,
-    options: { allowedUserIds: new Set([TEST_TELEGRAM_USER_ID]) },
+    options: allowedUserIds !== undefined ? { allowedUserIds } : {},
   };
   const controller = Ctor.forTesting(controllerDeps, seedActiveState(deps.registry)) as Record<string, unknown>;
 
@@ -197,10 +204,10 @@ function createBotAfkDriver(Ctor: typeof AfkModeController, deps: AfkContractDep
       bridge.emit('back.request', sessionId);
       await new Promise<void>((resolve) => setImmediate(resolve));
     },
-    async handleTelegramMessage(topicId: number, text: string): Promise<void> {
+    async handleTelegramMessage(topicId: number, text: string, fromUserId?: number): Promise<void> {
       await (controller.handleTelegramMessage as (ctx: unknown) => Promise<boolean>).call(
         controller,
-        makeTelegramCtx(topicId, text),
+        makeTelegramCtx(topicId, text, fromUserId),
       );
     },
     getMode(): ModeState {
@@ -274,10 +281,10 @@ function seedActiveState(registry: MemoryAfkRegistry): AfkSeedDTO {
   };
 }
 
-function makeTelegramCtx(topicId: number, text: string) {
+function makeTelegramCtx(topicId: number, text: string, fromUserId = TEST_TELEGRAM_USER_ID) {
   return {
     message: { message_thread_id: topicId, text },
     chat: { id: CHAT_ID },
-    from: { id: TEST_TELEGRAM_USER_ID },
+    from: { id: fromUserId },
   };
 }

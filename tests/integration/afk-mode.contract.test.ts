@@ -324,6 +324,8 @@ describe('ADR-11 AFK mode contract', () => {
 
     // Second activation — must create a FRESH topic (9002), not reopen 9001.
     await driver.handleAfkRequest('sess-1');
+    // Drain the fresh-activation success path: ensureTopic creates new topics for both
+    // sessions → registry.upsert for each → sendAfkActivated dispatched to each session.
     for (let i = 0; i < 8; i++) await flush();
 
     // reopenForumTopic must not have been called for 9001 (Fix A: lastTopicId was cleared).

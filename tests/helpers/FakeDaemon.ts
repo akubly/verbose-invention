@@ -128,6 +128,8 @@ export type SessionRegisteredMessage = {
   mode?: ModeState;
   /** ADR-11 late-joiner field: present when a Telegram topic is mapped. */
   topicId?: number;
+  /** R9-6: present when registration augmentation failed; contains error class name. */
+  augmenterWarning?: string;
 };
 
 export type InjectMessage = {

@@ -122,6 +122,7 @@ export interface BridgeSessionInfo {
 export interface RegistrationExtras {
   mode?: ModeState;
   topicId?: number;
+  augmenterWarning?: string;
 }
 
 /** Hook for daemon features that augment the registration acknowledgement. */
@@ -133,6 +134,7 @@ export interface RegisteredMessage {
   sessionId: string;
   mode?: ModeState;
   topicId?: number;
+  augmenterWarning?: string;
 }
 
 /** Heartbeat probe. Extension must reply `pong` with the same `id`. */

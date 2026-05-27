@@ -436,6 +436,9 @@ async function handleInject(msg) {
  * @param {{ mode?: { active?: boolean, since?: string }, topicId?: number }} msg
  */
 function handleSessionRegistered(msg) {
+  if (typeof msg.augmenterWarning === 'string') {
+    log('warn', `AFK enrichment failed (${msg.augmenterWarning}) — session has no AFK awareness`);
+  }
   if (msg.mode?.active === true) {
     showCliMessage('🛰️ AFK mode active');
     if (typeof msg.topicId === 'number') {

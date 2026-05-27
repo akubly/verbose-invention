@@ -589,7 +589,9 @@ export class ExtensionBridge implements BridgeEmitter {
           ...(typeof extras.topicId === 'number' && { topicId: extras.topicId }),
         };
       } catch (err) {
+        const warning = err instanceof Error ? err.constructor.name : 'UnknownError';
         console.warn('[bridge] Registration augmenter failed:', err instanceof Error ? err.message : String(err));
+        registrationExtras = { augmenterWarning: warning };
       }
     }
 

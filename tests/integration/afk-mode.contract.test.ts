@@ -491,7 +491,7 @@ describe('ADR-11 AFK mode contract', () => {
   });
 
   it('T13a — B7-1 race: two rapid activate calls for an unbound session both bypass the sessionTopics guard', async () => {
-    // B7-1 sub-claim 1: while mode.active === true, two rapid activate('late-1') calls both pass
+    // B7-1 sub-claim A: while mode.active === true, two rapid activate('late-1') calls both pass
     // !sessionTopics.has('late-1') because the map is only written inside ensureTopic() AFTER
     // createForumTopic resolves (line 428), not before. Both calls enter ensureTopic() and queue
     // a createForumTopic via serializedTopicOperation. Expected: exactly one topic created.
@@ -517,7 +517,7 @@ describe('ADR-11 AFK mode contract', () => {
   });
 
   it('T13b — B7-1 stuck-state: upsert failure after sessionTopics.set leaves session permanently stuck', async () => {
-    // B7-1 sub-claim 2: ensureTopic() writes sessionTopics (line 428) BEFORE registry.upsert()
+    // B7-1 sub-claim B: ensureTopic() writes sessionTopics (line 428) BEFORE registry.upsert()
     // (line 431). If upsert throws, the in-memory binding remains. Subsequent activate() calls
     // see sessionTopics.has('late-1') === true and no-op via the fast-path guard.
     const { telegram, registry, driver } = await makeHarness(
@@ -536,7 +536,7 @@ describe('ADR-11 AFK mode contract', () => {
     for (let i = 0; i < 4; i++) await flush();
 
     // Mode stays active; the error was swallowed by the .catch on activate().
-    expect(driver.getMode?.()).toMatchObject({ active: true });
+    expect(driver.getMode()).toMatchObject({ active: true });
 
     // Registry is healthy again. Second activation attempt for late-1.
     // If stuck-state bug exists: sessionTopics.has('late-1') === true → fast-path no-op,
@@ -549,10 +549,10 @@ describe('ADR-11 AFK mode contract', () => {
     expect(telegram.api.createForumTopic).toHaveBeenCalledTimes(2);
   });
 
-  it('F1a — late-register: upsert failure after topic creation leaks orphan topic', async () => {
-    // Cycle 8 F1: doEnsureTopic creates a topic (line 446-449) then calls registry.upsert (line 460).
-    // If upsert throws, the topic exists in Telegram but was never added to sessionTopics (line 472),
-    // so compensation logic has no record of it. The orphan topic is never closed.
+  it('F1a — late-register: upsert failure after topic creation triggers orphan cleanup', async () => {
+    // F1 fix: createOrReopenTopic catches upsert failure and closes the orphan topic before re-throwing.
+    // Previously (Cycle 8 F1 bug): the topic was created but never added to sessionTopics, so compensation
+    // had no record of it. The orphan was never closed. After Kat's commit 60afb67, the orphan is cleaned up.
     const { telegram, registry, driver } = await makeHarness(
       [makeSessionEntry({ sessionId: 'sess-1', sessionName: 'reach-myapp', topicId: 9001, lastTopicId: 9001, mode: 'afk', afkSince: ADR11_TIMESTAMP })],
       [
@@ -567,26 +567,25 @@ describe('ADR-11 AFK mode contract', () => {
     await driver.handleAfkRequest('late-1');
     for (let i = 0; i < 4; i++) await flush();
 
-    // Topic 9001 was created but never closed (orphan leak).
+    // F1 fix: the orphan topic (9001) was closed before re-throwing the upsert error.
     expect(telegram.createdTopicIds).toEqual([9001]);
-    expect(telegram.api.closeForumTopic).not.toHaveBeenCalled();
+    expect(telegram.api.closeForumTopic).toHaveBeenCalledWith(-1001234567890, 9001);
 
-    // Second attempt: upsert succeeds this time. A SECOND topic (9002) is created
-    // because the first attempt never wrote lastTopicId to the registry.
+    // Second attempt: upsert succeeds. A fresh topic (9002) is created because the first
+    // attempt did not persist lastTopicId (the upsert failed).
     await driver.handleAfkRequest('late-1');
     for (let i = 0; i < 4; i++) await flush();
 
-    // Bug confirmation: two topics created, neither closed.
+    // Fix verification: two topics created (9001 orphaned and cleaned, 9002 active), orphan closed.
     expect(telegram.createdTopicIds).toEqual([9001, 9002]);
-    expect(telegram.api.closeForumTopic).not.toHaveBeenCalled();
+    expect(telegram.api.closeForumTopic).toHaveBeenCalledTimes(1);
+    expect(telegram.api.closeForumTopic).toHaveBeenCalledWith(-1001234567890, 9001);
   });
 
-  it('F1b — first-activation: upsert failure after topic creation leaks orphan topic', async () => {
-    // Cycle 8 F1 variant: same leak happens during first-activation (activateAllSessions).
-    // activateAllSessions calls ensureTopic (line 281) for each session. If the first session's
-    // topic is created but its upsert throws, the topic exists in Telegram but was never added
-    // to sessionTopics (line 472), so compensatePartialActivation (line 294) only closes topics
-    // that ARE in createdBindings (which come from sessionTopics). The orphan is not closed.
+  it('F1b — first-activation: upsert failure after topic creation triggers orphan cleanup', async () => {
+    // F1 fix variant: orphan cleanup also protects first-activation (activateAllSessions).
+    // Previously: if a topic was created but upsert threw, compensation had no record and the
+    // orphan was never closed. After Kat's commit 60afb67, createOrReopenTopic closes the orphan.
     const { telegram, registry, driver } = await makeHarness(
       [
         makeSessionEntry({ sessionId: 'sess-1', sessionName: 'reach-myapp' }),
@@ -605,16 +604,17 @@ describe('ADR-11 AFK mode contract', () => {
     await driver.handleAfkRequest('sess-1');
     for (let i = 0; i < 4; i++) await flush();
 
-    // Topic 9001 was created for sess-1 but compensation did not close it (orphan leak).
+    // F1 fix: the orphan topic (9001) was closed before re-throwing the upsert error.
     expect(telegram.createdTopicIds).toEqual([9001]);
-    expect(telegram.api.closeForumTopic).not.toHaveBeenCalled();
+    expect(telegram.api.closeForumTopic).toHaveBeenCalledWith(-1001234567890, 9001);
 
-    // Second activation: both sessions succeed. Two NEW topics (9002, 9003) are created.
+    // Second activation: both sessions succeed. Two fresh topics (9002, 9003) are created.
     await driver.handleAfkRequest('sess-1');
     for (let i = 0; i < 6; i++) await flush();
 
-    // Bug confirmation: three topics created (9001 orphaned, 9002 + 9003 active), 9001 never closed.
+    // Fix verification: three topics created (9001 orphaned and cleaned, 9002 + 9003 active), orphan closed.
     expect(telegram.createdTopicIds).toEqual([9001, 9002, 9003]);
-    expect(telegram.api.closeForumTopic).not.toHaveBeenCalled();
+    expect(telegram.api.closeForumTopic).toHaveBeenCalledTimes(1);
+    expect(telegram.api.closeForumTopic).toHaveBeenCalledWith(-1001234567890, 9001);
   });
 });

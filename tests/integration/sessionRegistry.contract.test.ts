@@ -8,6 +8,10 @@
  *   1. Replace semantics: upsert(entry) → findByName returns exactly entry (no prior fields).
  *   2. Deleted-field clearing: upsert without a field → that field is undefined on next find.
  *   3. findByName for unknown: returns undefined, does not throw.
+ *   4. findAllByName for unknown: returns [] (not undefined, not throw).
+ *   5. findAllByName replace semantics: two upserts for same name produce exactly one entry.
+ *   6. findAllByName mirrors deleted-field semantics.
+ *   7. resolve returns entry for known topicId, undefined for unknown.
  *
  * History: a merge-vs-replace bug in MemoryAfkRegistry.upsert masked Fix A (commit 293e850)
  * for months — the old `{ ...prior, ...entry }` semantics caused deleted fields (e.g.,
@@ -27,6 +31,8 @@ import type { SessionEntry } from '../../src/types.js';
 interface RegistryContractSUT {
   upsert(entry: SessionEntry): Promise<void>;
   findByName(name: string): { sessionName: string; lastTopicId?: number; mode?: string } | undefined;
+  findAllByName(name: string): Array<{ sessionName: string; lastTopicId?: number; mode?: string }>;
+  resolve?(topicId: number): { sessionName: string; lastTopicId?: number; mode?: string } | undefined;
 }
 
 const BASE_ENTRY: SessionEntry = {
@@ -57,10 +63,17 @@ describe.each([
       const reg = new MemoryAfkRegistry();
       sut = {
         async upsert(entry: SessionEntry) {
+          // AfkSessionFixture is a superset of SessionEntry for test use; cast is safe because only overlapping fields are exercised.
           await reg.upsert(entry as unknown as AfkSessionFixture);
         },
         findByName(name: string) {
           return reg.findByName(name);
+        },
+        findAllByName(name: string) {
+          return reg.findAllByName(name);
+        },
+        resolve(topicId: number) {
+          return reg.resolve(topicId);
         },
       };
     }
@@ -99,5 +112,64 @@ describe.each([
     // Replace semantics: the prior lastTopicId=9001 must NOT survive into the stored entry.
     const result = sut.findByName(BASE_ENTRY.sessionName);
     expect(result?.lastTopicId).toBeUndefined();
+  });
+
+  it('findAllByName returns empty array for unknown name', () => {
+    expect(sut.findAllByName('no-such-session')).toEqual([]);
+  });
+
+  it('findAllByName replace semantics: two upserts for the same sessionName produce exactly one entry', async () => {
+    // First upsert: entry with lastTopicId=9001.
+    await sut.upsert(BASE_ENTRY);
+
+    // Second upsert: same sessionName, different lastTopicId.
+    const updated = { ...BASE_ENTRY, lastTopicId: 9002 };
+    await sut.upsert(updated);
+
+    // Replace semantics: only one entry exists, with the last-written value.
+    const results = sut.findAllByName(BASE_ENTRY.sessionName);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({
+      sessionName: BASE_ENTRY.sessionName,
+      lastTopicId: 9002,
+    });
+  });
+
+  it('findAllByName mirrors deleted-field semantics from findByName', async () => {
+    // First upsert: entry has lastTopicId set.
+    await sut.upsert(BASE_ENTRY);
+
+    // Second upsert: same sessionName, lastTopicId intentionally absent.
+    const entryWithoutLastTopicId: SessionEntry = { ...BASE_ENTRY };
+    delete entryWithoutLastTopicId.lastTopicId;
+    await sut.upsert(entryWithoutLastTopicId);
+
+    // Replace semantics: the prior lastTopicId=9001 must NOT survive.
+    const results = sut.findAllByName(BASE_ENTRY.sessionName);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.lastTopicId).toBeUndefined();
+  });
+
+  it('resolve returns entry for known topicId', async () => {
+    if (!sut.resolve) {
+      // Skip if resolve is not implemented (optional method).
+      return;
+    }
+
+    await sut.upsert(BASE_ENTRY);
+    const result = sut.resolve(BASE_ENTRY.topicId!);
+    expect(result).toMatchObject({
+      sessionName: BASE_ENTRY.sessionName,
+      lastTopicId: BASE_ENTRY.lastTopicId,
+    });
+  });
+
+  it('resolve returns undefined for unknown topicId', () => {
+    if (!sut.resolve) {
+      // Skip if resolve is not implemented (optional method).
+      return;
+    }
+
+    expect(sut.resolve(99999)).toBeUndefined();
   });
 });

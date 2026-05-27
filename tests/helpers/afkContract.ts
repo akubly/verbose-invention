@@ -58,7 +58,10 @@ export class MemoryAfkRegistry {
 
   async upsert(entry: AfkSessionFixture): Promise<void> {
     const prior = this.findByName(entry.sessionName);
-    this.upsertSync({ ...prior, ...entry, sessionId: entry.sessionId ?? prior?.sessionId ?? entry.sessionName });
+    // Replace semantics: match real SessionRegistry.upsert which stores the entry directly
+    // without merging prior state. The caller is responsible for including all desired fields.
+    // (The old merge-with-prior approach was masking Fix A's `delete rolledBack.lastTopicId`.)
+    this.upsertSync({ ...entry, sessionId: entry.sessionId ?? prior?.sessionId ?? entry.sessionName });
   }
 
   findByTopicId(topicId: number): AfkSessionFixture | undefined {

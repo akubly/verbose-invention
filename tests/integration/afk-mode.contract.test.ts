@@ -270,6 +270,76 @@ describe('ADR-11 AFK mode contract', () => {
     expect(relayTargets.topicTargets('sess-1')).toEqual([topicId]);
   });
 
+  it('T9c — partial-activation rollback clears lastTopicId so retry creates fresh topic (B6-1)', async () => {
+    // B6-1 regression: after partial-activation failure, compensatePartialActivation used to
+    // leave lastTopicId in the registry. A retry would then call reopenForumTopic on a topic
+    // whose orphaned compensation close was still in-flight, resurrecting the wrong topic.
+    //
+    // Fix A (293e850): delete rolledBack.lastTopicId in the registry-rollback loop so
+    //   the next ensureTopic call creates a fresh topic instead.
+    // Fix B (293e850): hoist activationPromise guard above mode.active check so a retry
+    //   during the ~7s compensation window cannot bypass serialization.
+    const { clients, registry, telegram, driver } = await makeHarness(
+      [
+        makeSessionEntry({ sessionId: 'sess-1', sessionName: 'reach-myapp' }),
+        makeSessionEntry({ sessionId: 'sess-2', sessionName: 'reach-api' }),
+      ],
+      [
+        { sessionId: 'sess-1', sessionName: 'reach-myapp' },
+        { sessionId: 'sess-2', sessionName: 'reach-api' },
+      ],
+    );
+    void clients; // two-session harness required for partial-activation failure path
+
+    // sess-1 creates topic 9001 via the original monotonic impl; sess-2 fails.
+    const originalCreateImpl = telegram.api.createForumTopic.getMockImplementation()!;
+    telegram.api.createForumTopic
+      .mockImplementationOnce(originalCreateImpl)            // sess-1 → 9001 (tracked by createdTopicIds)
+      .mockRejectedValueOnce(new Error('Telegram API unavailable for sess-2')); // sess-2 → throws
+
+    // closeForumTopic hangs for the compensation close of topic 9001.
+    let resolveHangingClose!: () => void;
+    const hangingClose = new Promise<boolean>((resolve) => {
+      resolveHangingClose = () => resolve(true);
+    });
+    telegram.api.closeForumTopic.mockImplementationOnce(() => hangingClose);
+
+    // First activation attempt: sess-2 fails → compensation starts, closeForumTopic hangs.
+    await driver.handleAfkRequest('sess-1');
+    await flush(); // drain to where compensatePartialActivation is blocking on Promise.race
+
+    // Advance past COMPENSATION_TIMEOUT_MS (7 000 ms) so the race resolves with a timeout error.
+    vi.advanceTimersByTime(8_000);
+    // Drain the microtask/async chain: timeout rejection → compensationClose.catch → Promise.all
+    // → compensatePartialActivation resolves → registry rollback → editGeneralSummary → error send.
+    for (let i = 0; i < 8; i++) await flush();
+
+    // Fix A: registry rollback must have removed lastTopicId for sess-1.
+    const afterRollback = registry.findBySessionId('sess-1');
+    expect(afterRollback?.lastTopicId).toBeUndefined();
+    expect(afterRollback?.mode).toBe('back');
+
+    // Fix B: mode must be inactive so the retry is not blocked.
+    expect(driver.getMode?.()).toMatchObject({ active: false });
+
+    // Second activation — must create a FRESH topic (9002), not reopen 9001.
+    await driver.handleAfkRequest('sess-1');
+    for (let i = 0; i < 8; i++) await flush();
+
+    // reopenForumTopic must not have been called for 9001 (Fix A: lastTopicId was cleared).
+    expect(telegram.api.reopenForumTopic).not.toHaveBeenCalledWith(CHAT_ID, 9001);
+    // createForumTopic must have been called again on the retry (fresh topic 9002).
+    expect(telegram.createdTopicIds).toContain(9002);
+
+    // Release the hanging close — compensation already timed out; this resolves the dangling
+    // promise so no unhandled-rejection warnings surface after the test.
+    resolveHangingClose();
+    await flush();
+
+    // Second activation completes successfully.
+    expect(driver.getMode?.()).toMatchObject({ active: true });
+  });
+
   it('T9 — Telegram API failure during activate rolls back state and delivers error frame to extension', async () => {    const { client, telegram, registry, driver } = await makeHarness();
 
     // Simulate Telegram API failure on the first topic creation.
@@ -399,10 +469,18 @@ describe('ADR-11 AFK mode contract', () => {
     await activate(driver, client);
     const topicId = telegram.createdTopicIds[0]!;
 
+    // Clear sendMessage call history from activation so the assertion below
+    // cleanly checks only whether the wrong-chat event triggered a reply.
+    telegram.api.sendMessage.mockClear();
+
     const WRONG_CHAT = CHAT_ID - 1;
     await driver.handleTelegramMessage(topicId, 'evil input', TEST_TELEGRAM_USER_ID, WRONG_CHAT);
     await flush();
 
     expect(client.receivedOfType('mirror.input')).toHaveLength(0);
+    // M6-3: silent rejection — no Telegram reply to the wrong-chat sender.
+    expect(telegram.api.sendMessage).not.toHaveBeenCalled();
+    // Note: console.error/console.warn log-level assertions are not added here because the
+    // wrong-chat guard is a silent early-return (no log emitted by design per I6-3 comment).
   });
 });

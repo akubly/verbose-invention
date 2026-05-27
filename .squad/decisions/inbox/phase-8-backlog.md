@@ -4,14 +4,31 @@ Items deferred from the Cycle 4 review wave to keep scope contained. Tracked
 here for follow-up planning before or during Phase 8.
 
 Updated after Cycle 5 (architect5 findings incorporated).
+Updated after Cycle 6 (Skeptic6 flag on A8, architect6 A6-6 watch).
 
 ---
 
-## ✅ CLOSED — A8 / F1 / I5-3 — Composition root extraction
+## A8 — Composition root validation (REOPENED Cycle 6)
+
+Previously closed on LOC reduction (main.ts 221→90). Skeptic6 correctly
+flagged that LOC alone is not "composition root proven clean." Still missing:
+
+- End-to-end smoke test for `main()` pairing-mode early-return path
+- End-to-end smoke test for `main()` config-file env resolution branch
+- (No new code; gates closure on having those tests)
+
+**Target:** Phase 8 — small integration test harness for main() that mocks
+process.env and verifies the two branches behave correctly without
+actually starting grammY/bridge servers.
+
+---
+
+## ✅ CLOSED — A8 / F1 / I5-3 — Composition root extraction (original)
 
 `main.ts` was 221 LOC at the start of Cycle 5. Kat's I5-3 (`src/config/env.ts`,
-`src/bot/pairing.ts`) reduced it to ~90 LOC. The A8 watch item is resolved.
+`src/bot/pairing.ts`) reduced it to ~90 LOC. LOC reduction complete.
 Carter's I5-2 (`src/bin.ts`) also cleaned up the entry-point boundary.
+(See A8 REOPENED above for outstanding test coverage gate.)
 
 ---
 
@@ -89,6 +106,16 @@ the config-file branch is wired correctly in the composition root.
 ---
 
 ## Architect Watch (ongoing)
+
+### A6-6 — Compensation parallel close burst (Cycle 6 watch)
+
+`compensatePartialActivation` fires `closeForumTopic` for all rolled-back
+bindings via `Promise.all` — no rate-limit pacing. At small N (≤5
+sessions) the `withRateLimitRetry` per-call handles 429s. Watch threshold:
+if session count grows past ~15 OR if Telegram 429 retries become
+observable in logs, batch closes in groups of 5 with a small gap.
+
+Source: architect6 review, Cycle 6.
 
 ### Module isolation for `main.ts`
 

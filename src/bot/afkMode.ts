@@ -2,18 +2,13 @@ import type { Bot, Context } from 'grammy';
 import type { ISessionRegistry } from '../sessions/registry.js';
 import { ERROR_CODES, type BridgeSessionInfo, type ModeState, type RegistrationExtras } from '../bridge/protocol.js';
 import type { AfkBridgePort } from './afkBridgePort.js';
+import { AfkStreamRouter } from './afkStreamRouter.js';
 
 export interface TopicBinding extends BridgeSessionInfo {
   topicId: number;
   topicUrl: string;
 }
 
-interface StreamState {
-  topicId: number;
-  text: string;
-  messageId?: number;
-  lastEditAt: number;
-}
 
 export interface AfkModeOptions {
   allowedUserIds?: ReadonlySet<number>;
@@ -46,7 +41,6 @@ interface MirrorRateState {
 }
 
 const TOPIC_OP_GAP_MS = 250;
-const STREAM_EDIT_THROTTLE_MS = 800;
 const MAX_RETRIES = 4;
 const MAX_MIRROR_TEXT_LENGTH = 4096;
 const MIRROR_RATE_WINDOW_MS = 60_000;
@@ -93,12 +87,9 @@ export class AfkModeController {
   private topicQueue: Promise<unknown> = Promise.resolve();
   private generalSummaryMessageId: number | undefined;
   private activationPromise: Promise<void> | undefined;
-  private readonly streamStates = new Map<string, StreamState>();
-  private readonly streamChains = new Map<string, Promise<void>>();
   private readonly mirrorRates = new Map<string, MirrorRateState>();
   private globalMirrorRate: MirrorRateState = { windowStartMs: 0, count: 0 };
-  /** Per-session index of active request IDs for O(1) disconnect cleanup. */
-  private readonly sessionRequestIds = new Map<string, Set<string>>();
+  private readonly streamRouter: AfkStreamRouter;
   /** Deduplication gate: sessionId → in-flight ensureTopic promise. Prevents concurrent calls
    *  from creating multiple topics for the same session (B7-1 sub-claim A). */
   private readonly pendingTopicEnsures = new Map<string, Promise<TopicBinding>>();
@@ -111,6 +102,12 @@ export class AfkModeController {
     private readonly delay: (ms: number) => Promise<void> = sleep,
     private readonly options: AfkModeOptions = {},
   ) {
+    this.streamRouter = new AfkStreamRouter({
+      getTopicId: (id) => this.sessionTopics.get(id)?.topicId,
+      isActive: () => this.mode.active,
+      bot: this.bot,
+      chatId: this.chatId,
+    });
     this.bridge.on('afk.request', (sessionId) => {
       this.activate(sessionId).catch((err) => { console.error('[afk] activate failed (session %s):', sessionId, errorText(err)); });
     });
@@ -121,10 +118,10 @@ export class AfkModeController {
       this.handleDisconnect(sessionId).catch((err) => { console.error('[afk] handleDisconnect failed (session %s):', sessionId, errorText(err)); });
     });
     this.bridge.on('stream', (sessionId, requestId, chunk, done) => {
-      this.enqueueStream(sessionId, requestId, chunk, done);
+      this.streamRouter.enqueueChunk(sessionId, requestId, chunk, done);
     });
     this.bridge.on('stream.error', (sessionId, requestId, error) => {
-      this.enqueueStreamError(sessionId, requestId, error);
+      this.streamRouter.enqueueError(sessionId, requestId, error);
     });
     this.bridge.setRegistrationAugmenter((session) => this.registrationExtras(session));
   }
@@ -240,7 +237,7 @@ export class AfkModeController {
       this.mode = { active: false, since: '' };
       this.sessionTopics.clear();
       this.topicSessions.clear();
-      this.sessionRequestIds.clear();
+      this.streamRouter.reset();
       this.pendingTopicEnsures.clear();
       // Best-effort registry rollback: revert any entries we flipped to 'afk'.
       // Runs BEFORE compensatePartialActivation so that if registrationExtras triggers
@@ -391,11 +388,9 @@ export class AfkModeController {
     this.mode = { active: false, since: new Date().toISOString() };
     this.sessionTopics.clear();
     this.topicSessions.clear();
-    this.streamStates.clear();
-    this.streamChains.clear();
+    this.streamRouter.reset();
     this.mirrorRates.clear();
     this.globalMirrorRate = { windowStartMs: 0, count: 0 };
-    this.sessionRequestIds.clear();
 
     for (const session of this.bridge.listSessions()) {
       this.bridge.sendToSession(session.sessionId, { type: 'back.confirmed', sessionId: session.sessionId });
@@ -567,91 +562,12 @@ export class AfkModeController {
     this.sessionTopics.delete(sessionId);
     this.topicSessions.delete(binding.topicId);
     this.mirrorRates.delete(sessionId);
-    // O(1) cleanup using the sessionRequestIds index instead of O(n) key-scan.
-    const requestIds = this.sessionRequestIds.get(sessionId);
-    if (requestIds) {
-      for (const requestId of requestIds) {
-        const key = `${sessionId}:${requestId}`;
-        this.streamChains.delete(key);
-        this.streamStates.delete(key);
-      }
-      this.sessionRequestIds.delete(sessionId);
-    }
+    this.streamRouter.cleanupSession(sessionId);
     const existing = this.resolveBindingEntry(binding);
     if (existing) {
       const disconnectedEntry = { ...existing, mode: 'back' as const, lastTopicId: binding.topicId };
       delete disconnectedEntry.afkSince;
       await this.registry.upsert(disconnectedEntry);
-    }
-  }
-
-  private enqueueStream(sessionId: string, requestId: string, chunk: string, done: boolean): void {
-    const key = `${sessionId}:${requestId}`;
-    // Track request IDs per session for O(1) disconnect cleanup.
-    let ids = this.sessionRequestIds.get(sessionId);
-    if (!ids) { ids = new Set(); this.sessionRequestIds.set(sessionId, ids); }
-    if (!ids.has(requestId)) ids.add(requestId);
-
-    const next = (this.streamChains.get(key) ?? Promise.resolve())
-      .then(() => this.handleStream(sessionId, requestId, chunk, done))
-      .catch((err) => console.warn('[afk] Failed to route stream:', errorText(err)));
-    this.streamChains.set(key, next);
-    if (done) {
-      next.finally(() => {
-        this.streamChains.delete(key);
-        this.sessionRequestIds.get(sessionId)?.delete(requestId);
-      });
-    }
-  }
-
-  private enqueueStreamError(sessionId: string, requestId: string, error: string): void {
-    const key = `${sessionId}:${requestId}`;
-    const next = (this.streamChains.get(key) ?? Promise.resolve())
-      .then(() => this.handleStreamError(sessionId, requestId, error))
-      .catch((err) => console.warn('[afk] Failed to route stream error:', errorText(err)))
-      .finally(() => {
-        this.streamChains.delete(key);
-        this.sessionRequestIds.get(sessionId)?.delete(requestId);
-      });
-    this.streamChains.set(key, next);
-  }
-
-  private async handleStream(sessionId: string, requestId: string, chunk: string, done: boolean): Promise<void> {
-    if (!this.mode.active) return;
-    const binding = this.sessionTopics.get(sessionId);
-    if (!binding) return;
-
-    const key = `${sessionId}:${requestId}`;
-    let state = this.streamStates.get(key);
-    if (!state) {
-      state = { topicId: binding.topicId, text: '', lastEditAt: 0 };
-      this.streamStates.set(key, state);
-      const placeholder = await this.bot.api.sendMessage(this.chatId, '…', { message_thread_id: binding.topicId });
-      state.messageId = placeholder.message_id;
-    }
-
-    try {
-      state.text += chunk;
-      const now = Date.now();
-      if (state.messageId !== undefined && (done || now - state.lastEditAt >= STREAM_EDIT_THROTTLE_MS)) {
-        await this.bot.api.editMessageText(this.chatId, state.messageId, state.text || '_(empty response)_');
-        state.lastEditAt = now;
-      }
-    } finally {
-      if (done) this.streamStates.delete(key);
-    }
-  }
-
-  private async handleStreamError(sessionId: string, requestId: string, error: string): Promise<void> {
-    const binding = this.sessionTopics.get(sessionId);
-    if (!binding) return;
-    const key = `${sessionId}:${requestId}`;
-    const state = this.streamStates.get(key);
-    this.streamStates.delete(key);
-    if (state?.messageId !== undefined) {
-      await this.bot.api.editMessageText(this.chatId, state.messageId, `❌ Error: ${error}`);
-    } else {
-      await this.bot.api.sendMessage(this.chatId, `❌ Error: ${error}`, { message_thread_id: binding.topicId });
     }
   }
 
@@ -695,7 +611,7 @@ export class AfkModeController {
   /**
    * @visibleForTesting — Test-only factory that seeds AFK state from a DTO.
    *
-   * Note: streamStates, streamChains, and sessionRequestIds are not seeded —
+   * Note: stream state is managed by AfkStreamRouter and is not seeded —
    * they self-populate on new events.
    */
   public static forTesting(deps: AfkModeControllerDeps, seed: AfkSeedDTO = {}): AfkModeController {

@@ -182,3 +182,31 @@ Validation: `npx tsc --noEmit`, `npm run lint`, targeted AFK contract tests, tar
 
 **Boundary note:** Jun owns the env-var test variant for N2 (`TELEGRAM_ALLOWED_USER_IDS=,` corner case) and the N3 end-to-end integration test through `main()`. This entry covers only the production guard + direct unit test for the config-JSON path.
 
+---
+
+## Learnings — 2026-05-28T10:00:30-07:00 — Phase 8 F4: afkMode.ts soft refactor
+
+**Trigger:** `afkMode.ts` hit 733 LOC, crossing the F4 watch threshold.
+**Disposition:** Soft refactor (Aaron's choice) — no compensation extraction; honest subsystem split only.
+
+**New file: `src/bot/afkStreamRouter.ts` (133 LOC)**
+
+Extracted the complete stream routing subsystem out of `AfkModeController` into `AfkStreamRouter`:
+- `StreamState` interface (private to module)
+- `STREAM_EDIT_THROTTLE_MS` constant
+- Three private maps: `streamStates`, `streamChains`, `sessionRequestIds`
+- Four methods: `enqueueChunk` (was `enqueueStream`), `enqueueError` (was `enqueueStreamError`), `handleChunk` (was `handleStream`), `handleError` (was `handleStreamError`)
+- Two lifecycle methods: `cleanupSession(sessionId)` (replaces inline 9-line O(1) cleanup in `handleDisconnect`) and `reset()` (replaces three `.clear()` calls in `deactivate` + activation rollback)
+
+**Dependency injection pattern:** `AfkStreamRouter` takes a `deps` object with `getTopicId`, `isActive`, `bot`, and `chatId`. No imports back into `afkMode.ts` — dependency direction is clean (router → afkMode for `TopicBinding` is avoided by using a `getTopicId` callback instead of passing the full binding).
+
+**Final LOC:**
+- `src/bot/afkMode.ts`: 649 LOC (was 733; −84)
+- `src/bot/afkStreamRouter.ts`: 133 LOC (new)
+
+**Validation:** `npx tsc --noEmit` clean, `npx vitest run` 515 passed / 4 skipped / 0 failed, `npm run lint` 0 warnings.
+
+**Constraint respected:** `compensatePartialActivation` stays inline in `afkMode.ts` — single caller, single failure-rollback path, no second compensation path yet.
+
+**Architectural note filed to inbox** (see `kat-afkmode-refactor-insights.md`): the `allowMirrorInput` method + `mirrorRates`/`globalMirrorRate` fields form a second extractable subsystem ("mirror rate limiter") if the file grows again. Not acted on.
+

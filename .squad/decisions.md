@@ -3125,3 +3125,147 @@ npm run lint              → 0 warnings, exit 0
 - No production code changes were made; all changes are in test files.
 
 
+---
+
+# Phase 8 Watch Sweep — Complete
+
+**Date:** 2026-05-28T10:00:30-07:00  
+**Coordinator:** Scribe (audit), Kat (F4 refactor), Jun (A6-6 verdict)  
+**Phase 8 status:** P1 SHIPPED (2026-05-27) + watch sweep COMPLETE (2026-05-28)
+
+## Audit Summary
+
+Jun (explore agent) audited all P2/watch items against current trigger conditions:
+- **F4:** FIRED — `afkMode.ts` 733 LOC > 700 threshold
+- **A6-6:** Audit complete; Jun verdict = CLOSED
+- **A2, F8, F5, A10-4:** DORMANT (no trigger conditions met)
+
+No files written by audit.
+
+---
+
+## F4 Soft Refactor — afkMode.ts → afkStreamRouter.ts
+
+**Date:** 2026-05-28T10:00:30-07:00  
+**Author:** Kat  
+**Trigger:** F4 watch fired — `afkMode.ts` reached 733 LOC (threshold: 700)  
+**Disposition:** Soft refactor (Aaron's choice) — split cohesive subsystems; no compensation extraction
+
+### Decision
+
+Extracted the stream routing subsystem from `AfkModeController` into a new sibling module `src/bot/afkStreamRouter.ts`.
+
+### Files Changed
+
+| File | LOC | Responsibility |
+|---|---|---|
+| **new:** `src/bot/afkStreamRouter.ts` | 133 | Chain-serialized stream routing: manages `streamStates`, `streamChains`, `sessionRequestIds` maps and all stream event handling logic |
+| **modified:** `src/bot/afkMode.ts` | 733 → 649 | Removed stream routing, kept `compensatePartialActivation` inline (no second compensation path yet) |
+
+### What Moved
+
+- `StreamState` interface
+- `STREAM_EDIT_THROTTLE_MS` constant
+- Three private maps (`streamStates`, `streamChains`, `sessionRequestIds`)
+- Four methods: `enqueueStream`, `enqueueStreamError`, `handleStream`, `handleStreamError`
+- Inline cleanup in `handleDisconnect` and activation rollback (replaced by `streamRouter.cleanupSession()` / `streamRouter.reset()`)
+
+### What Did NOT Move
+
+- `compensatePartialActivation` — stays inline (single caller, no second compensation path yet)
+- All public exports and behavior — unchanged
+- `afkBridgePort.ts` — untouched
+
+### Design Rationale
+
+`AfkStreamRouter` has a single clear responsibility: manage chain-serialized state for routing CLI stream output to Telegram topics during AFK mode. Its dependencies are injected via a `deps` object, keeping the dependency direction clean and enabling independent testing.
+
+### Validation
+
+- `npx tsc --noEmit` — clean
+- `npx vitest run` — **515 passed / 4 skipped / 0 failed** (39 test files)
+- `npm run lint` — 0 warnings
+
+---
+
+## A6-6 Verdict — Fleet Compensation Close Burst ✅ CLOSED
+
+**Date:** 2026-05-28T10:00:30-07:00  
+**Author:** Jun (Test Engineer)  
+**Requested by:** Aaron Kubly
+
+### Verdict
+
+The parallel `Promise.all` close burst in `compensatePartialActivation` plus per-call `withRateLimitRetry` is **safe at N=20+ sessions**. The A6-6 watch is **RESOLVED**.
+
+### Tests Written
+
+**File:** `tests/integration/afk-mode-fleet-compensation.test.ts` (new, 2 tests)
+
+Both tests **GREEN** — `517 passed / 4 skipped / 0 failed` (full suite).
+
+#### TC-A6-6-1 — No 429s, N=20
+
+Activation forced to fail at `postGeneralSummary` (after all 20 topics created). Validates:
+- `createForumTopic` called exactly 20 times ✅
+- `closeForumTopic` called exactly 20 times (no leaks) ✅
+- All 20 topic IDs unique in close calls (no leaks, no wrong IDs) ✅
+- No duplicate closes ✅
+- 20 compensation timeout timers pending (all closes completed before 7 s cap) ✅
+
+#### TC-A6-6-2 — 429 pressure, 7/20 topics, N=20
+
+Same failure trigger. `closeForumTopic` returns 429 on first call for 7 topics; second call (retry) succeeds. Validates:
+- All 20 unique topic IDs eventually closed ✅
+- Total close calls = 20 + 7 retries = 27 ✅
+- 7 topics actually retried ✅
+- 20 compensation timeouts pending (none fired) ✅
+- `[afk] Rate-limited` warning emitted exactly 7 times ✅
+
+### Evidence for CLOSED
+
+1. **Timeout cap bounds wall time** — Each `compensationClose` races against `COMPENSATION_TIMEOUT_MS = 7000 ms`. Max wall time ≤ 7 s, not N × 7 s.
+2. **Per-call retry is bounded** — `withRateLimitRetry` caps at `MAX_RETRIES = 4` and `MAX_RATE_LIMIT_DELAY_MS = 30 000 ms`. Infinite thrashing structurally impossible.
+3. **Compensation is best-effort** — Each close wrapped in `.catch() => log`. Failed close logs warning, added to `failures[]`, but does not cancel other closes or throw.
+4. **Test validates at trigger threshold** — Watch fired at N > 15. TC-A6-6-1/2 exercise N = 20 cleanly.
+
+---
+
+## Architectural Note — Mirror Rate Limiter Extraction (Future)
+
+**Date:** 2026-05-28T10:00:30-07:00  
+**Author:** Kat  
+**Context:** Observed during F4 soft refactor  
+**Triage owner:** Noble Six (architecture review at next pass)
+
+During stream routing extraction, `allowMirrorInput` + `mirrorRates`/`globalMirrorRate` became visible as a second cohesive, extractable unit:
+
+- `allowMirrorInput(sessionId)` — pure logic, no Telegram API calls
+- `mirrorRates: Map<string, MirrorRateState>` — per-session sliding window
+- `globalMirrorRate: MirrorRateState` — cross-session cap
+
+**Why not extracted now:** `afkMode.ts` is at 649 LOC after stream router split — comfortably under 700. Premature extraction would add interface surface without pressure.
+
+**Natural trigger:** Extract a `MirrorRateLimiter` class if `afkMode.ts` approaches 700 again, or if rate-limit logic gains complexity (e.g., configurable limits, burst allowance, per-user caps).
+
+**Design note:** `MirrorRateLimiter` would be clean to extract — it only reads `Date.now()` and manages its own maps. No bot API calls, no session topology. Could even be a pure functional module.
+
+---
+
+## Phase 8 Watch Status Summary
+
+| Watch | Status | Disposition |
+|---|---|---|
+| F4 | ✅ RESOLVED | Soft refactor: extracted `afkStreamRouter.ts` (133 LOC); `afkMode.ts` now 649 LOC |
+| A6-6 | ✅ CLOSED | Promise-all burst safe at N=20+; compensation logic validated via TC-A6-6-1/2 |
+| A2 | DORMANT | P2; defer until first relay error code is added |
+| F8 | DORMANT | P2; extract when dynamic auth arrives |
+| F5 | DORMANT | P2; trigger if `AfkBridgePort` event count ≥ 8 or spans two unrelated domains |
+| A10-4 | DORMANT | Future; trigger when Phase 8 adds fourth operation to topic lifecycle |
+
+**Remaining open items** (from Phase 8 backlog, not watch-triggered):
+- None — all P1 items (A7, N2, N3, A8) resolved in Phase 8 P1 sprint (2026-05-27)
+
+**Phase 8 Status:** P1 SHIPPED (2026-05-27) + watch sweep COMPLETE (2026-05-28). Remaining P2/dormant watches stay dormant per Cycle 7 triage.
+
+

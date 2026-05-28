@@ -1,14 +1,52 @@
 ---
-updated_at: 2026-05-27T23:48:20Z
-focus_area: Phase 8 P1 SHIPPED. A7 + A8 + N2 + N3 all delivered. Next: Noble Six review → ship-to-pr.
+updated_at: 2026-05-28T17:00:30Z
+focus_area: Phase 8 COMPLETE — P1 SHIPPED (2026-05-27) + watch sweep COMPLETE (2026-05-28). F4 resolved (afkMode refactor), A6-6 closed (fleet validation). Ready for ship-to-pr or next task.
 active_issues: []
 ---
 
-# Session Handoff — 2026-05-27
+# Session Handoff — 2026-05-28 (Watch Sweep Complete)
 
 ## What Just Shipped
 
-**Phase 8 P1 Sprint — Integration Testing & Configuration Guards (COMPLETE ✅)**
+**Phase 8 Watch Sweep — Post-P1 Audit & Dispositions (COMPLETE ✅)**
+
+This session audited all Phase 8 P2/watch items and resolved fired watches:
+
+- ✅ **F4 Watch (Kat):** Soft refactor — extracted stream routing subsystem
+  - New file: `src/bot/afkStreamRouter.ts` (133 LOC, single responsibility: chain-serialized stream routing)
+  - Modified: `afkMode.ts` (733 → 649 LOC, below threshold)
+  - What moved: 4 methods + 3 maps + stream state management
+  - What stayed: `compensatePartialActivation` (no second path yet), public exports
+  - Mirror rate limiter identified as future extractable subsystem (design note flagged for Noble Six)
+  - Status: RESOLVED; watch dormant until second compensation path appears or file grows past 700 LOC again
+
+- ✅ **A6-6 Watch (Jun):** Fleet compensation close burst — CLOSED
+  - New test file: `tests/integration/afk-mode-fleet-compensation.test.ts` (2 tests, N=20 validation)
+  - TC-A6-6-1: Parallel `Promise.all` close burst, no 429s — all closes complete before 7 s timeout, no leaks ✅
+  - TC-A6-6-2: 429 retry path — 7/20 topics 429→retry, all retries succeed, timeout holds ✅
+  - Evidence: Timeout cap (7 s) bounds wall time independently of N; per-call retry bounded; best-effort semantics prevent cascades
+  - Status: CLOSED; no code redesign needed; watch dormant until second compensation path appears
+
+- ✅ **Audit (Jun):** All Phase 8 P2/watch items audited
+  - F4: FIRED ✅ (733 LOC > 700 threshold)
+  - A6-6: CLOSED ✅ (validation complete)
+  - A2, F8, F5, A10-4: DORMANT (no trigger conditions met)
+
+**Test baseline:** 517 passed / 4 skipped / 0 failed (fleet test added). All code validated (tsc clean, lint zero warnings).
+
+**Post-Watch-Sweep Housekeeping:**
+- ✅ Phase 8 watch sweep results merged into `decisions.md` (Phase 8 Watch Sweep section + watch status summary table)
+- ✅ 4 inbox files processed and deleted (jun-a66-verdict, kat-f4-soft-refactor, kat-afkmode-refactor-insights, phase-8-backlog)
+- ✅ Orchestration logs written:
+  - `.squad/orchestration-log/2026-05-28T17-00-30Z-kat-f4-refactor.md` (stream router extraction design + validation)
+  - `.squad/orchestration-log/2026-05-28T17-00-30Z-jun-a66-verdict.md` (fleet test results + safety evidence)
+  - `.squad/orchestration-log/2026-05-28T17-00-30Z-jun-audit.md` (watch audit findings)
+- ✅ Session log written (`.squad/log/2026-05-28T17-00-30Z-phase8-watch-sweep.md`)
+- ✅ Agent histories updated (Noble Six + Carter: Phase 8 watch sweep notes)
+
+**Current HEAD:** origin/main. All changes staged for commit.
+
+## What Just Shipped (Prior Session — Phase 8 P1 Sprint)
 
 - ✅ **A7 (Carter):** Inbound message shape drift coverage — 30 new assertions
   - All 6 inbound message types covered (hello, pong, stream, stream.error, afk.request, back.request)
@@ -44,7 +82,20 @@ active_issues: []
 
 ## What's Pending
 
-**Phase 8 Closure (Post-Review)**
+**Phase 8 Status:** Complete
+- P1 sprint: SHIPPED (2026-05-27)
+- Watch sweep: COMPLETE (2026-05-28)
+- All deliverables merged into decisions.md and orchestrated
+- Remaining P2 watches (A2, F8, F5, A10-4) dormant per Cycle 7 triage
+
+**Next Steps (Aaron Decides):**
+1. **ship-to-pr** — Create final PR with all Phase 8 changes (P1 + watch sweep), request review, merge
+2. **Noble Six review** — Architect reviews watch sweep disposition decisions (F4 soft refactor strategy, A6-6 safety evidence, architectural notes)
+3. **Pivot to new task** — If Aaron has next priority, Scribe can reset and begin work
+
+**Phase 8 Closure Note:** All items delivered. Code stable. Ready for ship-to-pr or next sprint assignment.
+
+## What's Pending (Prior Session — Phase 8 P1)
 
 Awaiting Noble Six review of Phase 8 P1 changes. Once approved:
 1. **ship-to-pr** — Create final PR and request merge review
@@ -78,16 +129,23 @@ All P1 items (A7, A8, N2, N3) marked ✅ CLOSED.
 
 ---
 
-## Latest Artifacts
+## Latest Artifacts (Phase 8 Watch Sweep)
 
-- **Decisions:** `.squad/decisions.md` (ADRs 1–11 + Phase 8 P1 section, 158KB)
-- **Orchestration:** Phase 8 P1 logs (Kat, Carter, Jun) + session log
-- **Git state:** origin/main (ready for commit staging)
-- **Test baseline:** 515 passed / 4 skipped / 0 failed
+- **Decisions:** `.squad/decisions.md` (Phase 8 watch sweep section merged, 160KB+)
+- **Orchestration:** Phase 8 watch sweep logs (Kat F4, Jun A6-6 verdict, Jun audit)
+- **Session logs:** `.squad/log/2026-05-28T17-00-30Z-phase8-watch-sweep.md`
+- **Agent histories:** Noble Six + Carter updated with watch sweep notes
+- **Git state:** All Phase 8 changes ready for commit
+- **Test baseline:** 517 passed / 4 skipped / 0 failed
 
 ## No Blockers
 
 - Phase 8 P1 complete and shipped
+- Watch sweep audit complete
+- F4 soft refactor delivered
+- A6-6 fleet validation closed
 - All tests green
 - Zero ADR drift detected
-- Ready for Noble Six review → ship-to-pr
+- Code ready for ship-to-pr or next sprint
+
+## Latest Artifacts (Phase 8 P1)

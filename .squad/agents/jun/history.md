@@ -99,3 +99,44 @@ Earlier learnings (Phases 1–5, Phase 6 Spike methodology) in `history-archive.
 **Verification:** `npx tsc --noEmit` GREEN. `npx vitest run` — 515 passed / 4 skipped / 0 failed (39 files). `npm run lint` — 0 warnings.
 
 ## Learnings
+
+### 2026-05-28T10:00:30-07:00 — A6-6 Fleet Compensation Verdict
+
+**Task:** Resolve A6-6 architect watch (compensatePartialActivation parallel close
+burst at N>15 under 429 pressure).
+
+**Approach:** Created `tests/integration/afk-mode-fleet-compensation.test.ts` with
+two fleet-scale tests exercising the public AfkMode surface only. Activation is
+forced to fail at `postGeneralSummary` (called after all N topics are created),
+so compensation runs over the full fleet.
+
+**Mocking pattern:**
+- `sendMessage` mock: throw when `options?.parse_mode === 'MarkdownV2'` (unique
+  to the general summary call). Per-topic messages use `message_thread_id`
+  instead and are not affected.
+- `closeForumTopic` 429 mock: pre-calculate target topic IDs from the mock's
+  deterministic `nextTopicId` counter (starts at 9001, increments per call). Use
+  `Object.assign(new Error(), { error_code: 429, parameters: { retry_after: 1 } })`
+  to match the `retryAfterMs()` detection shape.
+- `delay: async () => undefined` (no-op) so `withRateLimitRetry` retries complete
+  as microtasks without real clock advancement.
+- `vi.useFakeTimers` prevents the `COMPENSATION_TIMEOUT_MS` race timer from
+  firing; `vi.getTimerCount() === FLEET_SIZE` after compensation confirms all
+  closes completed before the 7 s cap.
+
+**Key flush insight:** With `vi.useFakeTimers` and a no-op `delay`, the entire
+activation + compensation chain (including all N topic creates, sends, and closes)
+completes in the microtask drain that happens BEFORE the `setImmediate` in
+`handleAfkRequest`. A single `drainAsync()` (or even just the `await
+driver.handleAfkRequest(...)` call itself) is sufficient.
+
+**Verdict:** ✅ CLOSED — safe at N=20+. `COMPENSATION_TIMEOUT_MS = 7 s` caps
+per-close wall time (so `Promise.all` wall clock = MAX not SUM), `MAX_RETRIES = 4`
+prevents infinite thrash. All 20 topics close cleanly with or without 429 pressure.
+
+**Files produced:**
+- `tests/integration/afk-mode-fleet-compensation.test.ts` — TC-A6-6-1, TC-A6-6-2
+- `.squad/decisions/inbox/jun-a66-verdict.md` — verdict + evidence
+- `.squad/skills/fleet-simulation/SKILL.md` — reusable fleet-simulation pattern
+- `.squad/decisions/inbox/phase-8-backlog.md` — A6-6 updated to RESOLVED
+

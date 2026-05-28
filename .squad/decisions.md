@@ -1906,6 +1906,81 @@ The protocol surface is designed so Phase 8 stories can reuse existing infrastru
 3. **Persistent mode state.** v1 is memory-only. If crash recovery becomes a requirement, a `~/.reach/mode.json` file with daemon as authoritative reader is the upgrade path.
 4. **Backpressure under multi-session AFK.** Five sessions streaming simultaneously may hit Telegram's 20 msg/sec flood limit. Handled at the relay layer (Kat's per-topic throttle), not the protocol layer. Monitor during dogfooding.
 
+---
+
+## 13. Subsequent Amendments (Phase 7 Implementation)
+
+**Context:** During Phase 7 implementation cycles 3-10, eight review waves discovered five production bugs and revealed necessary clarifications to the original ADR-11 decisions. These amendments document the iterative refinements made by Kat (implementer) across cycles 3-7.
+
+**Cycle coverage:**
+- **Cycle 3-5:** Initial AFK mode implementation + first test wave
+- **Cycle 6 (B6-1):** Detached compensation race — resurrection via `lastTopicId`
+- **Cycle 7 (B7-1):** Late-register race + stuck-state — `ensureTopic` ordering fix
+
+---
+
+### D1 — Wire Protocol: `error` Frame
+
+Add a daemon-to-extension `error` frame for protocol-level error signaling:
+
+```json
+{ "type": "error", "sessionId": "abc-123", "error": "Not in AFK mode.", "code": "afk.not_active" }
+```
+
+**Schema:** `{ type: 'error', sessionId: string, error: string, code?: string }`
+
+**Well-known codes:** Exported from `src/bridge/protocol.ts` as `ERROR_CODES`. Codes are advisory and non-breaking — clients should always check the type and display the `error` string.
+
+---
+
+### D2 — Boundary: `AfkBridgePort`
+
+`AfkModeController` depends on the narrow `AfkBridgePort` port, not the concrete bridge adapter. `ExtensionBridge` satisfies the port structurally and is wired at the composition root (`src/main.ts`). Tests provide adapters through `FakeBridge`/contract helpers so AFK mode can be exercised without a named-pipe server.
+
+---
+
+### D3 — Auth: `allowedUserIds` Semantics
+
+The chat ID guard always applies. `allowedUserIds: undefined` means allow all Telegram users inside the configured chat with no user-level gate. `allowedUserIds: Set([...ids])` enables a fail-closed user allowlist. `allowedUserIds: Set([])` is an explicit deny-all state and should be treated as a misconfiguration, not as unset.
+
+**Env-var layer:** `TELEGRAM_ALLOWED_USER_IDS=""` (empty string after trim) is the misconfiguration signal and causes a fatal startup error. `TELEGRAM_ALLOWED_USER_IDS` unset is the documented allow-all entry point; the daemon must emit a loud startup warning that names the configured chat ID and states explicitly that all chat members can send AFK mirror input.
+
+---
+
+### D4 — Testing Seam: `AfkModeController.forTesting(seedDTO)`
+
+`AfkModeController.forTesting(deps, seedDTO)` is the accepted test-only construction seam for seeded AFK state. The seed is a DTO, not raw internal Maps, and the factory rebuilds private controller state internally. The factory is protected by a runtime guard and throws unless `NODE_ENV === 'test'` or `VITEST === 'true'`.
+
+---
+
+### D5 — Compensation Semantics (Cycle 6/7 Clarification)
+
+**Original ambiguity:** D4/D5 language in earlier drafts ("compensation must terminate") was ambiguous about whether termination requires serialized queue dispatch or wall-time bounded execution.
+
+**Clarification:** Compensation closes MAY run detached from the topic operation queue when ALL three conditions hold:
+
+1. **Activation serialization:** The activation path serializes against any in-flight `activationPromise` (so a concurrent retry cannot race compensation).
+2. **Registry hygiene:** Registry state (`lastTopicId`) is cleared on rollback so a retry's `ensureTopic` creates a fresh `topicId` rather than resurrecting one that an orphaned close might still target.
+3. **Wall-time cap:** Each detached close is wall-time-bounded via `Promise.race` against a fixed timeout (currently `COMPENSATION_TIMEOUT_MS = 7000`).
+
+**Rationale:** Detached compensation provides stronger latency guarantees than queued serialization (queue can be blocked indefinitely by in-flight ops), while the `activationPromise` hoist + `lastTopicId` hygiene together eliminate the resurrection race that queued serialization was implicitly relying on.
+
+**Implementation:** `src/bot/afkMode.ts` — `activate()` `activationPromise` hoist + rollback `delete lastTopicId` (Cycle 6, commit landed by Kat).
+
+**Joint necessity:** The three conditions (activation serialization, `lastTopicId` hygiene, `COMPENSATION_TIMEOUT_MS` cap) are jointly necessary — removing any one reopens a correctness vulnerability: either the resurrection race (conditions 1 and 2) or indefinite blocking (condition 3).
+
+**Discovery lineage:**
+- **Cycle 6 (B6-1):** Identified detached close resurrection race; fixed via conditions 1+2
+- **Cycle 7 (B7-1):** Late-register race revealed activation-promise ordering gap; confirmed all three conditions jointly necessary
+
+**Test coverage:** Regression tests F1a, F1b, F1c, T13a, T13b, T9c validate the three-part invariant across orphan scenarios, late-register races, and close-on-reopen paths.
+
+---
+
+**Amendment attribution:** Kat (implementation Cycles 3-7), persona-review panels Architect6/Architect7/Skeptic6/Skeptic7, Aaron (decision-point gate approvals).
+
+**Final state:** 477 passing tests, ADR-11 production-ready.
+
 
 ---
 

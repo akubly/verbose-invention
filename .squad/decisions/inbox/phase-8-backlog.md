@@ -152,6 +152,12 @@ observable in logs, batch closes in groups of 5 with a small gap.
 
 Source: architect6 review, Cycle 6.
 
+### A10-4 — TopicLifecycleManager extraction (Cycle 10 watch)
+
+The topic lifecycle now has three operations (create, reopen, close-orphan) with two serialization concerns (rate limit, operation ordering) all inline in `createOrReopenTopic` and `activate()`. When Phase 8 adds a fourth operation (e.g., relay topic creation), extract a `TopicLifecycleManager` that owns the create/reopen/close trio with serialization invariants baked in.
+
+Source: architect10 review, Cycle 10.
+
 ### Module isolation for `main.ts`
 
 `tests/config/env.test.ts` now imports `parseEnv` directly, removing the

@@ -480,9 +480,9 @@ export class AfkModeController {
       // F1: Orphan prevention — if upsert fails, close the created topic.
       // Fire-and-forget: don't block the error path on cleanup; don't mask the original error.
       if (createdNewTopicId !== null) {
-        this.serializedTopicOperation(() => this.withRateLimitRetry(() =>
+        this.withRateLimitRetry(() =>
           this.bot.api.closeForumTopic(this.chatId, createdNewTopicId),
-        )).catch((e) => {
+        ).catch((e) => {
           console.warn(`[afk] Failed to close orphan topic ${createdNewTopicId} for session ${session.sessionId}:`, errorText(e));
         });
       }

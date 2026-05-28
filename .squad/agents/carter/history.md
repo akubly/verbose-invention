@@ -203,3 +203,31 @@ Audited bridge and pipe protocol for /afk user story; identified 4 new message t
 
 **Ready for:** Kat integration (daemon-side AFK state machine consumes BridgeEmitter events) + Jun testing (contract tests verify round-trip message flow).
 
+---
+
+## Learnings
+
+### 2026-05-27T23:48:20-07:00 — A7: Inbound shape drift coverage
+
+**Test file:** `tests/bridge/extension-protocol-drift.test.ts`
+
+**New coverage:** 30 new tests (31 total in file — 1 pre-existing outbound test preserved).
+
+Breakdown by area:
+- **Union-coverage group (3 tests):** Parses `InboundMessage` union discriminants from protocol.ts and compares to all type values emitted by extension.mjs. Catches stray sends and missing union members.
+- **hello (RegisterMessage) group (6 tests):** Pins `type='hello'`, required `sessionId`/`sessionName`/`authToken`, optional `cwd`, exact field-name set. Guards ADR-8 + ADR-10 + ADR-11 additions.
+- **pong (PongMessage) group (4 tests):** Pins `type='pong'`, required `id`/`sessionId`, exact field-name set.
+- **stream (StreamMessage) group (6 tests):** Pins `type='stream'`, required `sessionId`/`requestId`/`chunk`/`done: boolean`, exact field-name set. Covers both chunk (`done: false`) and final (`done: true`) variants — single interface.
+- **stream.error (StreamErrorMessage) group (5 tests):** Pins `type='stream.error'`, required `sessionId`/`requestId`/`error`, exact field-name set.
+- **afk.request (AfkRequestMessage) group (3 tests):** Pins `type='afk.request'`, required `sessionId`, exact field-name set (ADR-11 §4.1).
+- **back.request (BackRequestMessage) group (3 tests):** Pins `type='back.request'`, required `sessionId`, exact field-name set (ADR-11 §4.3).
+
+**Parser design decisions:**
+- `parseExtensionSentTypes` uses three regex patterns to cover: `sendToDaemon({ type: 'literal'`, `JSON.stringify({ type: 'literal'` (hot-path stream chunks written directly to socket), and `sendModeRequest('afk.request'|'back.request')` (dynamic-type variable path). All three are needed for full coverage.
+- `parseInterfaceFields` uses `/^\s+(\w+)(\?)?\s*:\s*(.+?)\s*;/gm` — JSDoc comment lines starting with `*` are automatically skipped since `*` is not `\w`. Confirmed safe for all six target interfaces.
+- `_AnchorImports` type alias imports all six TypeScript interfaces for compile-time documentation; if an interface is renamed, the import will break tsc.
+
+**Surprises:**
+- `stream` mid-stream chunks are written directly via `pipeSocket.write(JSON.stringify({...}))` instead of `sendToDaemon()` (performance hot-path). Pattern 2 in `parseExtensionSentTypes` was needed specifically for this case.
+- The 4 pre-existing failures in `tests/integration/main-composition.test.ts` are A8/N3 work — confirmed with `git stash` before/after comparison. Not caused by A7.
+- No ADR drift found. All six inbound types in protocol.ts match their ADR-8/ADR-10/ADR-11 spec exactly. `authToken` (required, ADR-10) and `cwd` (optional, ADR-11) on `RegisterMessage` are correctly typed and documented additions to the ADR-8 base schema.

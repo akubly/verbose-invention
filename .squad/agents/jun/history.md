@@ -80,3 +80,22 @@ Earlier learnings (Phases 1–5, Phase 6 Spike methodology) in `history-archive.
 
 **Convergence signal:** T4 red is expected; Telegram /back filter should land in Kat's daemon integration. All fixtures ready for full suite + integration tests once filter lands.
 
+## Phase 8 P1 Sprint (2026-05-27T23:48:20-07:00) — A8 + N2-env-var + N3
+
+**Deliverables:**
+- `tests/integration/main-composition.test.ts` — 7-test A8 + N3 integration harness for `main()`:
+  - A8a (3 tests): pairing-mode early-return — verifies `runPairingMode` is called, bot/bridge/registry never constructed
+  - A8b (2 tests): normal-mode wiring — verifies bridge + all deps wired, graceful fallback when bridge unavailable
+  - N3 (2 tests): config-file `allowedUserIdSet` end-to-end — verifies `AfkModeController` receives the set from config, and omits it when undefined
+- `tests/config/env.test.ts` — 1 new test (N2 env-var variant):
+  - `TELEGRAM_ALLOWED_USER_IDS=,` (comma-only → all tokens empty after split → fatal) — distinct from Kat's N2 guard test for `telegramAllowedUserIds: []`
+
+**Harness pattern used:** `vi.hoisted()` for shared mock instances → `vi.mock()` factories reference hoisted values → imports after mocks → `beforeEach` re-establishes ALL implementations (including inline `vi.fn()` mocks). `vi.restoreAllMocks()` in `afterEach` for console spy cleanup; all re-setup handled in `beforeEach`.
+
+**Key learning:** `vi.restoreAllMocks()` sets `implementation = void 0` on EVERY tracked `vi.fn()`, including pure mock functions created in `vi.mock()` factories. This silently breaks subsequent tests if any inline `vi.fn()` (e.g., `ExtensionBridge` constructor mock) is not re-established in `beforeEach`. Symptoms appear as "Cannot read properties of undefined" — the real cause is the inline constructor mock returning `{}` (no-implementation path), then the bridge's `start()` method being absent. Pattern fix: always pair `vi.restoreAllMocks()` with a full re-establishment sweep in `beforeEach`, OR switch to `vi.clearAllMocks()` only (no restore).
+
+**A8 closure status:** CLOSED. Composition-root branches verified. Phase 8 regression risk for wiring changes is now covered.
+
+**Verification:** `npx tsc --noEmit` GREEN. `npx vitest run` — 515 passed / 4 skipped / 0 failed (39 files). `npm run lint` — 0 warnings.
+
+## Learnings

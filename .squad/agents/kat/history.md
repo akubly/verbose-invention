@@ -170,3 +170,15 @@ Validation: `npx tsc --noEmit`, `npm run lint`, targeted AFK contract tests, tar
 
 **Ready for:** Jun testing (contract tests bind to live AfkModeController) + Carter/Jun validation.
 
+---
+
+## Learnings — 2026-05-27T23:48:20-07:00 — Phase 8 N2: Deny-all guard landed
+
+**Files changed:**
+- `src/config/env.ts` — added the deny-all guard (6 lines) immediately after `allowedUserIdSet` is finalized in the config-layer `else if` branch (and after both branches, so it covers any future third path). The guard matches the surrounding style: `console.error` + `process.exit(1)`, same pattern as the env-var empty-string fatal above it.
+- `tests/config/env.test.ts` — replaced the `N2 (backlog)` documentation test with an assertive test (`N2: exits with code 1 when config telegramAllowedUserIds is an empty array (deny-all guard)`). Updated header comment to reflect the item is no longer backlog.
+
+**Placement subtlety:** The guard must sit AFTER both branches (`if TELEGRAM_ALLOWED_USER_IDS` and `else if config.telegramAllowedUserIds`) so it catches either path producing an empty set. The current code structure makes this straightforward — no edge cases required relocation.
+
+**Boundary note:** Jun owns the env-var test variant for N2 (`TELEGRAM_ALLOWED_USER_IDS=,` corner case) and the N3 end-to-end integration test through `main()`. This entry covers only the production guard + direct unit test for the config-JSON path.
+

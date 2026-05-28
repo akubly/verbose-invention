@@ -12,15 +12,13 @@
  *   5. findAllByName replace semantics: two upserts for same name produce exactly one entry.
  *   6. findAllByName mirrors deleted-field semantics.
  *   7. resolve returns entry for known topicId, undefined for unknown.
+ *   8. register rejects duplicate name when bound to different topicId (I10-1).
+ *   9. move rejects occupied destination topicId (I10-2).
  *
  * History: a merge-vs-replace bug in MemoryAfkRegistry.upsert masked Fix A (commit 293e850)
  * for months — the old `{ ...prior, ...entry }` semantics caused deleted fields (e.g.,
  * lastTopicId cleared by compensatePartialActivation) to silently reappear from the prior
  * registry entry when the in-memory test double was consulted on the retry path.
- *
- * NOTE (R9-3): register/remove/move added to MemoryAfkRegistry; contract widening deferred
- * to Phase 8 when they become production-exercised. Current tests cover core upsert/find
- * semantics which are most critical for AFK mode correctness.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -37,6 +35,8 @@ interface RegistryContractSUT {
   findByName(name: string): { sessionName: string; lastTopicId?: number; mode?: string } | undefined;
   findAllByName(name: string): Array<{ sessionName: string; lastTopicId?: number; mode?: string }>;
   resolve?(topicId: number): { sessionName: string; lastTopicId?: number; mode?: string } | undefined;
+  register?(topicId: number, chatId: number, sessionName: string, model?: string, cwd?: string): Promise<void>;
+  move?(fromTopicId: number, toTopicId: number): Promise<void>;
 }
 
 const BASE_ENTRY: SessionEntry = {
@@ -78,6 +78,12 @@ describe.each([
         },
         resolve(topicId: number) {
           return reg.resolve(topicId);
+        },
+        register(topicId: number, chatId: number, sessionName: string, model?: string, cwd?: string) {
+          return reg.register(topicId, chatId, sessionName, model, cwd);
+        },
+        move(fromTopicId: number, toTopicId: number) {
+          return reg.move(fromTopicId, toTopicId);
         },
       };
     }
@@ -175,5 +181,26 @@ describe.each([
     }
 
     expect(sut.resolve(99999)).toBeUndefined();
+  });
+
+  it('register rejects duplicate name (different topicId)', async () => {
+    if (!sut.register) {
+      // Skip if register is not implemented (optional method).
+      return;
+    }
+
+    await sut.register(1, -100, 'dup-name');
+    await expect(sut.register(2, -100, 'dup-name')).rejects.toThrow(/dup-name/);
+  });
+
+  it('move rejects occupied destination', async () => {
+    if (!sut.register || !sut.move) {
+      // Skip if register or move is not implemented (optional methods).
+      return;
+    }
+
+    await sut.register(1, -100, 'a');
+    await sut.register(2, -100, 'b');
+    await expect(sut.move(1, 2)).rejects.toThrow(/already bound|Destination/i);
   });
 });

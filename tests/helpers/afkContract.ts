@@ -103,6 +103,12 @@ export class MemoryAfkRegistry {
   }
 
   async register(topicId: number, chatId: number, sessionName: string, model?: string, cwd?: string): Promise<void> {
+    const existing = this.findByName(sessionName);
+    if (existing && existing.topicId !== topicId) {
+      throw new Error(
+        `Session name "${sessionName}" is already in use by topic ${existing.topicId}. Choose a different name or /remove the other session first.`,
+      );
+    }
     const entry: AfkSessionFixture = {
       sessionId: sessionName, // tests use sessionName as sessionId convention
       sessionName,
@@ -125,6 +131,10 @@ export class MemoryAfkRegistry {
   async move(fromTopicId: number, toTopicId: number): Promise<void> {
     const entry = this.resolve(fromTopicId);
     if (!entry) throw new Error(`No session found for topic ${fromTopicId}`);
+    const existingAtTarget = this.resolve(toTopicId);
+    if (existingAtTarget) {
+      throw new Error(`Destination topic ${toTopicId} is already bound to "${existingAtTarget.sessionName}"`);
+    }
     const moved: AfkSessionFixture = { ...entry, topicId: toTopicId };
     this.bySessionId.delete(entry.sessionId);
     await this.upsert(moved);

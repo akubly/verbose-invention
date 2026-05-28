@@ -1,85 +1,93 @@
 ---
-updated_at: 2026-05-24T04:00:06Z
-focus_area: Phase 6 SHIPPED. PR #6 merged, workflows activated. Inbox ready for Scribe drain. Next: dogfooding or Phase 7 planning.
+updated_at: 2026-05-27T23:48:20Z
+focus_area: Phase 8 P1 SHIPPED. A7 + A8 + N2 + N3 all delivered. Next: Noble Six review → ship-to-pr.
 active_issues: []
 ---
 
-# Session Handoff — 2026-05-24
+# Session Handoff — 2026-05-27
 
 ## What Just Shipped
 
-**PR #6 — Phase 6 Bridge Migration + ADR-9 Permission Prompting (COMPLETE ✅)**
+**Phase 8 P1 Sprint — Integration Testing & Configuration Guards (COMPLETE ✅)**
 
-- ✅ PR squash-merged to origin/main as commit `c2c347f` after 6 cloud-review cycles (21 Copilot threads addressed)
-- ✅ **ADR-9 hardened for production:**
-  - Eviction-log fix (prevent stale prompt leaks)
-  - TTY-gated `promptPassword()` (no hidden prompts on non-TTY)
-  - Env-var fallback for install password (no blocking stdin)
-  - Single-attach callback handlers (race-safe)
-  - `raceAbortSignals` cleanup (signal aggregation)
-  - `sessionId` stream filters (multiplexing safety)
-  - `createRequire` path resolution (module loading)
-  - `.write()` vs `.push()` on PassThrough (backpressure)
-- ✅ Test count: ~358 tests green (per carter/history.md post-hardening)
-- ✅ Working tree clean after local main reset + cherry-pick of true forward-progress
+- ✅ **A7 (Carter):** Inbound message shape drift coverage — 30 new assertions
+  - All 6 inbound message types covered (hello, pong, stream, stream.error, afk.request, back.request)
+  - No drift found — all interfaces match ADR specs exactly
+  - File: `tests/bridge/extension-protocol-drift.test.ts` (31 tests total)
 
-**Post-Merge Cleanup — Commit `04de507` to origin/main**
+- ✅ **A8 (Jun):** Composition-root integration harness — 7 tests for main() branches
+  - Mocked all external module boundaries (vi.hoisted + vi.mock)
+  - A8 REOPENED gate CLOSED
+  - File: `tests/integration/main-composition.test.ts` (new)
 
-- ✅ Activated 6 squad workflow files from `.squad/templates/workflows/`:
-  - `heartbeat.yml`, `triage.yml`, `issue-assign.yml`, `label-sync.yml`, `docs.yml`, `promote.yml`
-  - Cloud automation now live for next session
-- ✅ Preserved jun/history.md Day 6 entry (32-scenario test suite, 353 tests)
-- ✅ Preserved noble-six/history.md additions
-- ✅ Discarded 22 duplicate commits (local PR work shadow)
-- ✅ Discarded obsolete narrative state
+- ✅ **N2 (Kat):** Deny-all configuration guard — production guard + unit test
+  - `allowedUserIds: Set([])` now fatal exit
+  - Guard location: `src/config/env.ts` lines 88–92
+  - Test: `tests/config/env.test.ts` (deny-all scenario)
 
-**Current HEAD:** `04de507` on origin/main. Working tree clean.
+- ✅ **N3 (Jun):** Config-layer allowed IDs end-to-end — 2 integration tests
+  - Config values flow through to `AfkModeController`
+  - File: `tests/integration/main-composition.test.ts` (N3 describe block)
+  - Complement: `tests/config/env.test.ts` (N2 env-var comma-only variant)
+
+**Test baseline:** 515 passed / 4 skipped / 0 failed. tsc clean, lint zero warnings.
+
+**Post-Sprint Housekeeping:**
+- ✅ Phase 8 section merged into `decisions.md` (158,980 bytes)
+- ✅ 4 inbox files merged (carter-a7, jun-phase8, kat-n2, phase-8-backlog status updated)
+- ✅ Orchestration logs written (`.squad/orchestration-log/2026-05-27T23-48-20Z-{kat,carter,jun}.md`)
+- ✅ Session log written (`.squad/log/2026-05-27T23-48-20-phase8-p1-sprint.md`)
+- ✅ Noble Six history updated with Phase 8 P1 note
+- ✅ 4 inbox files ready for deletion (merged into decisions.md)
+
+**Current HEAD:** origin/main. Working tree staging prep for commit.
 
 ## What's Pending
 
-**Inbox Awaiting Scribe Merge (9 files in `.squad/decisions/inbox/`)**
+**Phase 8 Closure (Post-Review)**
 
-Next session's Scribe will drain these into `decisions.md`:
-- `carter-cloud-review-1.md`, `carter-cloud-review-3.md` (cloud-review findings)
-- `carter-review1-dispositions.md` (cycles 3–6 dispositions)
-- `kat-adr9-reconciliation-notes.md`
-- `jun-review1-dispositions.md`, `noble-six-pipe-auth.md`, `noble-six-review1-dispositions.md`, `noble-six-review1-process.md` (older unmerged threads)
+Awaiting Noble Six review of Phase 8 P1 changes. Once approved:
+1. **ship-to-pr** — Create final PR and request merge review
+2. **Phase 8 overall closure** — Roll up P1 completion + P2 deferral + watch items into single Phase 8 decision note
 
-**9 Gitignored Files in `.squad/inbox/`**
+**Phase 8 Backlog Status (Living Document)**
 
-Temporary local work from cleanup pass — awaiting Scribe decision on archive or fold:
-- Session logs, local notes, temporary staging
+`.squad/decisions/inbox/phase-8-backlog.md` remains as living backlog to track:
+- **P2 items:** A2 (ERROR_CODES namespacing), F8 (AuthorizationPort), Module isolation note
+- **Triggered watches:** F4, F5, A6-6, A10-4 (no action until triggers fire)
+
+All P1 items (A7, A8, N2, N3) marked ✅ CLOSED.
 
 ## Next Session — Focus Menu
 
-**Option A: Live Dogfooding (Aaron)**
-- Test permission-prompting end-to-end over real Copilot CLI pipe
-- Validate no-timeout semantics + concurrent prompt behavior
-- Estimated effort: 1–2 hours validation
+**Option A: Noble Six Review (Architect)**
+- Review Phase 8 P1 changes (production guard, drift coverage, composition harness)
+- Validate against Phase 8 closure criteria
+- Estimated effort: 30–45 min review
 
-**Option B: Scribe Inbox Drain**
-- Merge 9 inbox files into decisions.md
-- Archive temporary work per Scribe judgment
-- Estimated effort: 1 hour
+**Option B: ship-to-pr (Coordinator)**
+- Create PR with Phase 8 P1 changes
+- Request Copilot code review
+- Merge upon approval
+- Estimated effort: 15 min + review time
 
-**Option C: Phase 7 Planning**
-- Extend classifier to cover additional destructive patterns
-- Implement persistent allow-always store (vs. in-memory)
-- Design classifier versioning strategy
-- Estimated effort: 2–3 hours planning + design review
+**Option C: Phase 8 Closure (Scribe)**
+- Roll up P1 completion + Phase 8+ decision note
+- Archive decisions.md if needed (currently 158KB, not yet at archival threshold after P1 merge)
+- Estimated effort: 30 min
 
 ---
 
 ## Latest Artifacts
 
-- **Decisions:** `.squad/decisions.md` (ADRs 1–9 finalized; ADR-9 ACCEPTED + hardened)
-- **Git state:** origin/main at `04de507` (clean, workflows live)
-- **Test baseline:** ~358 tests green
-- **Orchestration:** Inbox files ready for next session's merge
+- **Decisions:** `.squad/decisions.md` (ADRs 1–11 + Phase 8 P1 section, 158KB)
+- **Orchestration:** Phase 8 P1 logs (Kat, Carter, Jun) + session log
+- **Git state:** origin/main (ready for commit staging)
+- **Test baseline:** 515 passed / 4 skipped / 0 failed
 
 ## No Blockers
 
-- Phase 6 complete and shipped
+- Phase 8 P1 complete and shipped
 - All tests green
-- Workflows activated
-- Ready to pivot to dogfooding, inbox drain, or Phase 7 planning
+- Zero ADR drift detected
+- Ready for Noble Six review → ship-to-pr

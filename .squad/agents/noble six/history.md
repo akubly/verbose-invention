@@ -201,6 +201,28 @@ Days 3–4 relay integration choice: `relay.ts` was already written against `Cop
 
 ---
 
+---
+
+## 2026-05-27T23:48:20Z — Phase 8 P1 Sprint SHIPPED
+
+**Session:** Phase 8 P1 sprint completion (Kat, Carter, Jun, Scribe)
+
+**Outcome:** Four backlog items closed (A7, A8, N2, N3). Zero ADR drift detected. All tests green. Phase 8 P1 ready for Noble Six review and ship-to-pr.
+
+**Deliverables:**
+- **A7 (Carter):** Inbound message shape drift coverage — 30 new assertions, all interfaces verified against ADR specs, no drift found
+- **A8 (Jun):** Composition-root integration harness — 7 tests for main() branches, mocked all external boundaries, A8 REOPENED gate CLOSED
+- **N2 (Kat):** Deny-all configuration guard — production guard + unit test, `allowedUserIds: Set([])` now fatal exit
+- **N3 (Jun):** Config-layer end-to-end — 2 integration tests verify config → AfkModeController wiring
+
+**Test baseline:** 515 passed / 4 skipped / 0 failed. tsc clean, lint zero warnings.
+
+**Next:** Await Noble Six review. Once approved, ship-to-pr will create final PR for merge.
+
+**Records:** Orchestration logs, session log, Phase 8 section merged into decisions.md.
+
+---
+
 ## Archive
 
 Full Phases 1–5 + detailed Phase 6 spike documentation in history-archive.md.

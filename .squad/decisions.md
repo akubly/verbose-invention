@@ -2903,3 +2903,225 @@ Date: 2026-05-24T23:19:14-07:00
 
 The tests are contract-level and intentionally exercise the externally observable ADR-11 surface: bridge messages, Telegram API calls, registry reflection, and relay target changes. The remaining red tests are useful convergence signals, not test harness load failures.
 
+
+---
+
+# Phase 8: Integration Testing & Configuration Guards
+
+## Phase 8 P1 Sprint — SHIPPED
+
+**Date:** 2026-05-27  
+**Coordinator:** Scribe  
+**Team:** Kat, Carter, Jun
+
+### Summary
+
+Phase 8 P1 sprint completed 2026-05-27. Four backlog items closed (A7, A8, N2, N3). 
+Zero ADR drift detected. Test baseline: **515 passed / 4 skipped / 0 failed**.
+
+---
+
+## A7 — Inbound Message Shape Coverage
+
+# Carter A7 — Inbound Shape Coverage Complete
+
+**Date:** 2026-05-27T23:48:20-07:00
+**Author:** Carter (Bridge Dev)
+**Requested by:** Aaron Kubly
+**Phase 8 backlog item:** A7 (P1)
+
+---
+
+## Summary
+
+Extended `tests/bridge/extension-protocol-drift.test.ts` with 30 new assertions
+covering all six inbound message types listed in the A7 backlog item.
+
+**File:** `tests/bridge/extension-protocol-drift.test.ts`
+**New test count:** 30 (file total: 31, including the 1 pre-existing outbound test)
+
+---
+
+## New assertion groups
+
+| Group | Tests | What's covered |
+|---|---|---|
+| InboundMessage union ↔ extension.mjs | 3 | All emitted types are declared; all A7 types in union and in extension.mjs sends |
+| hello (RegisterMessage) | 6 | Discriminant, 3 required fields, 1 optional field, no-extra-fields guard |
+| pong (PongMessage) | 4 | Discriminant, 2 required fields, no-extra-fields guard |
+| stream (StreamMessage) | 6 | Discriminant, 4 required fields (incl. `done: boolean`), no-extra-fields guard |
+| stream.error (StreamErrorMessage) | 5 | Discriminant, 3 required fields, no-extra-fields guard |
+| afk.request (AfkRequestMessage) | 3 | Discriminant, 1 required field, no-extra-fields guard |
+| back.request (BackRequestMessage) | 3 | Discriminant, 1 required field, no-extra-fields guard |
+
+---
+
+## Negative-case coverage
+
+Each type includes a `'no undeclared fields'` test that asserts the interface's
+field-name set exactly matches the ADR spec. Together with the required/optional
+field assertions, this covers all three negative cases from the backlog:
+
+- **Extra fields rejected** — `no undeclared fields` test fails if a new field
+  is added to the interface without updating the ADR.
+- **Missing required fields rejected** — `fieldName is required string/boolean`
+  test fails if a required field is removed or made optional.
+- **Wrong-typed fields rejected** — `typeStr` assertion fails if a field's
+  TypeScript type annotation drifts from the ADR-specified wire type.
+
+---
+
+## Drift finding
+
+**No drift found.** All six interfaces match their ADR specs exactly:
+
+- `hello` — ADR-8 base (`type`, `sessionId`, `sessionName`) + ADR-10 addition
+  (`authToken: string` required) + ADR-11 addition (`cwd?: string` optional).
+  All three layers correctly typed in `RegisterMessage`.
+- `pong` — Exact ADR-8 match.
+- `stream` — Exact ADR-8 match. Both chunk and final-chunk variants share the
+  single `StreamMessage` interface with `done: boolean`.
+- `stream.error` — Exact ADR-8 match.
+- `afk.request` — Exact ADR-11 §4.1 match.
+- `back.request` — Exact ADR-11 §4.3 match.
+
+---
+
+## Validation
+
+```
+npx vitest run tests/bridge/extension-protocol-drift.test.ts
+  31 tests passed (30 new + 1 pre-existing)
+
+npx tsc --noEmit    → clean
+npm run lint        → clean
+npx vitest run      → 511 passed / 4 pre-existing A8/N3 failures (unrelated)
+```
+
+Pre-existing failures confirmed via `git stash` before/after — not caused by A7.
+
+
+---
+
+## N2 — Deny-All Configuration Guard
+
+# N2 Guard — Shipped
+
+**Date:** 2026-05-27T23:48:20-07:00  
+**Author:** Kat  
+
+## Summary
+
+The deny-all guard for `allowedUserIds: Set([])` is now in production.
+
+## Details
+
+**File:** `src/config/env.ts`  
+**Location:** After line 86 (after `allowedUserIdSet = new Set(config.telegramAllowedUserIds)` in the config-layer `else if` branch), immediately before the ALL-users warn block.
+
+**Guard code (lines 88–92 post-edit):**
+```ts
+if (allowedUserIdSet !== undefined && allowedUserIdSet.size === 0) {
+  console.error('[reach] Fatal: allowedUserIds is empty — this would deny all users. Unset to allow all, or provide at least one ID.');
+  process.exit(1);
+}
+```
+
+The guard sits after both the env-var branch and the config-file branch so it covers either source of an empty set.
+
+**Test name:** `N2: exits with code 1 when config telegramAllowedUserIds is an empty array (deny-all guard)`  
+**Test file:** `tests/config/env.test.ts`
+
+## Validation
+
+- `npx tsc --noEmit` — clean  
+- `npx vitest run tests/config/env.test.ts` — 12/12 passed  
+- `npm run lint` — 0 warnings  
+
+## Boundary
+
+Jun owns the env-var variant test (`TELEGRAM_ALLOWED_USER_IDS=,` corner case) and the N3 end-to-end integration test through `main()`. This item covers only the production guard and its direct unit test.
+
+
+---
+
+## A8 & N3 — Composition Root Integration
+
+# Jun Phase 8 Coverage Shipped
+
+**Date:** 2026-05-27T23:48:20-07:00
+**Author:** Jun (Test Engineer)
+
+## Summary
+
+Phase 8 P1 sprint coverage complete. Three deliverables shipped; all three verified
+green (`npx tsc --noEmit`, `npx vitest run`, `npm run lint`).
+
+---
+
+## Deliverables
+
+### A8 — Composition root integration harness
+
+**File:** `tests/integration/main-composition.test.ts` (new, 7 tests)
+
+Closes the A8 REOPENED gate. Two branches of `main()` verified in isolation
+with all external module boundaries mocked via `vi.hoisted()` + `vi.mock()`.
+
+| Test | Coverage |
+|---|---|
+| A8a-1 | `runPairingMode()` called; bot never starts |
+| A8a-2 | Resolved config passed to `runPairingMode()` |
+| A8a-3 | No `ExtensionBridge`, `SessionRegistry`, or `CopilotClientImpl` constructed |
+| A8b-1 | All deps wired; `bot.start()` reached (bridge available) |
+| A8b-2 | SDK-only fallback; `AfkModeController` not constructed (bridge unavailable) |
+
+**Status:** A8 CLOSED ✅
+
+---
+
+### N2 env-var variant
+
+**File:** `tests/config/env.test.ts` (1 new test added to existing file)
+
+Test name: `N2 env-var: exits with code 1 when TELEGRAM_ALLOWED_USER_IDS is comma-only (all tokens empty after split)`
+
+Covers `TELEGRAM_ALLOWED_USER_IDS=,` — the comma-only value trims to `,` (passes
+the empty-string guard), then splits to `["",""]` where both tokens have `length === 0`,
+triggering the "positive integer" fatal path. Distinct from Kat's N2 guard test
+(`telegramAllowedUserIds: []` config-JSON empty array).
+
+---
+
+### N3 — Config-layer allowed IDs end-to-end
+
+**File:** `tests/integration/main-composition.test.ts` (folded into A8 harness, 2 tests)
+
+Tests in the N3 describe block within the A8 harness file:
+
+| Test | Coverage |
+|---|---|
+| N3-1 | `AfkModeController` receives `allowedUserIds: Set([777, 888])` when `parseEnv()` returns config-sourced `allowedUserIdSet` |
+| N3-2 | `allowedUserIds` key absent from `AfkModeController` options when `allowedUserIdSet` is `undefined` |
+
+Complements `tests/config/env.test.ts` (M5-4) unit tests for the `parseEnv()` config-file
+branch. N3 tests the wiring in `main()`: config values flow through to `AfkModeController`.
+
+---
+
+## Verification
+
+```
+npx tsc --noEmit          → exit 0 (clean)
+npx vitest run            → 515 passed | 4 skipped | 0 failed (39 files)
+npm run lint              → 0 warnings, exit 0
+```
+
+## Boundary Notes
+
+- Kat owns the N2 production guard (`src/config/env.ts`) and its corresponding direct
+  unit test (`N2: exits with code 1 when config telegramAllowedUserIds is an empty array`).
+- This item covers Jun's scope: env-var comma-only variant + composition-root integration harness.
+- No production code changes were made; all changes are in test files.
+
+

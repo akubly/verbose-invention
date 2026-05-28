@@ -9,7 +9,7 @@
  *  - The original 4 cases from tests/main/env-parsing.test.ts (moved here)
  *  - Adversarial edge cases for TELEGRAM_ALLOWED_USER_IDS parsing
  *  - Config-file path (telegramAllowedUserIds in config.json)
- *  - N2 backlog: empty allowedUserIdSet documents current (permissive) behavior
+ *  - N2: empty allowedUserIdSet (telegramAllowedUserIds: []) is deny-all and fatals (ADR-11 D3)
  */
 
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
@@ -86,6 +86,18 @@ describe('parseEnv (I4-2 / M5-4)', () => {
 
   // ── Adversarial edge cases (M5-4 additions) ───────────────────────────────────
 
+  // N2 env-var variant: comma-only value produces all-empty tokens → fatal.
+  // TELEGRAM_ALLOWED_USER_IDS="," trims to "," (length > 0, passes the empty-string guard),
+  // then split(',') yields ["",""] — each token has length 0 → triggers the positive-integer
+  // fatal path. This is distinct from the N2 (backlog) test below which covers the config-JSON
+  // empty-array case.
+  it('N2 env-var: exits with code 1 when TELEGRAM_ALLOWED_USER_IDS is comma-only (all tokens empty after split)', async () => {
+    process.env.TELEGRAM_ALLOWED_USER_IDS = ',';
+    await expect(parseEnv()).rejects.toThrow('process.exit(1)');
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('positive integer'));
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
   it('exits with code 1 for embedded empty token — "123,,456"', async () => {
     process.env.TELEGRAM_ALLOWED_USER_IDS = '123,,456';
     await expect(parseEnv()).rejects.toThrow('process.exit(1)');
@@ -136,15 +148,11 @@ describe('parseEnv (I4-2 / M5-4)', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
-  // N2 backlog: telegramAllowedUserIds: [] passes validation and produces an empty Set.
-  // TODO (N2): An empty allowedUserIdSet is effectively deny-all and should be treated
-  // as a misconfiguration. A follow-up should add:
-  //   if (allowedUserIdSet !== undefined && allowedUserIdSet.size === 0) { fatal }
-  it('N2 (backlog): telegramAllowedUserIds: [] does not fatal — documents current permissive behavior', async () => {
+  // N2: telegramAllowedUserIds: [] is deny-all and must fatal (ADR-11 D3).
+  it('N2: exits with code 1 when config telegramAllowedUserIds is an empty array (deny-all guard)', async () => {
     vi.mocked(loadConfig).mockResolvedValueOnce({ telegramAllowedUserIds: [] });
-    const result = await parseEnv();
-    expect(exitSpy).not.toHaveBeenCalledWith(1);
-    expect(result.allowedUserIdSet).toEqual(new Set([]));
-    expect(result.allowedUserIdSet?.size).toBe(0);
+    await expect(parseEnv()).rejects.toThrow('process.exit(1)');
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('deny all users'));
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

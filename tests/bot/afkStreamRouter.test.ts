@@ -1,9 +1,10 @@
 /**
- * Unit tests for AfkStreamRouter — covering the 4 invariants tightened in PR #7:
+ * Unit tests for AfkStreamRouter — covering the 5 invariants for PR #7:
  *   1. sessionRequestIds empty-Set deletion after last requestId removed (enqueueChunk)
  *   2. sessionRequestIds empty-Set deletion after last requestId removed (enqueueError)
  *   3. handleChunk continues and runs done-cleanup when binding is removed mid-stream
  *   4. handleError deletes streamState even when no topic binding is present
+ *   5. handleChunk retries placeholder creation on transient sendMessage failure
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -196,6 +197,78 @@ describe('AfkStreamRouter', () => {
 
       expect(sendMessage).not.toHaveBeenCalled();
       expect(editMessageText).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── Thread 5: placeholder retry on transient sendMessage failure ─────────────
+
+  describe('handleChunk placeholder retry on transient sendMessage failure', () => {
+    it('T5a — sendMessage throw preserves buffer and leaves messageId undefined', async () => {
+      const { router, sendMessage } = makeRouter();
+      const sessionId = 'sess-5';
+      const requestId = 'req-1';
+
+      sendMessage.mockRejectedValueOnce(new Error('rate limited'));
+
+      router.enqueueChunk(sessionId, requestId, 'chunk one', false);
+      await drain();
+
+      const states = (router as unknown as { streamStates: Map<string, { messageId?: number; text: string }> }).streamStates;
+      const state = states.get(`${sessionId}:${requestId}`);
+      expect(state).toBeDefined();
+      expect(state!.messageId).toBeUndefined();
+      expect(state!.text).toBe('chunk one');
+    });
+
+    it('T5b — second chunk retries sendMessage with the full cumulative buffer', async () => {
+      const { router, sendMessage } = makeRouter();
+      const sessionId = 'sess-5';
+      const requestId = 'req-1';
+
+      sendMessage.mockRejectedValueOnce(new Error('rate limited'));
+
+      router.enqueueChunk(sessionId, requestId, 'chunk one', false);
+      await drain();
+
+      // Default mock now succeeds.
+      router.enqueueChunk(sessionId, requestId, ' chunk two', false);
+      await drain();
+
+      expect(sendMessage).toHaveBeenCalledTimes(2);
+      // Second call must carry the full accumulated buffer (chunk1 + chunk2).
+      expect(sendMessage.mock.calls.at(-1)?.[1]).toBe('chunk one chunk two');
+
+      const states = (router as unknown as { streamStates: Map<string, { messageId?: number }> }).streamStates;
+      expect(states.get(`${sessionId}:${requestId}`)!.messageId).toBeDefined();
+    });
+
+    it('T5c — third chunk uses throttled-edit path; no additional sendMessage calls', async () => {
+      const { router, sendMessage, editMessageText } = makeRouter();
+      const sessionId = 'sess-5';
+      const requestId = 'req-1';
+
+      sendMessage.mockRejectedValueOnce(new Error('rate limited'));
+
+      router.enqueueChunk(sessionId, requestId, 'chunk one', false);
+      await drain();
+
+      router.enqueueChunk(sessionId, requestId, ' chunk two', false);
+      await drain();
+
+      // Advance time past the 800ms throttle so the next non-done chunk would edit.
+      vi.setSystemTime(new Date('2026-01-01T00:00:01Z'));
+
+      router.enqueueChunk(sessionId, requestId, ' chunk three', true);
+      await drain();
+
+      // No further sendMessage — placeholder was already created on chunk 2.
+      expect(sendMessage).toHaveBeenCalledTimes(2);
+      // editMessageText called with the full accumulated content.
+      expect(editMessageText).toHaveBeenCalledWith(
+        CHAT_ID,
+        expect.any(Number),
+        'chunk one chunk two chunk three',
+      );
     });
   });
 });

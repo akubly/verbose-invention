@@ -106,20 +106,37 @@ export class AfkStreamRouter {
     const topicId = this.streamStates.get(key)?.topicId ?? this.deps.getTopicId(sessionId);
     if (topicId === undefined) return;
 
+    // Initialize state eagerly — ensures buffered text is preserved if placeholder send fails.
     let state = this.streamStates.get(key);
     if (!state) {
       state = { topicId, text: '', lastEditAt: 0 };
       this.streamStates.set(key, state);
-      const placeholder = await this.deps.bot.api.sendMessage(this.deps.chatId, '…', { message_thread_id: topicId });
-      state.messageId = placeholder.message_id;
     }
 
+    // Buffer chunk before any network call so text is never lost on transient failure.
+    state.text += chunk;
+
     try {
-      state.text += chunk;
-      const now = Date.now();
-      if (state.messageId !== undefined && (done || now - state.lastEditAt >= STREAM_EDIT_THROTTLE_MS)) {
-        await this.deps.bot.api.editMessageText(this.deps.chatId, state.messageId, state.text || '_(empty response)_');
-        state.lastEditAt = now;
+      if (state.messageId === undefined) {
+        // No placeholder yet: either first chunk or a prior sendMessage threw.
+        // Send the full accumulated buffer so no text is lost on retry.
+        try {
+          const placeholder = await this.deps.bot.api.sendMessage(
+            this.deps.chatId, state.text, { message_thread_id: topicId },
+          );
+          state.messageId = placeholder.message_id;
+          state.lastEditAt = Date.now();
+        } catch (err) {
+          // Preserve state so the next chunk retries placeholder creation.
+          console.warn('[afk] Failed to create stream placeholder:', errorText(err));
+          return;
+        }
+      } else {
+        const now = Date.now();
+        if (done || now - state.lastEditAt >= STREAM_EDIT_THROTTLE_MS) {
+          await this.deps.bot.api.editMessageText(this.deps.chatId, state.messageId, state.text || '_(empty response)_');
+          state.lastEditAt = now;
+        }
       }
     } finally {
       if (done) this.streamStates.delete(key);

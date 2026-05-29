@@ -1,4 +1,17 @@
-## Learnings — 2026-05-28T22:45:13-07:00 — PR #7 Copilot Review: 4 stream-router invariants tightened
+## Learnings — 2026-05-28T22:45:13-07:00 — PR #7 Copilot Review Cycle 2: placeholder retry hardening
+
+**Thread 5 — handleChunk placeholder retry on transient sendMessage failure:**
+If `sendMessage()` throws on the first chunk (rate limit, transient API error), the original code left `streamStates` with a fully-created `StreamState` entry but `messageId` still undefined. All subsequent chunks hit `else` (state already existed) and skipped the placeholder branch entirely, leaving the stream permanently stuck with no Telegram updates.
+
+**Fix — two-part, both required:**
+1. **Eager state init + retry guard:** Create `StreamState` unconditionally before any network call. Check `state.messageId === undefined` (not `!state`) to decide whether to create the placeholder. This means any chunk that finds `messageId` absent will retry the `sendMessage`, not just the very first chunk.
+2. **Buffer before network:** Append `chunk` to `state.text` before calling `sendMessage`. If the send throws, `state.text` already contains the accumulated buffer. The next chunk retries `sendMessage` with the full buffer — no text is lost across retry attempts.
+
+**Inner try/catch pattern:** The `sendMessage` call is wrapped in its own `try/catch` inside the outer `try/finally`. On failure it logs a warning and `return`s. The outer `finally` still fires — `done=true` cleans up as normal (stream terminating anyway); `done=false` leaves state intact for the next chunk.
+
+**Invariant added:** "For handleChunk, chunk text must be appended to the buffer before any network call, and placeholder creation must be retried whenever `state.messageId === undefined`."
+
+---
 
 **Thread 1 & 2 — sessionRequestIds empty-Set leak (enqueueChunk / enqueueError):**
 Deleting a requestId from a session's Set but never checking whether the Set is now empty leaves a stale `Set()` behind for every session that has ever streamed. Fix: extract `removeRequestId(sessionId, requestId)` that deletes the Set and its key together when size reaches 0. Both call sites now use the same helper — they stay in sync automatically.

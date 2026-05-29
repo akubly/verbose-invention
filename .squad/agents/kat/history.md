@@ -1,3 +1,16 @@
+## Learnings — 2026-05-28T22:45:13-07:00 — PR #7 Copilot Review: 4 stream-router invariants tightened
+
+**Thread 1 & 2 — sessionRequestIds empty-Set leak (enqueueChunk / enqueueError):**
+Deleting a requestId from a session's Set but never checking whether the Set is now empty leaves a stale `Set()` behind for every session that has ever streamed. Fix: extract `removeRequestId(sessionId, requestId)` that deletes the Set and its key together when size reaches 0. Both call sites now use the same helper — they stay in sync automatically.
+
+**Thread 3 — handleChunk early-return skips done=true cleanup:**
+Returning early when `getTopicId` is undefined mid-stream prevents the `finally { if (done) streamStates.delete(key) }` from running, leaking the state entry. Fix: resolve topicId as `streamStates.get(key)?.topicId ?? getTopicId(sessionId)` before the guard — existing state's topicId satisfies the check even after the binding is removed.
+
+**Thread 4 — handleError early-return skips state deletion:**
+Same shape as Thread 3: the early-return on undefined topicId prevented state cleanup for a terminating stream. Fix: delete state first (stream is done regardless), then derive topicId from `state?.topicId ?? getTopicId(sessionId)`. Telegram error send fires when a topicId is available; either way the state is gone.
+
+**General pattern learned:** For any "stream terminating" path (done=true chunk, error), always delete state in a finally or unconditionally before topic-ID resolution — cleanup must not be gated on a live binding.
+
 ---
 
 ### 2026-05-24 — /afk Mode: 9 Telegram-Side UX & Bot API Opens Filed

@@ -55,7 +55,7 @@ export class AfkStreamRouter {
     if (done) {
       next.finally(() => {
         this.streamChains.delete(key);
-        this.sessionRequestIds.get(sessionId)?.delete(requestId);
+        this.removeRequestId(sessionId, requestId);
       });
     }
   }
@@ -67,9 +67,17 @@ export class AfkStreamRouter {
       .catch((err) => console.warn('[afk] Failed to route stream error:', errorText(err)))
       .finally(() => {
         this.streamChains.delete(key);
-        this.sessionRequestIds.get(sessionId)?.delete(requestId);
+        this.removeRequestId(sessionId, requestId);
       });
     this.streamChains.set(key, next);
+  }
+
+  /** Remove a requestId from the per-session index; deletes the sessionId entry when the Set empties. */
+  private removeRequestId(sessionId: string, requestId: string): void {
+    const ids = this.sessionRequestIds.get(sessionId);
+    if (!ids) return;
+    ids.delete(requestId);
+    if (ids.size === 0) this.sessionRequestIds.delete(sessionId);
   }
 
   /** Remove all stream state for a disconnected session (O(1) via sessionRequestIds index). */
@@ -94,10 +102,10 @@ export class AfkStreamRouter {
 
   private async handleChunk(sessionId: string, requestId: string, chunk: string, done: boolean): Promise<void> {
     if (!this.deps.isActive()) return;
-    const topicId = this.deps.getTopicId(sessionId);
+    const key = `${sessionId}:${requestId}`;
+    const topicId = this.streamStates.get(key)?.topicId ?? this.deps.getTopicId(sessionId);
     if (topicId === undefined) return;
 
-    const key = `${sessionId}:${requestId}`;
     let state = this.streamStates.get(key);
     if (!state) {
       state = { topicId, text: '', lastEditAt: 0 };
@@ -119,11 +127,11 @@ export class AfkStreamRouter {
   }
 
   private async handleError(sessionId: string, requestId: string, error: string): Promise<void> {
-    const topicId = this.deps.getTopicId(sessionId);
-    if (topicId === undefined) return;
     const key = `${sessionId}:${requestId}`;
     const state = this.streamStates.get(key);
     this.streamStates.delete(key);
+    const topicId = state?.topicId ?? this.deps.getTopicId(sessionId);
+    if (topicId === undefined) return;
     if (state?.messageId !== undefined) {
       await this.deps.bot.api.editMessageText(this.deps.chatId, state.messageId, `❌ Error: ${error}`);
     } else {

@@ -1,4 +1,29 @@
-## Learnings — 2026-05-28T22:45:13-07:00 — PR #7 Copilot Review Cycle 2: placeholder retry hardening
+## Learnings — 2026-05-28T23:25:16-07:00 — PR #7 Copilot Review Cycle 3: 4096-char cap + handleError isActive guard
+
+**Thread A — Telegram 4096-char limit:**
+`state.text` is an unbounded accumulator. If a long stream exceeds 4096 chars, every `sendMessage`/`editMessageText` call would return a 400 error and the stream would get permanently stuck. Empty `state.text` causes `sendMessage` to fail with a 400 on empty-body.
+
+**Fix — `displayText()` helper + constants:**
+- `TELEGRAM_MAX_TEXT = 4096` documents the API limit.
+- `TELEGRAM_MAX_DISPLAY = 4000` is the safe display cap (headroom for the truncation prefix).
+- `displayText(text)`: empty → `'…'`; within cap → passthrough; over cap → `TRUNCATION_PREFIX + text.slice(-bodyLen)` (last-N policy — streaming output's most recent content is what the user cares about).
+- Applied to BOTH `sendMessage` (placeholder creation) and `editMessageText` in `handleChunk`. The full text is still accumulated in `state.text` unchanged; only the displayed slice is capped.
+
+**Invariant added:** "displayText() must be used for every Telegram text argument in handleChunk — never pass `state.text` raw. The full buffer is kept in state; only the display slice is capped."
+
+---
+
+**Thread B — handleError race with deactivation:**
+`handleChunk` guards with `isActive()` at entry, but `handleError` previously had no such guard. An error frame racing against `/back` could arrive after deactivation and emit a spurious `❌ Error` message in the now-closed topic.
+
+**Fix:**
+- After `this.streamStates.delete(key)` (unconditional — cycle-1 invariant), add `if (!this.deps.isActive()) return;`.
+- State cleanup fires regardless; the Telegram send is skipped when AFK is off.
+
+**Invariant added:** "In handleError, state cleanup (streamStates.delete) must always run unconditionally. The isActive() guard gates only the Telegram-side error emission — never the state cleanup."
+
+---
+
 
 **Thread 5 — handleChunk placeholder retry on transient sendMessage failure:**
 If `sendMessage()` throws on the first chunk (rate limit, transient API error), the original code left `streamStates` with a fully-created `StreamState` entry but `messageId` still undefined. All subsequent chunks hit `else` (state already existed) and skipped the placeholder branch entirely, leaving the stream permanently stuck with no Telegram updates.

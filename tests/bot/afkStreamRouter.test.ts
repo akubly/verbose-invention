@@ -1,14 +1,16 @@
 /**
- * Unit tests for AfkStreamRouter — covering the 5 invariants for PR #7:
+ * Unit tests for AfkStreamRouter — covering the 7 invariants for PR #7:
  *   1. sessionRequestIds empty-Set deletion after last requestId removed (enqueueChunk)
  *   2. sessionRequestIds empty-Set deletion after last requestId removed (enqueueError)
  *   3. handleChunk continues and runs done-cleanup when binding is removed mid-stream
  *   4. handleError deletes streamState even when no topic binding is present
  *   5. handleChunk retries placeholder creation on transient sendMessage failure
+ *   6. displayText: non-empty placeholder + 4096-char display cap (cycle 3)
+ *   7. handleError isActive guard: state cleaned up, Telegram send skipped when inactive (cycle 3)
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AfkStreamRouter, type AfkStreamRouterDeps } from '../../src/bot/afkStreamRouter.js';
+import { AfkStreamRouter, TELEGRAM_MAX_DISPLAY, type AfkStreamRouterDeps } from '../../src/bot/afkStreamRouter.js';
 
 const CHAT_ID = -1001111111111;
 
@@ -268,6 +270,104 @@ describe('AfkStreamRouter', () => {
         CHAT_ID,
         expect.any(Number),
         'chunk one chunk two chunk three',
+      );
+    });
+  });
+
+  // ─── Thread A (cycle 3): 4096-char display cap + non-empty placeholder ────────
+
+  describe('displayText: 4096-char cap and non-empty placeholder', () => {
+    it('TA1 — sendMessage called with "…" when first chunk is an empty string', async () => {
+      const { router, sendMessage } = makeRouter();
+
+      router.enqueueChunk('sess-a1', 'req-1', '', false);
+      await drain();
+
+      expect(sendMessage).toHaveBeenCalledOnce();
+      expect(sendMessage.mock.calls[0][1]).toBe('…');
+    });
+
+    it('TA2 — editMessageText display string is ≤ TELEGRAM_MAX_DISPLAY when buffer exceeds the cap', async () => {
+      const { router, editMessageText } = makeRouter();
+      const sessionId = 'sess-a2';
+      const requestId = 'req-1';
+
+      // First chunk: creates the placeholder.
+      router.enqueueChunk(sessionId, requestId, 'seed', false);
+      await drain();
+
+      // Advance past throttle and send a very long chunk.
+      vi.setSystemTime(new Date('2026-01-01T00:00:01Z'));
+      router.enqueueChunk(sessionId, requestId, 'b'.repeat(5000), false);
+      await drain();
+
+      const displayed = editMessageText.mock.calls.at(-1)?.[2] as string;
+      expect(displayed.length).toBeLessThanOrEqual(TELEGRAM_MAX_DISPLAY);
+    });
+
+    it('TA3 — truncated display shows truncation prefix + last N chars of the full buffer', async () => {
+      const { router, editMessageText } = makeRouter();
+      const sessionId = 'sess-a3';
+      const requestId = 'req-1';
+
+      router.enqueueChunk(sessionId, requestId, 'seed', false);
+      await drain();
+
+      vi.setSystemTime(new Date('2026-01-01T00:00:01Z'));
+      const longChunk = 'c'.repeat(5000);
+      router.enqueueChunk(sessionId, requestId, longChunk, false);
+      await drain();
+
+      const displayed = editMessageText.mock.calls.at(-1)?.[2] as string;
+      const TRUNCATION_PREFIX = '…(truncated)\n';
+      const expectedBody = ('seed' + longChunk).slice(-(TELEGRAM_MAX_DISPLAY - TRUNCATION_PREFIX.length));
+      expect(displayed).toBe(TRUNCATION_PREFIX + expectedBody);
+    });
+  });
+
+  // ─── Thread B (cycle 3): handleError isActive guard ──────────────────────────
+
+  describe('handleError isActive guard', () => {
+    it('TB1 — state cleaned up but no Telegram send when isActive returns false', async () => {
+      const isActive = vi.fn(() => true as boolean);
+      const { router, sendMessage, editMessageText } = makeRouter({ isActive });
+      const sessionId = 'sess-b1';
+      const requestId = 'req-1';
+
+      // Create placeholder (isActive = true).
+      router.enqueueChunk(sessionId, requestId, 'partial', false);
+      await drain();
+      expect(sendMessage).toHaveBeenCalledOnce(); // sanity: placeholder created
+
+      // Deactivate before the error arrives.
+      isActive.mockReturnValue(false);
+
+      router.enqueueError(sessionId, requestId, 'some error');
+      await drain();
+
+      // State MUST be deleted (cycle-1 invariant).
+      const states = (router as unknown as { streamStates: Map<string, unknown> }).streamStates;
+      expect(states.has(`${sessionId}:${requestId}`)).toBe(false);
+      // No additional Telegram calls — the error edit must be suppressed.
+      expect(editMessageText).not.toHaveBeenCalled();
+      expect(sendMessage).toHaveBeenCalledOnce(); // still only the placeholder
+    });
+
+    it('TB2 — error emission fires normally when isActive returns true (regression guard)', async () => {
+      const { router, editMessageText } = makeRouter();
+      const sessionId = 'sess-b2';
+      const requestId = 'req-1';
+
+      router.enqueueChunk(sessionId, requestId, 'partial', false);
+      await drain();
+
+      router.enqueueError(sessionId, requestId, 'tool crashed');
+      await drain();
+
+      expect(editMessageText).toHaveBeenCalledWith(
+        CHAT_ID,
+        expect.any(Number),
+        '❌ Error: tool crashed',
       );
     });
   });

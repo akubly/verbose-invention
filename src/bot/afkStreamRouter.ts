@@ -20,6 +20,25 @@ interface StreamState {
 
 const STREAM_EDIT_THROTTLE_MS = 800;
 
+/** Telegram's absolute message-length limit (characters). */
+export const TELEGRAM_MAX_TEXT = 4096;
+/** Safe display cap — leaves headroom for the truncation prefix. */
+export const TELEGRAM_MAX_DISPLAY = 4000;
+/** Prefix prepended when the buffer is truncated for display. */
+const TRUNCATION_PREFIX = '…(truncated)\n';
+
+/**
+ * Returns a display-safe slice of `text`:
+ *   - empty string  → '…' (never send empty to Telegram)
+ *   - within cap    → text as-is
+ *   - exceeds cap   → TRUNCATION_PREFIX + last N chars (last-N policy, shows most-recent output)
+ */
+function displayText(text: string): string {
+  if (text.length === 0) return '…';
+  if (text.length <= TELEGRAM_MAX_DISPLAY) return text;
+  return TRUNCATION_PREFIX + text.slice(-(TELEGRAM_MAX_DISPLAY - TRUNCATION_PREFIX.length));
+}
+
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -120,9 +139,10 @@ export class AfkStreamRouter {
       if (state.messageId === undefined) {
         // No placeholder yet: either first chunk or a prior sendMessage threw.
         // Send the full accumulated buffer so no text is lost on retry.
+        // displayText guarantees a non-empty string and caps at TELEGRAM_MAX_DISPLAY.
         try {
           const placeholder = await this.deps.bot.api.sendMessage(
-            this.deps.chatId, state.text, { message_thread_id: topicId },
+            this.deps.chatId, displayText(state.text), { message_thread_id: topicId },
           );
           state.messageId = placeholder.message_id;
           state.lastEditAt = Date.now();
@@ -134,7 +154,7 @@ export class AfkStreamRouter {
       } else {
         const now = Date.now();
         if (done || now - state.lastEditAt >= STREAM_EDIT_THROTTLE_MS) {
-          await this.deps.bot.api.editMessageText(this.deps.chatId, state.messageId, state.text || '_(empty response)_');
+          await this.deps.bot.api.editMessageText(this.deps.chatId, state.messageId, displayText(state.text));
           state.lastEditAt = now;
         }
       }
@@ -146,7 +166,8 @@ export class AfkStreamRouter {
   private async handleError(sessionId: string, requestId: string, error: string): Promise<void> {
     const key = `${sessionId}:${requestId}`;
     const state = this.streamStates.get(key);
-    this.streamStates.delete(key);
+    this.streamStates.delete(key); // Always clean up — cycle-1 invariant; must not be gated.
+    if (!this.deps.isActive()) return; // Skip Telegram send when AFK is deactivated (race guard).
     const topicId = state?.topicId ?? this.deps.getTopicId(sessionId);
     if (topicId === undefined) return;
     if (state?.messageId !== undefined) {

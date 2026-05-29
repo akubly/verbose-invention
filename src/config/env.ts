@@ -86,6 +86,11 @@ export async function parseEnv(): Promise<EnvConfig> {
     allowedUserIdSet = new Set(config.telegramAllowedUserIds);
   }
 
+  if (allowedUserIdSet !== undefined && allowedUserIdSet.size === 0) {
+    console.error('[reach] Fatal: allowed user list is empty (env var TELEGRAM_ALLOWED_USER_IDS or config telegramAllowedUserIds resolved to size 0) — this would deny all users. Unset to allow all, or provide at least one ID.');
+    process.exit(1);
+  }
+
   // Warn that all chat members can trigger AFK mirror input (security-relevant; only when chatId is known)
   if (chatId !== undefined && allowedUserIdSet === undefined) {
     console.warn(

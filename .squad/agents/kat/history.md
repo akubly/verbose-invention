@@ -1,3 +1,72 @@
+## Learnings — 2026-05-28T23:25:16-07:00 — PR #7 Copilot Review Cycle 4: compensation timer leak + 3 nits
+
+**Timer leak — `compensatePartialActivation` Promise.race:**
+`compensatePartialActivation` used `Promise.race([closePromise, timeout])` where `timeout` was a bare `setTimeout`. When `closeForumTopic` won the race, the `setTimeout` was never cleared, leaving N pending timers attached to the event loop — one per binding in the fleet. The fix: capture `timeoutHandle` in the outer scope, call `.finally(() => clearTimeout(timeoutHandle))` on the race result. The timeout still fires correctly when `closeForumTopic` loses the race; it's just always cleaned up afterward.
+
+**Invariant added:** "In `compensatePartialActivation`, always store the `setTimeout` handle and clear it in a `.finally()`. A bare `Promise.race` with a timeout promise leaks the timer when the non-timeout side wins."
+
+**A6-6 tests tightened:**
+Updated `vi.getTimerCount()` assertions from `FLEET_SIZE` to `0`. The old assertion accidentally documented the leak as "working correctly". The new assertion proves the production fix: all N timers are cancelled after compensation completes.
+
+**env.ts fatal message (nit):**
+Updated the deny-all guard message from `'allowedUserIds is empty'` to name both `TELEGRAM_ALLOWED_USER_IDS` (env var) and `telegramAllowedUserIds` (config.json) so the error is immediately actionable for operators.
+
+**env.test.ts comment (nit):**
+Updated stale comment `'N2 (backlog) test below'` → `'shipped N2 guard test below'` to reflect that the guard shipped in Phase 8.
+
+---
+
+## Learnings — 2026-05-28T23:25:16-07:00 — PR #7 Copilot Review Cycle 3: 4096-char cap + handleError isActive guard
+
+**Thread A — Telegram 4096-char limit:**
+`state.text` is an unbounded accumulator. If a long stream exceeds 4096 chars, every `sendMessage`/`editMessageText` call would return a 400 error and the stream would get permanently stuck. Empty `state.text` causes `sendMessage` to fail with a 400 on empty-body.
+
+**Fix — `displayText()` helper + constants:**
+- `TELEGRAM_MAX_TEXT = 4096` documents the API limit.
+- `TELEGRAM_MAX_DISPLAY = 4000` is the safe display cap (headroom for the truncation prefix).
+- `displayText(text)`: empty → `'…'`; within cap → passthrough; over cap → `TRUNCATION_PREFIX + text.slice(-bodyLen)` (last-N policy — streaming output's most recent content is what the user cares about).
+- Applied to BOTH `sendMessage` (placeholder creation) and `editMessageText` in `handleChunk`. The full text is still accumulated in `state.text` unchanged; only the displayed slice is capped.
+
+**Invariant added:** "displayText() must be used for every Telegram text argument in handleChunk — never pass `state.text` raw. The full buffer is kept in state; only the display slice is capped."
+
+---
+
+**Thread B — handleError race with deactivation:**
+`handleChunk` guards with `isActive()` at entry, but `handleError` previously had no such guard. An error frame racing against `/back` could arrive after deactivation and emit a spurious `❌ Error` message in the now-closed topic.
+
+**Fix:**
+- After `this.streamStates.delete(key)` (unconditional — cycle-1 invariant), add `if (!this.deps.isActive()) return;`.
+- State cleanup fires regardless; the Telegram send is skipped when AFK is off.
+
+**Invariant added:** "In handleError, state cleanup (streamStates.delete) must always run unconditionally. The isActive() guard gates only the Telegram-side error emission — never the state cleanup."
+
+---
+
+
+**Thread 5 — handleChunk placeholder retry on transient sendMessage failure:**
+If `sendMessage()` throws on the first chunk (rate limit, transient API error), the original code left `streamStates` with a fully-created `StreamState` entry but `messageId` still undefined. All subsequent chunks hit `else` (state already existed) and skipped the placeholder branch entirely, leaving the stream permanently stuck with no Telegram updates.
+
+**Fix — two-part, both required:**
+1. **Eager state init + retry guard:** Create `StreamState` unconditionally before any network call. Check `state.messageId === undefined` (not `!state`) to decide whether to create the placeholder. This means any chunk that finds `messageId` absent will retry the `sendMessage`, not just the very first chunk.
+2. **Buffer before network:** Append `chunk` to `state.text` before calling `sendMessage`. If the send throws, `state.text` already contains the accumulated buffer. The next chunk retries `sendMessage` with the full buffer — no text is lost across retry attempts.
+
+**Inner try/catch pattern:** The `sendMessage` call is wrapped in its own `try/catch` inside the outer `try/finally`. On failure it logs a warning and `return`s. The outer `finally` still fires — `done=true` cleans up as normal (stream terminating anyway); `done=false` leaves state intact for the next chunk.
+
+**Invariant added:** "For handleChunk, chunk text must be appended to the buffer before any network call, and placeholder creation must be retried whenever `state.messageId === undefined`."
+
+---
+
+**Thread 1 & 2 — sessionRequestIds empty-Set leak (enqueueChunk / enqueueError):**
+Deleting a requestId from a session's Set but never checking whether the Set is now empty leaves a stale `Set()` behind for every session that has ever streamed. Fix: extract `removeRequestId(sessionId, requestId)` that deletes the Set and its key together when size reaches 0. Both call sites now use the same helper — they stay in sync automatically.
+
+**Thread 3 — handleChunk early-return skips done=true cleanup:**
+Returning early when `getTopicId` is undefined mid-stream prevents the `finally { if (done) streamStates.delete(key) }` from running, leaking the state entry. Fix: resolve topicId as `streamStates.get(key)?.topicId ?? getTopicId(sessionId)` before the guard — existing state's topicId satisfies the check even after the binding is removed.
+
+**Thread 4 — handleError early-return skips state deletion:**
+Same shape as Thread 3: the early-return on undefined topicId prevented state cleanup for a terminating stream. Fix: delete state first (stream is done regardless), then derive topicId from `state?.topicId ?? getTopicId(sessionId)`. Telegram error send fires when a topicId is available; either way the state is gone.
+
+**General pattern learned:** For any "stream terminating" path (done=true chunk, error), always delete state in a finally or unconditionally before topic-ID resolution — cleanup must not be gated on a live binding.
+
 ---
 
 ### 2026-05-24 — /afk Mode: 9 Telegram-Side UX & Bot API Opens Filed
@@ -169,4 +238,44 @@ Validation: `npx tsc --noEmit`, `npm run lint`, targeted AFK contract tests, tar
 **Decisions merged to `.squad/decisions.md`:** `kat-phase7-mode-state.md` — session/topic maps, 250ms topic burst gap + 429 retry, registration augmentation, mirror.input routing, SessionEntry schema.
 
 **Ready for:** Jun testing (contract tests bind to live AfkModeController) + Carter/Jun validation.
+
+---
+
+## Learnings — 2026-05-27T23:48:20-07:00 — Phase 8 N2: Deny-all guard landed
+
+**Files changed:**
+- `src/config/env.ts` — added the deny-all guard (6 lines) immediately after `allowedUserIdSet` is finalized in the config-layer `else if` branch (and after both branches, so it covers any future third path). The guard matches the surrounding style: `console.error` + `process.exit(1)`, same pattern as the env-var empty-string fatal above it.
+- `tests/config/env.test.ts` — replaced the `N2 (backlog)` documentation test with an assertive test (`N2: exits with code 1 when config telegramAllowedUserIds is an empty array (deny-all guard)`). Updated header comment to reflect the item is no longer backlog.
+
+**Placement subtlety:** The guard must sit AFTER both branches (`if TELEGRAM_ALLOWED_USER_IDS` and `else if config.telegramAllowedUserIds`) so it catches either path producing an empty set. The current code structure makes this straightforward — no edge cases required relocation.
+
+**Boundary note:** Jun owns the env-var test variant for N2 (`TELEGRAM_ALLOWED_USER_IDS=,` corner case) and the N3 end-to-end integration test through `main()`. This entry covers only the production guard + direct unit test for the config-JSON path.
+
+---
+
+## Learnings — 2026-05-28T10:00:30-07:00 — Phase 8 F4: afkMode.ts soft refactor
+
+**Trigger:** `afkMode.ts` hit 733 LOC, crossing the F4 watch threshold.
+**Disposition:** Soft refactor (Aaron's choice) — no compensation extraction; honest subsystem split only.
+
+**New file: `src/bot/afkStreamRouter.ts` (133 LOC)**
+
+Extracted the complete stream routing subsystem out of `AfkModeController` into `AfkStreamRouter`:
+- `StreamState` interface (private to module)
+- `STREAM_EDIT_THROTTLE_MS` constant
+- Three private maps: `streamStates`, `streamChains`, `sessionRequestIds`
+- Four methods: `enqueueChunk` (was `enqueueStream`), `enqueueError` (was `enqueueStreamError`), `handleChunk` (was `handleStream`), `handleError` (was `handleStreamError`)
+- Two lifecycle methods: `cleanupSession(sessionId)` (replaces inline 9-line O(1) cleanup in `handleDisconnect`) and `reset()` (replaces three `.clear()` calls in `deactivate` + activation rollback)
+
+**Dependency injection pattern:** `AfkStreamRouter` takes a `deps` object with `getTopicId`, `isActive`, `bot`, and `chatId`. No imports back into `afkMode.ts` — dependency direction is clean (router → afkMode for `TopicBinding` is avoided by using a `getTopicId` callback instead of passing the full binding).
+
+**Final LOC:**
+- `src/bot/afkMode.ts`: 649 LOC (was 733; −84)
+- `src/bot/afkStreamRouter.ts`: 133 LOC (new)
+
+**Validation:** `npx tsc --noEmit` clean, `npx vitest run` 515 passed / 4 skipped / 0 failed, `npm run lint` 0 warnings.
+
+**Constraint respected:** `compensatePartialActivation` stays inline in `afkMode.ts` — single caller, single failure-rollback path, no second compensation path yet.
+
+**Architectural note filed to inbox** (see `kat-afkmode-refactor-insights.md`): the `allowMirrorInput` method + `mirrorRates`/`globalMirrorRate` fields form a second extractable subsystem ("mirror rate limiter") if the file grows again. Not acted on.
 

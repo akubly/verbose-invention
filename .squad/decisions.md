@@ -2903,3 +2903,369 @@ Date: 2026-05-24T23:19:14-07:00
 
 The tests are contract-level and intentionally exercise the externally observable ADR-11 surface: bridge messages, Telegram API calls, registry reflection, and relay target changes. The remaining red tests are useful convergence signals, not test harness load failures.
 
+
+---
+
+# Phase 8: Integration Testing & Configuration Guards
+
+## Phase 8 P1 Sprint — SHIPPED
+
+**Date:** 2026-05-27  
+**Coordinator:** Scribe  
+**Team:** Kat, Carter, Jun
+
+### Summary
+
+Phase 8 P1 sprint completed 2026-05-27. Four backlog items closed (A7, A8, N2, N3). 
+Zero ADR drift detected. Test baseline: **515 passed / 4 skipped / 0 failed**.
+
+---
+
+## A7 — Inbound Message Shape Coverage
+
+# Carter A7 — Inbound Shape Coverage Complete
+
+**Date:** 2026-05-27T23:48:20-07:00
+**Author:** Carter (Bridge Dev)
+**Requested by:** Aaron Kubly
+**Phase 8 backlog item:** A7 (P1)
+
+---
+
+## Summary
+
+Extended `tests/bridge/extension-protocol-drift.test.ts` with 30 new assertions
+covering all six inbound message types listed in the A7 backlog item.
+
+**File:** `tests/bridge/extension-protocol-drift.test.ts`
+**New test count:** 30 (file total: 31, including the 1 pre-existing outbound test)
+
+---
+
+## New assertion groups
+
+| Group | Tests | What's covered |
+|---|---|---|
+| InboundMessage union ↔ extension.mjs | 3 | All emitted types are declared; all A7 types in union and in extension.mjs sends |
+| hello (RegisterMessage) | 6 | Discriminant, 3 required fields, 1 optional field, no-extra-fields guard |
+| pong (PongMessage) | 4 | Discriminant, 2 required fields, no-extra-fields guard |
+| stream (StreamMessage) | 6 | Discriminant, 4 required fields (incl. `done: boolean`), no-extra-fields guard |
+| stream.error (StreamErrorMessage) | 5 | Discriminant, 3 required fields, no-extra-fields guard |
+| afk.request (AfkRequestMessage) | 3 | Discriminant, 1 required field, no-extra-fields guard |
+| back.request (BackRequestMessage) | 3 | Discriminant, 1 required field, no-extra-fields guard |
+
+---
+
+## Negative-case coverage
+
+Each type includes a `'no undeclared fields'` test that asserts the interface's
+field-name set exactly matches the ADR spec. Together with the required/optional
+field assertions, this covers all three negative cases from the backlog:
+
+- **Extra fields rejected** — `no undeclared fields` test fails if a new field
+  is added to the interface without updating the ADR.
+- **Missing required fields rejected** — `fieldName is required string/boolean`
+  test fails if a required field is removed or made optional.
+- **Wrong-typed fields rejected** — `typeStr` assertion fails if a field's
+  TypeScript type annotation drifts from the ADR-specified wire type.
+
+---
+
+## Drift finding
+
+**No drift found.** All six interfaces match their ADR specs exactly:
+
+- `hello` — ADR-8 base (`type`, `sessionId`, `sessionName`) + ADR-10 addition
+  (`authToken: string` required) + ADR-11 addition (`cwd?: string` optional).
+  All three layers correctly typed in `RegisterMessage`.
+- `pong` — Exact ADR-8 match.
+- `stream` — Exact ADR-8 match. Both chunk and final-chunk variants share the
+  single `StreamMessage` interface with `done: boolean`.
+- `stream.error` — Exact ADR-8 match.
+- `afk.request` — Exact ADR-11 §4.1 match.
+- `back.request` — Exact ADR-11 §4.3 match.
+
+---
+
+## Validation
+
+```
+npx vitest run tests/bridge/extension-protocol-drift.test.ts
+  31 tests passed (30 new + 1 pre-existing)
+
+npx tsc --noEmit    → clean
+npm run lint        → clean
+npx vitest run      → 511 passed / 4 pre-existing A8/N3 failures (unrelated)
+```
+
+Pre-existing failures confirmed via `git stash` before/after — not caused by A7.
+
+
+---
+
+## N2 — Deny-All Configuration Guard
+
+# N2 Guard — Shipped
+
+**Date:** 2026-05-27T23:48:20-07:00  
+**Author:** Kat  
+
+## Summary
+
+The deny-all guard for `allowedUserIds: Set([])` is now in production.
+
+## Details
+
+**File:** `src/config/env.ts`  
+**Location:** After line 86 (after `allowedUserIdSet = new Set(config.telegramAllowedUserIds)` in the config-layer `else if` branch), immediately before the ALL-users warn block.
+
+**Guard code (lines 88–92 post-edit):**
+```ts
+if (allowedUserIdSet !== undefined && allowedUserIdSet.size === 0) {
+  console.error('[reach] Fatal: allowedUserIds is empty — this would deny all users. Unset to allow all, or provide at least one ID.');
+  process.exit(1);
+}
+```
+
+The guard sits after both the env-var branch and the config-file branch so it covers either source of an empty set.
+
+**Test name:** `N2: exits with code 1 when config telegramAllowedUserIds is an empty array (deny-all guard)`  
+**Test file:** `tests/config/env.test.ts`
+
+## Validation
+
+- `npx tsc --noEmit` — clean  
+- `npx vitest run tests/config/env.test.ts` — 12/12 passed  
+- `npm run lint` — 0 warnings  
+
+## Boundary
+
+Jun owns the env-var variant test (`TELEGRAM_ALLOWED_USER_IDS=,` corner case) and the N3 end-to-end integration test through `main()`. This item covers only the production guard and its direct unit test.
+
+
+---
+
+## A8 & N3 — Composition Root Integration
+
+# Jun Phase 8 Coverage Shipped
+
+**Date:** 2026-05-27T23:48:20-07:00
+**Author:** Jun (Test Engineer)
+
+## Summary
+
+Phase 8 P1 sprint coverage complete. Three deliverables shipped; all three verified
+green (`npx tsc --noEmit`, `npx vitest run`, `npm run lint`).
+
+---
+
+## Deliverables
+
+### A8 — Composition root integration harness
+
+**File:** `tests/integration/main-composition.test.ts` (new, 7 tests)
+
+Closes the A8 REOPENED gate. Two branches of `main()` verified in isolation
+with all external module boundaries mocked via `vi.hoisted()` + `vi.mock()`.
+
+| Test | Coverage |
+|---|---|
+| A8a-1 | `runPairingMode()` called; bot never starts |
+| A8a-2 | Resolved config passed to `runPairingMode()` |
+| A8a-3 | No `ExtensionBridge`, `SessionRegistry`, or `CopilotClientImpl` constructed |
+| A8b-1 | All deps wired; `bot.start()` reached (bridge available) |
+| A8b-2 | SDK-only fallback; `AfkModeController` not constructed (bridge unavailable) |
+
+**Status:** A8 CLOSED ✅
+
+---
+
+### N2 env-var variant
+
+**File:** `tests/config/env.test.ts` (1 new test added to existing file)
+
+Test name: `N2 env-var: exits with code 1 when TELEGRAM_ALLOWED_USER_IDS is comma-only (all tokens empty after split)`
+
+Covers `TELEGRAM_ALLOWED_USER_IDS=,` — the comma-only value trims to `,` (passes
+the empty-string guard), then splits to `["",""]` where both tokens have `length === 0`,
+triggering the "positive integer" fatal path. Distinct from Kat's N2 guard test
+(`telegramAllowedUserIds: []` config-JSON empty array).
+
+---
+
+### N3 — Config-layer allowed IDs end-to-end
+
+**File:** `tests/integration/main-composition.test.ts` (folded into A8 harness, 2 tests)
+
+Tests in the N3 describe block within the A8 harness file:
+
+| Test | Coverage |
+|---|---|
+| N3-1 | `AfkModeController` receives `allowedUserIds: Set([777, 888])` when `parseEnv()` returns config-sourced `allowedUserIdSet` |
+| N3-2 | `allowedUserIds` key absent from `AfkModeController` options when `allowedUserIdSet` is `undefined` |
+
+Complements `tests/config/env.test.ts` (M5-4) unit tests for the `parseEnv()` config-file
+branch. N3 tests the wiring in `main()`: config values flow through to `AfkModeController`.
+
+---
+
+## Verification
+
+```
+npx tsc --noEmit          → exit 0 (clean)
+npx vitest run            → 515 passed | 4 skipped | 0 failed (39 files)
+npm run lint              → 0 warnings, exit 0
+```
+
+## Boundary Notes
+
+- Kat owns the N2 production guard (`src/config/env.ts`) and its corresponding direct
+  unit test (`N2: exits with code 1 when config telegramAllowedUserIds is an empty array`).
+- This item covers Jun's scope: env-var comma-only variant + composition-root integration harness.
+- No production code changes were made; all changes are in test files.
+
+
+---
+
+# Phase 8 Watch Sweep — Complete
+
+**Date:** 2026-05-28T10:00:30-07:00  
+**Coordinator:** Scribe (audit), Kat (F4 refactor), Jun (A6-6 verdict)  
+**Phase 8 status:** P1 SHIPPED (2026-05-27) + watch sweep COMPLETE (2026-05-28)
+
+## Audit Summary
+
+Jun (explore agent) audited all P2/watch items against current trigger conditions:
+- **F4:** FIRED — `afkMode.ts` 733 LOC > 700 threshold
+- **A6-6:** Audit complete; Jun verdict = CLOSED
+- **A2, F8, F5, A10-4:** DORMANT (no trigger conditions met)
+
+No files written by audit.
+
+---
+
+## F4 Soft Refactor — afkMode.ts → afkStreamRouter.ts
+
+**Date:** 2026-05-28T10:00:30-07:00  
+**Author:** Kat  
+**Trigger:** F4 watch fired — `afkMode.ts` reached 733 LOC (threshold: 700)  
+**Disposition:** Soft refactor (Aaron's choice) — split cohesive subsystems; no compensation extraction
+
+### Decision
+
+Extracted the stream routing subsystem from `AfkModeController` into a new sibling module `src/bot/afkStreamRouter.ts`.
+
+### Files Changed
+
+| File | LOC | Responsibility |
+|---|---|---|
+| **new:** `src/bot/afkStreamRouter.ts` | 133 | Chain-serialized stream routing: manages `streamStates`, `streamChains`, `sessionRequestIds` maps and all stream event handling logic |
+| **modified:** `src/bot/afkMode.ts` | 733 → 649 | Removed stream routing, kept `compensatePartialActivation` inline (no second compensation path yet) |
+
+### What Moved
+
+- `StreamState` interface
+- `STREAM_EDIT_THROTTLE_MS` constant
+- Three private maps (`streamStates`, `streamChains`, `sessionRequestIds`)
+- Four methods: `enqueueStream`, `enqueueStreamError`, `handleStream`, `handleStreamError`
+- Inline cleanup in `handleDisconnect` and activation rollback (replaced by `streamRouter.cleanupSession()` / `streamRouter.reset()`)
+
+### What Did NOT Move
+
+- `compensatePartialActivation` — stays inline (single caller, no second compensation path yet)
+- All public exports and behavior — unchanged
+- `afkBridgePort.ts` — untouched
+
+### Design Rationale
+
+`AfkStreamRouter` has a single clear responsibility: manage chain-serialized state for routing CLI stream output to Telegram topics during AFK mode. Its dependencies are injected via a `deps` object, keeping the dependency direction clean and enabling independent testing.
+
+### Validation
+
+- `npx tsc --noEmit` — clean
+- `npx vitest run` — **515 passed / 4 skipped / 0 failed** (39 test files)
+- `npm run lint` — 0 warnings
+
+---
+
+## A6-6 Verdict — Fleet Compensation Close Burst ✅ CLOSED
+
+**Date:** 2026-05-28T10:00:30-07:00  
+**Author:** Jun (Test Engineer)  
+**Requested by:** Aaron Kubly
+
+### Verdict
+
+The parallel `Promise.all` close burst in `compensatePartialActivation` plus per-call `withRateLimitRetry` is **safe at N=20+ sessions**. The A6-6 watch is **RESOLVED**.
+
+### Tests Written
+
+**File:** `tests/integration/afk-mode-fleet-compensation.test.ts` (new, 2 tests)
+
+Both tests **GREEN** — `517 passed / 4 skipped / 0 failed` (full suite).
+
+#### TC-A6-6-1 — No 429s, N=20
+
+Activation forced to fail at `postGeneralSummary` (after all 20 topics created). Validates:
+- `createForumTopic` called exactly 20 times ✅
+- `closeForumTopic` called exactly 20 times (no leaks) ✅
+- All 20 topic IDs unique in close calls (no leaks, no wrong IDs) ✅
+- No duplicate closes ✅
+- 20 compensation timeout timers pending (all closes completed before 7 s cap) ✅
+
+#### TC-A6-6-2 — 429 pressure, 7/20 topics, N=20
+
+Same failure trigger. `closeForumTopic` returns 429 on first call for 7 topics; second call (retry) succeeds. Validates:
+- All 20 unique topic IDs eventually closed ✅
+- Total close calls = 20 + 7 retries = 27 ✅
+- 7 topics actually retried ✅
+- 20 compensation timeouts pending (none fired) ✅
+- `[afk] Rate-limited` warning emitted exactly 7 times ✅
+
+### Evidence for CLOSED
+
+1. **Timeout cap bounds wall time** — Each `compensationClose` races against `COMPENSATION_TIMEOUT_MS = 7000 ms`. Max wall time ≤ 7 s, not N × 7 s.
+2. **Per-call retry is bounded** — `withRateLimitRetry` caps at `MAX_RETRIES = 4` and `MAX_RATE_LIMIT_DELAY_MS = 30 000 ms`. Infinite thrashing structurally impossible.
+3. **Compensation is best-effort** — Each close wrapped in `.catch() => log`. Failed close logs warning, added to `failures[]`, but does not cancel other closes or throw.
+4. **Test validates at trigger threshold** — Watch fired at N > 15. TC-A6-6-1/2 exercise N = 20 cleanly.
+
+---
+
+## Architectural Note — Mirror Rate Limiter Extraction (Future)
+
+**Date:** 2026-05-28T10:00:30-07:00  
+**Author:** Kat  
+**Context:** Observed during F4 soft refactor  
+**Triage owner:** Noble Six (architecture review at next pass)
+
+During stream routing extraction, `allowMirrorInput` + `mirrorRates`/`globalMirrorRate` became visible as a second cohesive, extractable unit:
+
+- `allowMirrorInput(sessionId)` — pure logic, no Telegram API calls
+- `mirrorRates: Map<string, MirrorRateState>` — per-session sliding window
+- `globalMirrorRate: MirrorRateState` — cross-session cap
+
+**Why not extracted now:** `afkMode.ts` is at 649 LOC after stream router split — comfortably under 700. Premature extraction would add interface surface without pressure.
+
+**Natural trigger:** Extract a `MirrorRateLimiter` class if `afkMode.ts` approaches 700 again, or if rate-limit logic gains complexity (e.g., configurable limits, burst allowance, per-user caps).
+
+**Design note:** `MirrorRateLimiter` would be clean to extract — it only reads `Date.now()` and manages its own maps. No bot API calls, no session topology. Could even be a pure functional module.
+
+---
+
+## Phase 8 Watch Status Summary
+
+| Watch | Status | Disposition |
+|---|---|---|
+| F4 | ✅ RESOLVED | Soft refactor: extracted `afkStreamRouter.ts` (133 LOC); `afkMode.ts` now 649 LOC |
+| A6-6 | ✅ CLOSED | Promise-all burst safe at N=20+; compensation logic validated via TC-A6-6-1/2 |
+| A2 | DORMANT | P2; defer until first relay error code is added |
+| F8 | DORMANT | P2; extract when dynamic auth arrives |
+| F5 | DORMANT | P2; trigger if `AfkBridgePort` event count ≥ 8 or spans two unrelated domains |
+| A10-4 | DORMANT | Future; trigger when Phase 8 adds fourth operation to topic lifecycle |
+
+**Remaining open items** (from Phase 8 backlog, not watch-triggered):
+- None — all P1 items (A7, N2, N3, A8) resolved in Phase 8 P1 sprint (2026-05-27)
+
+**Phase 8 Status:** P1 SHIPPED (2026-05-27) + watch sweep COMPLETE (2026-05-28). Remaining P2/dormant watches stay dormant per Cycle 7 triage.
+
+

@@ -321,16 +321,19 @@ export class AfkModeController {
     //      has created a fresh topicId — the orphan close targets a dead ID.
     //   3. Promise.race caps wall time per close to COMPENSATION_TIMEOUT_MS.
     const compensationClose = (topicId: number): Promise<void> => {
-      const timeout = new Promise<never>((_, reject) =>
-        setTimeout(
+      let timeoutHandle: NodeJS.Timeout | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(
           () => reject(new Error(`Compensation timed out after ${COMPENSATION_TIMEOUT_MS}ms: closeForumTopic ${topicId}`)),
           COMPENSATION_TIMEOUT_MS,
-        ),
-      );
-      return Promise.race([
-        this.withRateLimitRetry(() => this.bot.api.closeForumTopic(this.chatId, topicId)).then(() => undefined),
-        timeout,
-      ]);
+        );
+      });
+      const closePromise = this.withRateLimitRetry(() =>
+        this.bot.api.closeForumTopic(this.chatId, topicId),
+      ).then(() => undefined);
+      return Promise.race([closePromise, timeout]).finally(() => {
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+      });
     };
 
     await Promise.all(createdBindings.map(({ sessionId, topicId }) =>

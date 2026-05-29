@@ -89,7 +89,7 @@ describe('parseEnv (I4-2 / M5-4)', () => {
   // N2 env-var variant: comma-only value produces all-empty tokens → fatal.
   // TELEGRAM_ALLOWED_USER_IDS="," trims to "," (length > 0, passes the empty-string guard),
   // then split(',') yields ["",""] — each token has length 0 → triggers the positive-integer
-  // fatal path. This is distinct from the N2 (backlog) test below which covers the config-JSON
+  // fatal path. This is distinct from the shipped N2 guard test below which covers the config-JSON
   // empty-array case.
   it('N2 env-var: exits with code 1 when TELEGRAM_ALLOWED_USER_IDS is comma-only (all tokens empty after split)', async () => {
     process.env.TELEGRAM_ALLOWED_USER_IDS = ',';

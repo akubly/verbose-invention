@@ -1,3 +1,21 @@
+## Learnings — 2026-05-28T23:25:16-07:00 — PR #7 Copilot Review Cycle 4: compensation timer leak + 3 nits
+
+**Timer leak — `compensatePartialActivation` Promise.race:**
+`compensatePartialActivation` used `Promise.race([closePromise, timeout])` where `timeout` was a bare `setTimeout`. When `closeForumTopic` won the race, the `setTimeout` was never cleared, leaving N pending timers attached to the event loop — one per binding in the fleet. The fix: capture `timeoutHandle` in the outer scope, call `.finally(() => clearTimeout(timeoutHandle))` on the race result. The timeout still fires correctly when `closeForumTopic` loses the race; it's just always cleaned up afterward.
+
+**Invariant added:** "In `compensatePartialActivation`, always store the `setTimeout` handle and clear it in a `.finally()`. A bare `Promise.race` with a timeout promise leaks the timer when the non-timeout side wins."
+
+**A6-6 tests tightened:**
+Updated `vi.getTimerCount()` assertions from `FLEET_SIZE` to `0`. The old assertion accidentally documented the leak as "working correctly". The new assertion proves the production fix: all N timers are cancelled after compensation completes.
+
+**env.ts fatal message (nit):**
+Updated the deny-all guard message from `'allowedUserIds is empty'` to name both `TELEGRAM_ALLOWED_USER_IDS` (env var) and `telegramAllowedUserIds` (config.json) so the error is immediately actionable for operators.
+
+**env.test.ts comment (nit):**
+Updated stale comment `'N2 (backlog) test below'` → `'shipped N2 guard test below'` to reflect that the guard shipped in Phase 8.
+
+---
+
 ## Learnings — 2026-05-28T23:25:16-07:00 — PR #7 Copilot Review Cycle 3: 4096-char cap + handleError isActive guard
 
 **Thread A — Telegram 4096-char limit:**

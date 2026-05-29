@@ -172,9 +172,9 @@ describe('A6-6 — fleet compensation close burst', () => {
       expect(closedTopicIds).toContain(topicId);
     }
 
-    // Compensation timeout timers are all still pending (none fired), confirming
-    // all 20 closes completed via the close-result path — not the 7 s cap.
-    expect(vi.getTimerCount()).toBe(FLEET_SIZE);
+    // Compensation timeout timers are all cleared (none leaked), confirming
+    // all 20 closes completed and each timeout was cancelled.
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('TC-A6-6-2 — all N=20 topics closed via compensation under 429 pressure: retries succeed, no leaks', async () => {
@@ -220,7 +220,8 @@ describe('A6-6 — fleet compensation close burst', () => {
     // All 7 429 mock calls were actually triggered (confirms retry path was exercised).
     expect(already429d.size).toBe(EXPECTED_429_COUNT);
 
-    // Compensation timeouts all still pending — no close needed the 7 s timeout cap.
-    expect(vi.getTimerCount()).toBe(FLEET_SIZE);
+    // Compensation timeouts all cleared — no timer leak; every close resolved
+    // and its timeout was cancelled.
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

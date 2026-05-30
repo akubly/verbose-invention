@@ -20,6 +20,9 @@ Suite: 720 passed / 4 skipped / 1 todo. +150 net tests (Phase 8.5 → Phase 9). 
 **Phase 8.5 COMPLETE.** Install story tests shipped (copyExtension 14, uninstall 6, index 13 = 33 new). Suite 570 passed / 4 skipped.
 
 **Phase 8 COMPLETE.** Integration harness + config env tests (A8, N2, N3 validation). Phase 7 ADR-11 contract tests (T1–T8). Test infrastructure stabilized.
+**Phase 8.5 COMPLETE.** Shipped 33 new tests for install story (copyExtension 14, uninstall 6, index orchestrator 13). Full suite: 570 passed / 4 skipped / 0 failed ✅. tsc clean, lint zero warnings.
+
+**Phase 8 COMPLETE.** Test infrastructure for Phase 8 finalized. Bridge adapter tests (20), relay integration tests (32) merged into canonical decisions. Test suite: 537 baseline passing (now 570 with Phase 8.5).
 
 ---
 
@@ -135,6 +138,58 @@ Extracted `makeMockBot` + `makeMockCtx` → `tests/helpers/botMocks.ts` and `mak
 - Fix: updated shared helper to `remove: vi.fn().mockResolvedValue(true)` as default. Tests that need falsy (e.g. "no session linked") already call `.mockResolvedValue(false)` explicitly. No other consumers were affected.
 
 **Cast situation:** `as unknown as ISessionRegistry` lives inside the shared helper's implementation — consumers always receive `ISessionRegistry` from the function signature. No consumer-visible casts were introduced.
+## Phase 8.5 Task 3 (2026-05-29T23:27:00-07:00) — copyExtension.ts Tests
+
+**Deliverables:**
+- `tests/install/copyExtension.test.ts` — 9 tests (TC1–TC9) for `copyExtension()`
+- `src/install/copyExtension.ts` — Carter's implementation was already present; stub not needed
+- `.squad/decisions/inbox/jun-task3-copyextension-tests.md` — infrastructure decisions
+
+**Coverage:**
+- TC1 happy path (copy + log), TC2 first install (mkdir), TC3 upgrade (idempotent overwrite)
+- TC4 Copilot CLI not installed, TC5 APPDATA unset, TC6 source missing
+- TC7 spaces + unicode in user profile path
+- TC8 mkdir EPERM → exit(1), TC9 copyFileSync EPERM → exit(1)
+
+**Infrastructure:**
+- `vi.mock('fs', async (importOriginal) => { ...actual, existsSync, mkdirSync, copyFileSync })`
+- Same pattern as `tests/service/install.test.ts`; no new devDependencies
+- `process.exit` spy throws; re-established in `beforeEach` after `vi.clearAllMocks()`
+- Source path = `path.join(process.cwd(), 'extension.mjs')` because Carter's `getProjectRoot()`
+  resolves `path.resolve(__dirname, '..', '..')` which equals `process.cwd()` under vitest ESM
+
+**Verification:** `npx tsc --noEmit` GREEN. `npx vitest run tests/install/copyExtension.test.ts` — 9 passed. Full suite — 42 files, 546 passed / 4 skipped / 0 failed ✅.
+
+**Key learning:** When the source module uses `import * as fs from 'fs'` (bare specifier), the
+vi.mock specifier must be `'fs'`, NOT `'node:fs'`. Mixing specifiers causes the mock to not
+intercept the production code's imports.
+
+## Phase 8.5 Task 2 (2026-05-29T23:44:00-07:00) — Junction / Uninstall / Orchestrator Tests
+
+**Deliverables:**
+- `tests/install/copyExtension.test.ts` — extended to TC14 (TC10–TC14 = junction mode: symlinkSync called, log contains "linked/dev", rmSync before re-junction, idempotent absent case, production regression)
+- `tests/install/uninstall.test.ts` — 6 tests (UN1–UN6): service uninstall, ext dir remove, data preserve, wipe flag, idempotent absent, both absent
+- `tests/install/index.test.ts` — 13 tests (IX1–IX13): happy path, copyExtension+service called, prompts bot token, empty token exits, .env creation, key preservation, allowed IDs prompt, skip+confirm y, skip+decline n, chat ID warn-only, non-TTY exit, non-TTY all-set proceeds, secret hygiene
+- `src/install/uninstall.ts` — stub created (Carter must implement body, interface preserved)
+- `.squad/decisions/inbox/jun-task2-tests.md` — infrastructure decisions
+
+**Key learnings:**
+
+1. **Readline mock via answer queue** — `vi.hoisted()` + `rlAnswerQueue.shift()` pattern lets each test push expected answers; `mockCreateInterface` call tracking confirms TTY gate assertions. This is robust to prompt-text changes.
+
+2. **Carter's junction support was already live** — TC10–TC14 were expected RED but landed GREEN because Carter had already implemented the `NODE_ENV=development` branch before tests ran. Cross-team anticipatory testing still has value: it confirmed Carter's implementation matched the contract exactly.
+
+3. **Sparse service mock causes import errors** — mock all expected named exports from a module even if only one is used; sparse mocks cause "not a function" at runtime when code uses additional named bindings.
+
+4. **`process.stdin.isTTY` needs `Object.defineProperty`** — it's a plain property, not a getter, so `vi.spyOn` won't work. Use `{ configurable: true }` and restore in `afterAll`.
+
+5. **`vi.clearAllMocks()` not `vi.restoreAllMocks()`** — restoreAllMocks wipes factory-closure `vi.fn()` implementations. clearAllMocks only resets call records; re-establish the handful of spy implementations manually each `beforeEach`.
+
+**Verification:** `npx tsc --noEmit` GREEN. `npx vitest run tests/install/` — 33/33 GREEN. Full suite maintained.
+
+---
+
+## Learnings
 
 **Learnings:**
 1. **Check all vi.fn() return values, not just types** — a no-op `vi.fn()` returning `undefined` is behaviorally different from a stub that returns `true` even when the TS interface says `Promise<boolean>`. Type check passes; runtime test fails.

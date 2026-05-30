@@ -420,3 +420,84 @@ Updated `src/install/uninstall.ts:100-102` to accurately describe that `uninstal
 - **Mock what the tests mock.** When Jun's tests mock `existsSync`/`rmSync` but not `lstatSync`, using `lstatSync` in the implementation silently calls the real filesystem. Use the same fs surface the tests mock. Lesson: read the test file's mock setup before picking implementation strategy for file operations.
 - **node-windows events + process.exit = unreachable code after `install()`/`uninstall()`.** Both functions from service/install.ts call `process.exit` in their event handlers. Any code placed after calling them is dead. Structure orchestrators to print all user-visible output BEFORE the hand-off call.
 - **Dev mode can skip guards that don't apply.** Moving the source-file `existsSync` check inside the production branch is correct: dev mode doesn't need the file to exist separately (the junction exposes it). This also happens to make the tests cleaner. Both are wins.
+
+---
+
+## Phase 9 Item 2 (2026-05-30) — Slash Command Pass-Through
+
+- **BOT_COMMANDS source-of-truth:** `src/bot/commands.ts`. The authoritative list is
+  derived from `bot.command()` registrations in `handlers.ts`: `new` (line 53),
+  `list` (line 131), `remove` (line 145), `resume` (line 161), `help` (line 244),
+  `pair` (line 259). Both `afkMode.ts` and `handlers.ts` import from `commands.ts`.
+  Future maintainers: if you add a BotFather command, add it here too.
+
+- **Pre-existing tests encode old invariants.** T4 in `afk-mode.contract.test.ts`
+  and the "ignores command messages" case in `handlers.test.ts` both tested the old
+  blanket `/` drop behavior. When a design decision changes, grep for tests that
+  assert the old behavior explicitly — they won't fail on type-check or lint, only on
+  the test run. Always run `npx vitest run` after any guard change.
+
+- **ADR vs. Phase update semantics.** ADR-11 §2 said `/back` is CLI-only ("not honored
+  from Telegram"). Phase 9 pass-through supersedes that for relay re-targeting: `/back`
+  now forwards via mirror.input. The core protocol invariant (no `back.confirmed`
+  without `back.request`) is still correct — text pass-through doesn't trigger it.
+  When Phase supersedes an ADR clause, update the test and document the supersession
+  in the decisions file. Don't silently leave contradictory test comments.
+
+- **`ReadonlySet<string>` for shared command sets.** Jun's test contract expected this
+  type. Using `export const X: ReadonlySet<string> = new Set([...])` ensures the
+  consuming code can't mutate the set and the type flows correctly through imports.
+
+---
+
+## Phase 9 Item 3 (2026-05-30) — /cwd Command Group + /new --cwd Flag
+
+- **General Topic detection is `message_thread_id === undefined`.** In Telegram supergroup
+forums, messages in the General Topic have no `message_thread_id`; all session topics
+have one. This is the right guard for commands that should only run in the General Topic.
+
+- **Registry already supported cwd.** `ISessionRegistry.register()` had a 5th optional
+`cwd?: string` param from a prior phase. No interface changes needed. The key constraint:
+when `--cwd` is absent, call with exactly 4 args so existing test assertions
+(`toHaveBeenCalledWith(42, chatId, name, undefined)`) don't break.
+
+- **Position-independent flag parsing via `.replace(/(^|\s)--flagname\s+(\S+)/g, ...)`.**
+This regex correctly handles flags before name, after name, and in any order. The
+`(^|\s)` group captures either start-of-string or a space separator; replacing the full
+match with `''` cleanly removes the flag+value without fusing adjacent words because
+the leading space (when present) is included in the match. Always normalize with
+`.replace(/\s{2,}/g, ' ').trim()` afterward.
+
+- **Dangling flag detection after extraction.** After extracting known flags, a dangling
+`--model` or `--cwd` (present but no value) remains in the `name` string. Detect with
+`/(^|\s)--flagname($|\s)/` — the `$` matches end-of-string, the `\s` matches a following
+space. This preserves the `expect.stringContaining('model value')` assertion from the
+existing test suite without special-casing the old regex.
+
+- **`args.slice(2).join(' ')` for path args with spaces.** Splitting user input on `\s+`
+fragments Windows paths containing spaces (e.g., `C:\my projects\repo`). Rejoining from
+index 2 onward recovers the full path. Always use this pattern for positional path args
+in Telegram command handlers.
+
+- **`relativeTime()` is a private handler-module helper.** Not exported because it's only
+used by the `/cwd list` reply formatter. If tests need to cover it directly, extract to
+`src/bot/formatters.ts` and export — note the move in the decisions file so Jun can
+update imports.
+
+- **720 tests green after Item 3** (637 baseline + 67 Jun Item 2 anticipatory + 16 Jun Item 3
+anticipatory). Test count is a reliable coordination signal: if it doesn't jump when you
+land a feature, check whether Jun's anticipatory tests are failing silently.
+
+---
+
+## Phase 9 Sprint — 2026-05-30
+
+**Sprint shipped.** All 3 Aaron dogfood feedback items addressed:
+1. Orientation message + /status command (Kat, afkMode + handlers)
+2. Slash pass-through via isBotCommand allowlist (Carter Items 2)
+3. /cwd registry + /new --cwd flag (Carter Items 3 + Kat config schema)
+
+**Suite:** 720 passed / 4 skipped / 1 todo. +150 net tests.
+
+**Known Phase 10 follow-up:** Cross-platform path detection in /new --cwd (Unix `/` startsWith check deferred).
+

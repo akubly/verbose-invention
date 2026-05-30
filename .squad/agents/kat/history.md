@@ -151,3 +151,77 @@ back to `SESSION_ID`. `basename` added to the existing `node:path` import.
 - Docs update is lean and fast — most work is thinking about structure, not writing
 
 ---
+
+### Phase 9 Item 1: Orientation Message + /status (2026-05-30)
+
+**Key insight:** The "cheap path" for orientation data (cache `assistant.message` SDK events in the extension, send with `afk.request`) is genuinely cheap — ~15 LOC in the extension, ~3 LOC in protocol, ~50 LOC in daemon. No new SDK calls, no token cost, no latency.
+
+**EventEmitter tuple type pattern:** When updating `AfkBridgeEvents`, updating the tuple type `[sessionId: string, lastAssistantExcerpt?: string]` cascades correctly through the generic `on<K>()` overload in `AfkBridgePort`. No need to manually update the concrete `on()` overloads in the port interface.
+
+**Protocol drift tests:** The project has a test (`extension-protocol-drift.test.ts`) that parses the protocol.ts source and asserts exact field lists for each message type. Any new optional field requires updating this test. Check it whenever adding protocol fields.
+
+**Test expectation precision:** When an EventEmitter now emits `(sessionId, undefined)` instead of `(sessionId)`, Vitest's `.toHaveBeenCalledWith(sessionId)` fails because the call signature includes the extra `undefined` arg. Fix: `.toHaveBeenCalledWith(sessionId, undefined)`.
+
+**Plain text vs MarkdownV2 convention:** Topic messages use `safeSendMessage()` (plain text, no `parse_mode`). General/summary messages use MarkdownV2. The distinction is: per-session topic content → plain text; group-level summary → MarkdownV2. Follow this when formatting new messages.
+
+**Carter coordination:** Phase 9 Item 2 (pass-through) relies on `isBotCommand()` returning `true` for daemon commands so they're NOT forwarded to the CLI. Any new bot command (like `/status`) MUST be added to `BOT_COMMANDS` in `commands.ts` to prevent it from being passed through to the CLI session.
+
+
+### Phase 9 Item 3 Task 5: Config Schema + knownCwds Helpers (2026-05-30T11:46:28-07:00)
+
+**Files created/modified:**
+- `src/config/config.ts` — Added `KnownCwd` interface + `knownCwds?: KnownCwd[]` to `ReachConfig`
+- `src/config/knownCwds.ts` — New helpers module (8 exports)
+- `.squad/decisions/inbox/kat-phase9-item3-config-schema.md` — Decision record for Carter + Jun
+
+**Key decisions made:**
+1. `removeKnownCwd` is a **no-op** on missing alias (returns same config reference). Carter's command layer does the user-facing "not found" message.
+2. `validatePath` is **async** (needs `fs.stat`); all other helpers are sync. Caller pattern: `validatePath()` → `addKnownCwd()` → `saveConfig()`.
+3. Path comparison on Windows is **case-insensitive** (`toLowerCase()` both sides) in `getKnownCwdByPath`.
+4. Alias regex: `/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$/`. Reserved set documents `--cwd`, `--model`, `--name` even though the regex already blocks them (they start with `-`).
+5. `addKnownCwd` calls `nodePath.resolve(path)` for safety even when caller already passed a normalized path — idempotent and cheap.
+
+**Strict tsconfig notes (`exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`):**
+- Avoided `lastUsedAt: undefined` in object literals (fails `exactOptionalPropertyTypes`). Used `{ alias, path, addedAt }` without the optional field.
+- Avoided `arr[i]` index access in `touchKnownCwd`. Used `.map()` with conditional instead.
+
+**Validation results:**
+- `npx tsc --noEmit` — clean
+- `npm run lint` — zero warnings
+- `npx vitest run` — 2 pre-existing failures (Jun's anticipatory T2/T4 tests, not my scope). Config tests 21/21 pass.
+
+---
+
+### Phase 9 README Documentation (2026-05-30T12:18:53-07:00)
+
+**Task:** Document Phase 9 user-facing features in README.md
+
+**Key decisions made:**
+1. **Section placement:** New "Using Reach" section inserted after Installation and before Development Workflow (users install first, then need usage guidance).
+2. **Removed old Usage section:** Pre-Phase-9 "Usage" section was incomplete and now superseded by comprehensive "Using Reach" section. Net change: +57 lines (new) −39 lines (old) = +18 lines.
+3. **Orientation message format:** Used verbatim format from Item 1 Decision 5 (Kat's own decision file), with exact emoji and layout: `📍 Session active`, `━━━━━━━━━━━━━━━━━━`, etc.
+
+**Structure of "Using Reach" section:**
+- Telegram Commands (3 subsections: session mgmt, CWD registry, other)
+- CLI Commands Pass-Through (short explanation)
+- Orientation Message (sample + context)
+- Getting Started: CWD Registry Example (3-step practical workflow)
+- Platform Note (Windows-only, cross-platform deferred)
+
+**Voice/style match:** Consistent with Phase 8.5 install section — scannable, practical, realistic examples, no marketing. Aaron is primary reader.
+
+**Pattern learned:** Documentation updates for new features should read from locked decision files (not code), focus on structure and voice match, and be lean (most work is thinking, not writing).
+
+---
+
+## Phase 9 Sprint — 2026-05-30
+
+**Sprint shipped.** All 3 Aaron dogfood feedback items addressed:
+1. Orientation message + /status command (Item 1, afkMode + handlers)
+2. Slash pass-through via isBotCommand allowlist (Item 2, Carter)
+3. /cwd registry + /new --cwd flag (Item 3, config schema + commands)
+
+**Suite:** 720 passed / 4 skipped / 1 todo. +150 net tests.
+
+**Known Phase 10 follow-up:** Cross-platform path detection in /new --cwd (Unix `/` startsWith check deferred).
+

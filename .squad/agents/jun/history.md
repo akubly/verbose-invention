@@ -22,7 +22,11 @@ Suite: 720 passed / 4 skipped / 1 todo. +150 net tests (Phase 8.5 → Phase 9). 
 **Phase 8 COMPLETE.** Integration harness + config env tests (A8, N2, N3 validation). Phase 7 ADR-11 contract tests (T1–T8). Test infrastructure stabilized.
 **Phase 8.5 COMPLETE.** Shipped 33 new tests for install story (copyExtension 14, uninstall 6, index orchestrator 13). Full suite: 570 passed / 4 skipped / 0 failed ✅. tsc clean, lint zero warnings.
 
-**Phase 8 COMPLETE.** Test infrastructure for Phase 8 finalized. Bridge adapter tests (20), relay integration tests (32) merged into canonical decisions. Test suite: 537 baseline passing (now 570 with Phase 8.5).
+Suite: 720 passed / 4 skipped / 1 todo. +150 net tests (Phase 8.5 → Phase 9). All green.
+
+**Phase 8.5 COMPLETE.** Install story tests shipped (copyExtension 14, uninstall 6, index 13 = 33 new). Suite 570 passed / 4 skipped.
+
+**Phase 8 COMPLETE.** Integration harness + config env tests (A8, N2, N3 validation). Phase 7 ADR-11 contract tests (T1–T8). Test infrastructure stabilized.
 
 ---
 
@@ -80,6 +84,8 @@ Suite: 720 passed / 4 skipped / 1 todo. +150 net tests (Phase 8.5 → Phase 9). 
 3. /cwd registry + /new --cwd flag (Carter Items 3 + Kat config schema)
 
 **Suite:** 720 passed / 4 skipped / 1 todo. +150 net tests.
+
+**Known Phase 10 follow-up:** Cross-platform path detection in /new --cwd (Unix `/` startsWith check deferred).
 
 **Known Phase 10 follow-up:** Cross-platform path detection in /new --cwd (Unix `/` startsWith check deferred).
 
@@ -195,6 +201,8 @@ intercept the production code's imports.
 1. **Check all vi.fn() return values, not just types** — a no-op `vi.fn()` returning `undefined` is behaviorally different from a stub that returns `true` even when the TS interface says `Promise<boolean>`. Type check passes; runtime test fails.
 2. **Successful-default principle for stubs** — mutating stubs (`remove`, `register`, etc.) should default to "success" semantics (`mockResolvedValue(true)`) so that "happy path" tests require no extra setup. Override to failure only when the test specifically exercises the failure branch.
 3. **Review all test assertions before assuming straight migration** — even when no test directly calls `expect(registry.findByName)`, a mock's side-effects (return value) can still flow through the SUT and affect other assertions.
+
+## Full Archive
 
 Phases 1–6, Phase 7 detailed learnings, Phase 8 P1 analysis → `history-archive.md`.
 

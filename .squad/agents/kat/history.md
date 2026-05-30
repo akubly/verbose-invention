@@ -1,17 +1,19 @@
-# Kat — History (Summarized 2026-05-30)
+# Kat — History (Summarized 2026-05-30 → Phase 8.5 complete)
 
 ## Identity & Role
 
-- **Agent:** Kat (Backend Dev, AFK Mode Implementation, Sonnet 4.6)
+- **Agent:** Kat (Backend Dev, AFK Mode Implementation, README Docs, Sonnet 4.6 → Haiku 4.5 for Task 4)
 - **Project:** Reach — TypeScript daemon bridging Telegram to GitHub Copilot CLI
-- **Domain:** AFK mode controller, stream routing, relay re-targeting, Telegram topic lifecycle, permission integration
+- **Domain:** AFK mode controller, stream routing, relay re-targeting, Telegram topic lifecycle, permission integration, **install documentation** (Phase 8.5 Task 4)
 - **Joined:** 2026-05-07
 
 ## Current Status
 
+**Phase 8.5 COMPLETE.** README install section rewritten 2026-05-30 (Quick Start, Installation, Dev Workflow, Upgrading, Uninstall, Platform Support). −17 lines net (consolidation). All scripts referenced will exist when Task 2 (Carter orchestrator) completes.
+
 **Phase 8 COMPLETE.** F4 soft refactor shipped 2026-05-28 (stream router extraction: 133 LOC). AFK mode stable (649 LOC in afkMode.ts). Fleet validation (A6-6) passed: N=20 concurrent closes, timeout-bounded, 429 retry-safe.
 
-**Test baseline:** 517 passed / 4 skipped / 0 failed. tsc clean, lint zero warnings.
+**Test baseline:** 570 passed / 4 skipped / 0 failed (was 517, now +33+4 new). tsc clean, lint zero warnings.
 
 ---
 
@@ -94,10 +96,29 @@ back to `SESSION_ID`. `basename` added to the existing `node:path` import.
 
 ---
 
-## No Blockers
+## Learnings
 
-- AFK mode production-ready
-- F4 refactor complete and tested
-- A6-6 fleet validation closed
-- All invariants documented
-- Ready for ship-to-pr or Phase 9
+### Phase 8.5 Task 4: README Install Section Update (2026-05-29T23:36:10-07:00)
+
+**Key insight:** Script names don't always align with documentation timing. Aaron's locked decisions set the final names (`npm run init`, not `npm run install`/`setup`), but the scripts themselves are implemented in Task 2 (orchestrator). Kat's job (Task 4) was to document the *design* (Aaron's decisions), not the implementation state.
+
+**Decision:** Documented the README using Aaron's final design decisions, flagged the script name mismatches in the decision file, and noted when Task 2 will add them.
+
+**Pattern recognized:**
+- Phase 8.5 tasks are ordered: Task 1 (unblock) → Task 3 (test) → Task 2 (orchestrator) → Task 4 (docs)
+- Docs should drive from locked decisions, not from current implementation status
+- Flag mismatches so next session knows what to expect
+
+**README refactor summary:**
+- Collapsed 65 lines of setup/service installation into 48 lines (−17 line net)
+- Replaced prescriptive steps with outcome-focused sections: Quick Start → Installation → Dev → Upgrading → Uninstall → Platform
+- Consolidated old "Setup" + "Windows Service" sections into streamlined "Installation" with subsections
+- Added "Development Workflow" section to surface the `NODE_ENV=development` junction trick for fast iteration
+- Preserved all existing env var details, added new emphasis on `TELEGRAM_ALLOWED_USER_IDS` (security requirement)
+
+**Pattern for future doc updates:**
+- Start with Aaron's locked decisions, not current code state
+- Flag mismatches clearly (decision file)
+- Docs update is lean and fast — most work is thinking about structure, not writing
+
+---

@@ -1,17 +1,19 @@
-# Noble Six — History (Summarized 2026-05-28)
+# Noble Six — History (Summarized 2026-05-28 → Phase 8.5 complete 2026-05-30)
 
 ## Identity & Role
 
 - **Agent:** Noble Six (Lead/Architect, Opus 4.6)
 - **Project:** Reach — TypeScript daemon bridging Telegram to GitHub Copilot CLI
-- **Domain:** Architecture, design decisions, protocol reconciliation, ADR documentation
+- **Domain:** Architecture, design decisions, protocol reconciliation, ADR documentation, **SDK drift remediation** (Phase 8.5 Issue #8)
 - **Joined:** 2026-04-12
 
 ## Current Status
 
+**Phase 8.5 COMPLETE.** Issue #8 (SDK API drift in mirror.input) fixed 2026-05-30. Replaced `for await` with event-emitter streaming pattern. 4 regression guards added. Issue #9 (Telegram echo) likely resolved (cascade). 570 tests green.
+
 **Phase 8 COMPLETE (P1 + watch sweep).** All deliverables merged into decisions.md. F4 soft refactor (stream routing extraction) and A6-6 fleet validation both complete. Remaining P2 watches dormant per Cycle 7 triage. Code stable and ready for ship-to-pr or next sprint.
 
-**Test baseline:** 517 passed / 4 skipped / 0 failed. tsc clean, lint zero warnings.
+**Test baseline:** 570 passed / 4 skipped / 0 failed. tsc clean, lint zero warnings (was 517, now +33+4 new).
 
 **ADR Status:** All 11 ADRs locked and validated (ADR-1 through ADR-11). No drift detected.
 
@@ -129,6 +131,33 @@ Full Phase 1–6 documentation archived in history-archive.md. Key accomplishmen
 **Phase call:** Phase 8.5 micro-sprint. Four tasks. One session. Unblocks Phase 9 by ensuring dogfood is actually runnable.
 
 **Team inbox:** `.squad/decisions/inbox/noble-six-install-story.md`
+
+---
+
+## 2026-05-29T23:23:03-07:00 — Issue #8 Fix: mirror.input SDK API Drift
+
+**Session:** Phase 8.5 critical blocker resolution (Noble Six architect, solo)
+
+**Trigger:** Aaron's `/afk` integration test crashed during dogfood prep. Every Telegram→CLI message failed with `sdkSession.send(...) is not a function or its return value is not async iterable`.
+
+**Root Cause:** `extension.mjs:streamSdkResponse` used `for await (const chunk of sdkSession.send(text))`, expecting an async iterable. SDK v0.2.2 changed `send()` to return `Promise<string>` (a message ID). The daemon side (`src/copilot/impl.ts / CopilotSessionAdapter`) had already been adapted to v0.2.2's event-emitter pattern; the extension was not updated at the same time.
+
+**Fix:** Replaced the `for await` loop with the event-emitter streaming pattern (matching `impl.ts`):
+- `session.on('assistant.message_delta', ...)` for chunks
+- `session.on('session.idle', ...)` for completion
+- `sdkSession.send({ prompt: text })` as fire-and-forget
+- 5-minute timeout + `settled` guard to prevent double-resolve
+
+**Files changed:**
+- `extension.mjs` — `streamSdkResponse` function rewritten
+- `tests/bridge/extension-protocol-drift.test.ts` — 4 new regression assertions
+- `.squad/decisions/inbox/noble-six-issue8-mirror-input-fix.md` — ADR-style record
+
+**Test baseline:** 546 passed / 4 skipped / 0 failed (was 517; new tests from Phase 8.5 sprint).
+
+**Issue #9 (double echo):** Probable resolution — the echo stemmed from mirror.input never reaching the model. Marked for re-verification in dogfood.
+
+**Architectural note:** Two places hold raw SDK sessions (daemon + extension). The daemon is type-protected via `CopilotSession` interface; extension is plain JS. Flagged for Phase 9: extract a shared streaming adapter to reduce future drift surface.
 
 ---
 

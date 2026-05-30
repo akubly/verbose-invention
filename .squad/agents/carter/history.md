@@ -1,17 +1,19 @@
-# Carter — History (Summarized 2026-05-28)
+# Carter — History (Summarized 2026-05-28 → Phase 8.5 complete 2026-05-30)
 
 ## Identity & Role
 
 - **Agent:** Carter (Bridge Dev, Sonnet 4.6)
 - **Project:** Reach — TypeScript daemon bridging Telegram to GitHub Copilot CLI
-- **Domain:** SDK relay, streaming, MarkdownV2 formatting, message splitting, session discovery, named-pipe bridge
+- **Domain:** SDK relay, streaming, MarkdownV2 formatting, message splitting, session discovery, named-pipe bridge, **install orchestration** (Phase 8.5)
 - **Joined:** 2026-04-12
 
 ## Current Status
 
-**Phase 8 COMPLETE.** Phase 8 P1 sprint shipped 2026-05-27 (A7 drift coverage + integration harness). Watch sweep complete 2026-05-28 (no bridge/relay changes needed by F4 refactor or A6-6 fleet validation). Bridge code stable and ready for next phase or ship-to-pr.
+**Phase 8.5 COMPLETE.** Install story shipped 2026-05-30 (copyExtension + orchestrator + uninstaller + dev junction). 570 tests green (537 existing + 33 new). Bridge code stable. Ready for Aaron dogfood re-verification of /afk.
 
-**Test baseline:** 517 passed / 4 skipped / 0 failed. tsc clean, lint zero warnings.
+**Test baseline:** 570 passed / 4 skipped / 0 failed. tsc clean, lint zero warnings.
+
+**Phase 8 COMPLETE.** Phase 8 P1 sprint shipped 2026-05-27 (A7 drift coverage + integration harness). Watch sweep complete 2026-05-28 (no bridge/relay changes needed by F4 refactor or A6-6 fleet validation). Bridge code stable and ready for next phase or ship-to-pr.
 
 ---
 
@@ -92,3 +94,41 @@ Noble Six synthesized comprehensive dogfood plan for Phase 8 validation (340 lin
 **Staging:** Dogfood plan merged to decisions.md. Awaiting Aaron's execution.
 
 **Note for Carter:** No bridge action required. Plan focuses on daemon/relay validation. Bridge code remains stable.
+
+---
+
+## Phase 8.5 Task 1 (2026-05-29T23:23:02-07:00) — Extension Copy Installer
+
+**Deliverable:** `src/install/copyExtension.ts` + `"install:extension"` npm script.
+
+**What ships:**
+- `src/install/copyExtension.ts` — resolves `%APPDATA%\GitHub Copilot\User\extensions\reach\extension.mjs`, validates Copilot CLI is installed, creates `reach/` subdir if needed, copies `extension.mjs` unconditionally (idempotent overwrite), logs target path. Exports `copyExtension()` for orchestrator use (Task 2).
+- `package.json` — added `"install:extension": "node dist/install/copyExtension.js"` matching the `service:install`/`service:uninstall` dist runner pattern.
+
+**Validation:** `tsc --noEmit` clean, `npm run lint` clean (0 warnings).
+
+## Learnings
+
+- **Runner pattern choice:** Use `node dist/...js` not `node --import tsx/esm src/...ts` for install scripts. All existing service scripts use compiled dist; staying consistent prevents a confusing split. tsx is dev-only.
+- **Project root from dist/install/:** `path.resolve(__dirname, '..', '..')` is reliable when the compiled path depth is fixed. No filesystem walk needed (unlike `service/install.ts` which uses a dynamic walk because it was written before the path depth was established).
+- **process.exit narrows type:** TypeScript correctly narrows `appData` from `string | undefined` to `string` after `if (!appData) { process.exit(1); }` because `process.exit` returns `never`. No need for non-null assertion downstream.
+
+---
+
+## Phase 8.5 Task 2 (2026-05-29T23:36:06-07:00) — Full Install Orchestrator
+
+**Deliverables:**
+- `src/install/copyExtension.ts` — updated: added dev junction mode. `NODE_ENV=development` creates a Windows directory junction (`reach/` → repo root) instead of copying. Uses `existsSync`+`rmSync` pattern (not `lstatSync`) so Jun's test mocks work cleanly. Source-file check moved inside production branch (dev mode skips it — junction provides access without an explicit copy).
+- `src/install/index.ts` — new: `runInit()` orchestrator. Banner, TTY-gated config wizard (bot token prompt, chat ID warn-only, allowed-user-IDs prompt with explicit skip), `copyExtension()`, next-step summary print, then `install()` from service/install.ts (which handles its own exit).
+- `src/install/uninstall.ts` — implemented (was a stub): `runUninstall({ wipe })`. Removes extension dir (existsSync+rmSync), optionally wipes %LOCALAPPDATA%\reach\, then calls `uninstall()` from service/install.ts. Step ordering matters: all sync cleanup before the async service uninstall (which process.exit()s internally).
+- `package.json` — added `"init"` and `"uninstall"` scripts (dist runner pattern).
+
+**Test results:** 33/33 install tests green. 570 passed / 4 skipped / 0 failed full suite.
+
+**Validation:** tsc --noEmit clean, npm run lint clean (0 warnings), vitest 570/574.
+
+## Learnings
+
+- **Mock what the tests mock.** When Jun's tests mock `existsSync`/`rmSync` but not `lstatSync`, using `lstatSync` in the implementation silently calls the real filesystem. Use the same fs surface the tests mock. Lesson: read the test file's mock setup before picking implementation strategy for file operations.
+- **node-windows events + process.exit = unreachable code after `install()`/`uninstall()`.** Both functions from service/install.ts call `process.exit` in their event handlers. Any code placed after calling them is dead. Structure orchestrators to print all user-visible output BEFORE the hand-off call.
+- **Dev mode can skip guards that don't apply.** Moving the source-file `existsSync` check inside the production branch is correct: dev mode doesn't need the file to exist separately (the junction exposes it). This also happens to make the tests cleaner. Both are wins.

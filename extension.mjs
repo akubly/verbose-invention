@@ -61,7 +61,7 @@ import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -138,9 +138,11 @@ const SESSION_ID = process.env['SESSION_ID'] ?? '';
 
 /**
  * Human-readable session name. Read from SESSION_NAME env var if set by the CLI;
- * fall back to SESSION_ID so the field is always a non-empty string (ADR-8 §3).
+ * fall back to the working-directory basename so the topic title is meaningful
+ * even when the CLI does not export SESSION_NAME. SESSION_ID is the last resort
+ * so the field is always a non-empty string (ADR-8 §3).
  */
-const SESSION_NAME = process.env['SESSION_NAME'] || SESSION_ID;
+const SESSION_NAME = process.env['SESSION_NAME'] || basename(process.cwd()) || SESSION_ID;
 
 /** Copilot SDK session handle (set on first successful joinSession). */
 let sdkSession = null;
@@ -468,7 +470,14 @@ function handleBackConfirmed(_msg) {
  * @param {{ active?: boolean, since?: string }} msg
  */
 function handleModeChanged(msg) {
-  showCliMessage(msg.active === true ? '🛰️ AFK mode active' : '🖥️ Back at desk');
+  // `back.confirmed` is also sent to every session on deactivation and already
+  // shows the "Back at desk" banner via handleBackConfirmed.  Showing it here
+  // too would produce a duplicate.  Mode-changed is a data event: only the
+  // AFK-activated side needs a user-visible banner because afk.activated is
+  // session-scoped whereas mode.changed is broadcast.
+  if (msg.active === true) {
+    showCliMessage('🛰️ AFK mode active');
+  }
   if (typeof msg.since === 'string') {
     log('info', `mode.changed since=${msg.since}`);
   }

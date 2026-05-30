@@ -1730,3 +1730,101 @@ All three files matched Carter's implementation exactly on first run. No import 
 no reply string regex adjustments needed. `cwd` is correctly in `BOT_COMMANDS` (commands.ts
 line 35). The isBotCommand guard correctly blocks `/cwd` in session topics' `message:text`
 handler.
+
+---
+
+# Kat — Phase 9 README Documentation
+
+**Date:** 2026-05-30T12:18:53-07:00
+**Author:** Kat (Bot Dev)
+**Task:** Document Phase 9 work in README.md
+
+---
+
+## Structure Decision
+
+Added a new **"Using Reach"** section after Installation and before Development Workflow. Removed the old pre-Phase-9 "Usage" section to avoid duplication.
+
+### Rationale
+
+- **Section placement:** After Installation (users install first, then want to know how to use it)
+- **Comprehensive:** Covers all Phase 9 user-facing features in one section
+- **Voice match:** Practical, scannable, no marketing — consistent with Phase 8.5 install section style
+- **Removed old Usage:** Pre-Phase-9 "Usage" section was incomplete and now superseded by "Using Reach"
+
+---
+
+## Content Coverage
+
+### 1. Telegram Commands (3 subsections)
+- **Session management:** `/new`, `/list`, `/resume`, `/remove`
+- **CWD registry (General Topic only):** `/cwd list`, `/cwd add`, `/cwd remove`
+- **Other:** `/status`, `/help`, `/pair`
+
+All commands include brief, actionable descriptions. No redundancy with handlers.ts or decisions files — documentation is reader-facing only.
+
+### 2. CLI Commands Pass-Through
+
+Short subsection explaining that anything not in the bot commands list is forwarded verbatim to the CLI session. Examples: `/clear`, `/agent`, `/model`, `/exit`. Same UX as terminal.
+
+### 3. Orientation Message
+
+Sample message with verbatim formatting from Item 1 decision (`kat-phase9-item1-orientation.md` Decision 5):
+
+```
+📍 Session active
+━━━━━━━━━━━━━━━━━━
+🆔 {sessionId}
+📂 {cwd}
+🤖 {model}
+🎚️ Mode: AFK (since HH:MM UTC)
+
+💬 Last from {model}:
+> {excerpt}
+```
+
+Includes note about 500-char truncation and `/status` for manual refresh.
+
+### 4. Getting Started: CWD Registry Example
+
+Three-step practical example showing alias workflow:
+
+```
+/cwd add myrepo C:\src\myrepo
+/cwd add scratch D:\scratch
+/cwd list
+/new my-session --cwd myrepo
+```
+
+### 5. Platform Note
+
+Windows-only for now. Clarifies that path arguments (`/cwd add`, `/new --cwd`) accept `C:\path` and `\\server\share` formats. Cross-platform deferred to future phase.
+
+---
+
+## Files Changed
+
+| File | Lines Added | Notes |
+|------|------------|-------|
+| README.md | +57 (Using Reach) -39 (old Usage) = **+18 net** | Replaces old usage section |
+
+---
+
+## No Code Structure Decisions
+
+All decisions in this doc are documentation/formatting choices, not code architecture. Code decisions remain in:
+- Item 1: `kat-phase9-item1-orientation.md` (orientation message format, gating, `/status` caching)
+- Item 3 (config): `kat-phase9-item3-config-schema.md` (alias rules, validation)
+
+---
+
+## Voice/Style Match
+
+Matched Phase 8.5 install section:
+- Scannable bullet lists with concise descriptions
+- Code examples use realistic paths and commands
+- No badges, marketing language, or hype
+- Short paragraph prose for context; commands and examples lead
+
+Aaron is the primary reader — documentation prioritizes clarity and practicality.
+

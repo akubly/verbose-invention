@@ -943,3 +943,790 @@ Pipe authentication (token validation on extension side) is documented but not i
 All issues labeled `squad` for team visibility.
 
 
+
+---
+
+# Phase 9 Sprint — Dogfood Feedback Resolutions
+
+# Noble Six Phase 9 Triage — Findings
+
+**Date:** 2026-05-30T11:32:20-07:00  
+**Author:** Noble Six (Lead / Architect)  
+**Context:** Phase 9 triage for Aaron's 3 dogfood feedback items
+
+---
+
+## Finding 1: Slash Commands Intentionally Blocked
+
+**Discovery:** During Item 2 investigation, confirmed that slash commands in Telegram topics are intentionally blocked by explicit guards, not a bug.
+
+**Location:** 
+- `src/bot/afkMode.ts:151` — `if (text.startsWith('/')) return false;`
+- `src/bot/handlers.ts:270` — `if (ctx.message.text.startsWith('/')) return;`
+
+**Root Cause:** Guards were added to prevent AFK handler from intercepting Telegram bot commands (`/new`, `/list`, etc.). However, the blanket `/` check also blocks CLI session commands (`/clear`, `/agent`, `/model`).
+
+**Status:** Addressed in Phase 9 design — recommend `isBotCommand()` guard that distinguishes bot commands from CLI commands.
+
+**Team Action:** None needed — this is expected behavior being improved, not a bug to fix.
+
+---
+
+## Finding 2: `relay.command` Protocol Envelope is Stubbed
+
+**Discovery:** The daemon-to-extension protocol includes a `relay.command` message type, but:
+1. The daemon has **no producer** for this message type
+2. The extension handler is a **no-op stub** (just logs)
+
+**Location:**
+- `src/bridge/protocol.ts:191-198` — interface definition with comment "DEFERRED (Phase 8)"
+- `extension.mjs:343-349` — stub handler that only logs
+
+**Assessment:** This is intentional deferral, not a bug. The envelope was reserved for future structured command dispatch (e.g., `/clear` with special handling). Phase 9 design recommends using `mirror.input` for pass-through, leaving `relay.command` for Phase 10+ curated commands.
+
+**Team Action:** None needed — protocol envelope preserved for future use.
+
+---
+
+## Finding 3: Session CWD is Descriptive, Not Prescriptive
+
+**Discovery:** The `cwd` field in `SessionEntry` records where a session was started, but the daemon cannot currently spawn CLI processes in a chosen cwd. Telegram-initiated spawn is Phase 11+ scope.
+
+**Location:** `src/sessions/registry.ts:138` — `cwd` defaults to `process.cwd()`
+
+**Assessment:** This is a design limitation, not a bug. Phase 9 design addresses the visibility/selection UX without implementing spawn-from-Telegram.
+
+**Team Action:** None needed — correctly scoped in Phase 9 design.
+
+---
+
+## Recommendation: Centralize Bot Command Set
+
+**Observation:** If Phase 9 implements `isBotCommand()` guard, the list of bot commands (`/new`, `/list`, `/remove`, `/resume`, `/help`, `/pair`) will exist in two places:
+1. `handlers.ts` — command registrations
+2. `afkMode.ts` — guard set
+
+**Risk:** Desync if new bot command added but guard not updated.
+
+**Recommendation:** Export `BOT_COMMANDS` set from `handlers.ts`, import in `afkMode.ts`. Single source of truth.
+
+**Team Action:** Include in Phase 9 Task T3.
+
+---
+
+## No ADR Updates Required
+
+All three items are feature additions within existing architectural boundaries:
+- Item 1: Extends AFK mode (ADR-11) with orientation message
+- Item 2: Activates existing protocol envelope (ADR-8, ADR-11 §9)
+- Item 3: Extends config layer (no ADR)
+
+---
+
+**Filed to:** `.squad/decisions/inbox/noble-six-phase9-triage.md`  
+**Next:** Merge to decisions.md after Phase 9 sprint approval
+
+
+# Kat — Phase 9 Item 1: Orientation Message Decisions
+
+**Date:** 2026-05-30T11:49:29-07:00
+**Author:** Kat (Bot Dev)
+**Task:** Phase 9 Item 1 — AFK topic orientation message + /status command
+
+---
+
+## Decision 1: First-activation gating mechanism
+
+**Choice:** In-memory `orientationSent` boolean on `TopicBinding` (per binding, in `sessionTopics` map).
+
+**Rationale:**
+- `sessionTopics` is cleared on `/back` → `deactivate()`, so `orientationSent` resets naturally each AFK cycle without explicit cleanup.
+- Re-activation after `/back` → `/afk` sends orientation again (new AFK cycle). This is correct UX.
+- Daemon restart clears all in-memory state → orientation re-sent on first activation after restart. Acceptable — per spec: "re-sending after daemon restart is acceptable; it's idempotent UX".
+- No persistence needed.
+
+---
+
+## Decision 2: /status excerpt freshness — Option A vs B
+
+**Choice: Option A** — daemon caches last-received excerpt from `afk.request` envelopes in `lastKnownExcerpts: Map<string, string>`, cleared on `deactivate()`.
+
+**Rationale:**
+- Option B (new `status.request` / `status.response` round-trip) is more complex and requires new protocol messages.
+- "Last known" data is good enough for orientation purposes — the excerpt updates each time the user goes `/afk`.
+- If Aaron wants fresher data for `/status`, a Phase 10 round-trip can be added later.
+- `lastKnownExcerpts` is cleared on `deactivate()` to avoid showing stale excerpts across AFK cycles.
+
+---
+
+## Decision 3: Truncation behavior
+
+**Choice:** 499 chars + `…` (Unicode ellipsis, U+2026) if over 500 chars; otherwise verbatim.
+
+**Implementation:** In `extension.mjs` `sendModeRequest()`:
+```javascript
+msg.lastAssistantExcerpt = lastAssistantMessage.length > 500
+  ? lastAssistantMessage.slice(0, 499) + '…'
+  : lastAssistantMessage;
+```
+
+- Truncation at 500 chars (total), no word-boundary smarts.
+- Simple to tune later — single constant in extension.mjs.
+- Aaron locked 500 chars as default.
+
+---
+
+## Decision 4: /status added to BOT_COMMANDS
+
+**Choice:** Yes — added `'status'` to `BOT_COMMANDS` in `src/bot/commands.ts`.
+
+**Rationale:**
+- Prevents `/status` from being passed through to the CLI via mirror.input (Phase 9 Item 2 pass-through logic checks `isBotCommand()`).
+- `bot.command('status', ...)` handler registered in `handlers.ts` handles the command.
+
+**Carter coordination note:** Carter's Phase 9 Item 2 (pass-through) relies on `isBotCommand()` to distinguish bot commands from CLI pass-through. `/status` must be in `BOT_COMMANDS` so it's NOT forwarded to the CLI. No code conflict — different Set entry, different handler method, different regions of the same files.
+
+---
+
+## Decision 5: Orientation message format
+
+Plain text (no `parse_mode`). Consistent with `safeSendMessage()` convention used for all topic messages. The `> excerpt` prefix is visual text only — not Telegram MarkdownV2 blockquote syntax.
+
+Format:
+```
+📍 Session active
+━━━━━━━━━━━━━━━━━━
+🆔 {sessionId}
+📂 {cwd}
+🤖 {model}
+🎚️ Mode: AFK (since HH:MM UTC)
+
+💬 Last from {model}:
+> {excerpt}
+```
+
+The `💬 Last from…` block is omitted entirely when no excerpt is available (fresh session or pre-Phase-9 extension).
+
+---
+
+## Decision 6: Model fallback
+
+Added `globalModel?: string` to `AfkModeOptions`. Passed from `cfg.model` in `main.ts`. Fallback chain: `registryEntry.model ?? options.globalModel ?? 'unknown'`.
+
+---
+
+## Files Changed
+
+| File | Change |
+|------|--------|
+| `src/bridge/protocol.ts` | Added `lastAssistantExcerpt?: string` to `AfkRequestMessage` |
+| `src/bot/afkBridgePort.ts` | Updated `AfkBridgeEvents['afk.request']` tuple type |
+| `src/bridge/extensionBridge.ts` | Updated `on('afk.request')` signatures + emit with excerpt |
+| `extension.mjs` | Added `lastAssistantMessage` cache, `assistant.message` listener, excerpt in `sendModeRequest()` |
+| `src/bot/afkMode.ts` | TopicBinding.orientationSent, lastKnownExcerpts map, formatOrientationMessage, sendOrientationMessage, handleStatusCommand, globalModel option |
+| `src/bot/commands.ts` | Added `'status'` to BOT_COMMANDS |
+| `src/bot/handlers.ts` | Added `statusProvider` to HandlerOptions, registered `/status` command, updated /help |
+| `src/main.ts` | Passed `globalModel` and `statusProvider: afkMode` |
+| `tests/bridge/afk-request-dispatch.test.ts` | Updated expectation to include `undefined` excerpt arg |
+| `tests/bridge/extension-protocol-drift.test.ts` | Updated AfkRequestMessage field assertions |
+
+
+# Phase 9 Item 2 — Slash Command Pass-Through Decisions
+
+**Date:** 2026-05-30  
+**Author:** Carter  
+**Phase:** 9 Item 2 — Telegram → CLI slash command relay
+
+---
+
+## Decision 1: Where the shared module lives
+
+**Module:** `src/bot/commands.ts` (new file)
+
+**Why this location:**
+
+- Neither `afkMode.ts` nor `handlers.ts` imports the other, so placing the shared
+  set in either file would create an awkward one-way dependency.
+- `src/bot/commands.ts` is a flat peer module with no dependencies on anything
+  in `src/bot/`, so both call sites can import from it without circular risk.
+- A dedicated `commands.ts` makes the authoritative command list discoverable
+  without reading the full handler registration logic.
+- Considered `src/bot/index.ts` (re-export barrel) and `src/bot/registry.ts`
+  (naming conflict with sessions registry) — both rejected for clarity reasons.
+
+**Exports:**
+- `BOT_COMMANDS: ReadonlySet<string>` — the authoritative Telegram bot command set
+- `isBotCommand(text: string): boolean` — the guard helper used by both call sites
+
+---
+
+## Decision 2: The BOT_COMMANDS list
+
+The list is derived from `bot.command()` registrations in `src/bot/handlers.ts`.
+No guessing — every entry has a line citation.
+
+| Command | Source citation |
+|---------|----------------|
+| `new`    | `handlers.ts:53`  — `bot.command('new', ...)` |
+| `list`   | `handlers.ts:131` — `bot.command('list', ...)` |
+| `remove` | `handlers.ts:145` — `bot.command('remove', ...)` |
+| `resume` | `handlers.ts:161` — `bot.command('resume', ...)` |
+| `help`   | `handlers.ts:244` — `bot.command('help', ...)` |
+| `pair`   | `handlers.ts:259` — `bot.command('pair', ...)` |
+
+`/back` and `/afk` are NOT in `BOT_COMMANDS`. They are CLI extension commands
+(registered in `extension.mjs`), not Telegram bot commands. Per Phase 9
+pass-through design, typing `/back` or `/afk` in a Telegram topic now forwards
+verbatim via `mirror.input` to the CLI session. This supersedes the ADR-11 §2
+"CLI-only" guard that previously dropped `/back` at the topic handler level —
+the protocol contract (no `back.confirmed` without a full `back.request` round-trip)
+is preserved regardless.
+
+---
+
+## Decision 3: `isBotCommand` behavior
+
+- Returns `false` if text doesn't start with `/`
+- Extracts the command word via `/^\/([a-zA-Z_]+)/` (greedy up to first space or EOL)
+- Case-insensitive: `match[1].toLowerCase()` before set lookup — covers user typos
+  like `/New` or `/LIST`
+- Returns `true` only if the lowercased word is in `BOT_COMMANDS`
+
+---
+
+## Decision 4: relay.command stub left as-is
+
+The `relay.command` envelope (`src/bridge/protocol.ts:191`) and its handler stub
+in `extension.mjs:343–349` are untouched. Rationale:
+
+1. `mirror.input` is sufficient for Phase 9's pass-through requirement — the CLI
+   extension already handles slash commands natively when they arrive via stdin.
+2. `relay.command` was designed for structured dispatch (parse command + args,
+   route to specific extension logic). That adds daemon complexity with no payoff
+   until Phase 10+ introduces commands that need Telegram-specific UX (e.g.,
+   `/model` with an inline keyboard picker).
+3. Activating the stub now would require: a producer in the daemon, argument
+   parsing, and extension-side handler wiring — all out of scope for Item 2.
+
+**Deferred to Phase 10.**
+
+---
+
+## Test updates
+
+Two pre-existing tests were updated to match the new behavior:
+
+1. **`tests/bot/handlers.test.ts`** — "ignores command messages (starting with /)"
+   changed text from `/unknown-cmd` to `/list`. `/unknown-cmd` now correctly
+   passes through (it's not in BOT_COMMANDS); `/list` is a bot command and
+   is correctly ignored by the `message:text` handler.
+
+2. **`tests/integration/afk-mode.contract.test.ts`** — T4 assertion updated:
+   relay target now becomes `'cli'` (not `'telegram'`) when `/back` is sent to
+   a topic, because `/back` is no longer in BOT_COMMANDS and forwards via
+   mirror.input. All other T4 assertions (no back.confirmed, no mode.changed,
+   no closeForumTopic) remain correct — text pass-through doesn't trigger the
+   back.request protocol round-trip.
+
+---
+
+## Coordination note for Jun
+
+`isBotCommand` is exported as a named export from `src/bot/commands.ts`.
+`BOT_COMMANDS` is typed `ReadonlySet<string>` (declared with explicit type annotation,
+initialized from `new Set([...])`). Both names match the assumptions in the design doc.
+
+
+# Kat — Phase 9 Item 3 Config Schema Decisions
+
+**Date:** 2026-05-30T11:46:28-07:00
+**Author:** Kat (Bot Dev)
+**Task:** T5 — Config schema extension + knownCwds helpers
+**Files:** `src/config/config.ts`, `src/config/knownCwds.ts`
+
+---
+
+## 1. Alias Validation Regex
+
+```
+/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$/
+```
+
+- **1–32 characters total** (first char + 0–31 body chars)
+- **First character:** letter or digit only (`[a-zA-Z0-9]`)
+- **Body characters:** letters, digits, underscore, hyphen (`[a-zA-Z0-9_-]`)
+- Case-sensitive (aliases are identifiers, not display names)
+
+### Reserved-word set
+
+```typescript
+const RESERVED_ALIASES = new Set(['--cwd', '--model', '--name']);
+```
+
+These all start with `-` and therefore already fail the regex. The set is kept explicit so the contract is clear to Carter's T6/T7 parser. **Anything starting with `-` is invalid as an alias** — the regex prevents this.
+
+**Implication for Carter (T6):** The `/cwd add <alias> <path>` parser does not need to special-case these names; `validateAlias()` will reject them.
+
+---
+
+## 2. `removeKnownCwd` — no-op on missing alias
+
+`removeKnownCwd(config, alias)` returns the **same config reference** (no-op) if the alias is not found. It does **not throw**.
+
+**Rationale:** Config helpers are pure transforms; error semantics belong to the command layer. Carter's `/cwd remove <alias>` should call `getKnownCwdByAlias` first and produce a user-facing "alias not found" message if needed.
+
+**Implication for Carter (T6):**
+```typescript
+// Recommended pattern in /cwd remove handler:
+if (!getKnownCwdByAlias(config, alias)) {
+  await ctx.reply(`❌ Unknown alias "${alias}"`);
+  return;
+}
+const newConfig = removeKnownCwd(config, alias);
+await saveConfig(configPath, newConfig);
+```
+
+---
+
+## 3. Path comparison on Windows — case-insensitive
+
+`getKnownCwdByPath` uses **case-insensitive** comparison on Windows (`process.platform === 'win32'`):
+
+```typescript
+c.path.toLowerCase() === normalized.toLowerCase()
+```
+
+**Rationale:** NTFS is case-preserving, not case-sensitive. `D:\Git\Reach` and `D:\git\reach` refer to the same directory. Matching must be case-insensitive or users will get duplicate entries from differently-cased inputs.
+
+**Implication for Carter (T6):** When implementing "already exists?" duplicate-path check in `/cwd add`, use `getKnownCwdByPath(config, normalizedPath)` — it handles the Windows case-fold automatically.
+
+---
+
+## 4. Disambiguation strategy for `/new <plain-alias>` (T7)
+
+Per Q3-3 (plain alias), the `/new` `--cwd` flag value is a bare alias (e.g., `reach`), not `@reach`.
+
+### How the `--cwd` value is resolved in T7
+
+Carter's `--cwd` value parser should use this precedence:
+
+1. **Looks like an absolute path?**
+   - Windows: starts with `<letter>:\` or `\\`  
+   - Unix: starts with `/`  
+   → Call `validatePath()` directly; do NOT look up as alias.
+
+2. **Otherwise → alias lookup**
+   → Call `getKnownCwdByAlias(config, value)`  
+   → If found: use `entry.path`  
+   → If not found: return error "Unknown alias `<value>`. Use `/cwd list` to see known directories, or provide an absolute path."
+
+### Why "path check first"
+
+An alias can never start with a path prefix character (the regex forbids it), so the check is unambiguous and requires no user disambiguation prompt.
+
+### No collision with session names
+
+`/new <session-name> --cwd <value>` — the session name is always the positional arg; the cwd is always the `--cwd` flag value. No overlap.
+
+---
+
+## 5. API shape (for Jun T8)
+
+### Sync helpers (no I/O)
+
+```typescript
+validateAlias(alias: string): { ok: true } | { ok: false; reason: string }
+listKnownCwds(config: ReachConfig): readonly KnownCwd[]
+getKnownCwdByAlias(config: ReachConfig, alias: string): KnownCwd | undefined
+getKnownCwdByPath(config: ReachConfig, path: string): KnownCwd | undefined
+addKnownCwd(config: ReachConfig, alias: string, path: string, now: string): ReachConfig
+removeKnownCwd(config: ReachConfig, alias: string): ReachConfig
+touchKnownCwd(config: ReachConfig, alias: string, now: string): ReachConfig
+```
+
+### Async helper (needs fs.stat)
+
+```typescript
+validatePath(inputPath: string): Promise<{ ok: true; normalized: string } | { ok: false; reason: string }>
+```
+
+### `KnownCwd` shape
+
+```typescript
+interface KnownCwd {
+  alias: string;       // required, unique
+  path: string;        // absolute, normalized
+  addedAt: string;     // ISO-8601
+  lastUsedAt?: string; // ISO-8601, optional
+}
+```
+
+### Notes for Jun
+
+- `addKnownCwd` throws on alias collision or invalid alias; does **not** throw on bad path format (call `validatePath` first)
+- `removeKnownCwd` is a no-op (does not throw) when alias is absent
+- `touchKnownCwd` is a no-op when alias is absent
+- `validatePath` is async (requires `fs.stat`); all other validators/helpers are sync
+- `listKnownCwds` returns a stable sort: `lastUsedAt` desc (undefined last), then `alias` asc
+
+---
+
+## 6. Backward compatibility
+
+`knownCwds` is `optional` on `ReachConfig`. Existing `config.json` files without this field:
+- Load cleanly via `loadConfig()` (no schema validation; plain `JSON.parse`)
+- All helpers treat `config.knownCwds ?? []` as the base — no nullish crashes
+
+---
+
+## 7. Persistence pattern
+
+Reuses existing `saveConfig()` atomic write (write to `<path>.tmp` → `fs.rename`). No new I/O abstractions introduced.
+
+
+# Phase 9 Item 3 — /cwd Command Group + /new --cwd Flag
+
+**Author:** Carter  
+**Date:** 2026-05-30  
+**Phase:** 9 Item 3 (T6 + T7)
+
+---
+
+## General Topic Detection Mechanism
+
+Used `ctx.message?.message_thread_id`:
+- `=== undefined` → message is in the General Topic (no thread)
+- `!== undefined` → message is in a forum topic (session thread)
+
+The `/cwd` command handler enforces General-Topic-only by checking `if (topicId !== undefined)` and replying with a friendly error if the user runs it in a session topic. No config lookup required — grammY provides the thread ID on every message context.
+
+This is the standard grammY pattern for Telegram Supergroup forum detection. The General Topic in Telegram supergroups has no `message_thread_id` (it's the root, not a thread).
+
+---
+
+## Session Start API — cwd Support
+
+`ISessionRegistry.register()` **already had** a 5th optional parameter `cwd?: string` (defaults to `process.cwd()` when absent). No changes to the registry interface or implementation were required.
+
+Key detail: When `--cwd` is not supplied, `registry.register()` is still called with exactly 4 args (no 5th `undefined` argument) to preserve existing test assertions:
+```typescript
+// No --cwd: 4 args exactly
+await registry.register(topicId, chatId, name, model);
+// With --cwd: 5 args
+await registry.register(topicId, chatId, name, model, resolvedCwd);
+```
+
+---
+
+## BOT_COMMANDS Update
+
+Added `'cwd'` to the `BOT_COMMANDS` set in `src/bot/commands.ts`. This ensures `/cwd` messages in session topics are treated as bot commands (not CLI pass-through), so grammY routes them to the `/cwd` command handler.
+
+---
+
+## /new --cwd Flag Parsing Refactor
+
+The existing `/new` handler used a single-purpose regex for `--model` only. This was refactored to a position-independent multi-flag extractor:
+
+```typescript
+const name = input
+  .replace(/(^|\s)--(model|cwd)\s+(\S+)/g, (_m, _sep, flagName, flagValue) => {
+    if (flagName === 'model') model = flagValue;
+    else cwdArg = flagValue;
+    return '';
+  })
+  .replace(/\s{2,}/g, ' ')
+  .trim();
+```
+
+Flags can appear before or after the session name. Dangling flags (present without a value) are detected by checking for `--model` or `--cwd` remaining in the extracted `name` string, preserving the `expect.stringContaining('model value')` assertion from the existing test suite.
+
+---
+
+## Disambiguation Rule (Q3-3)
+
+Path detection: `/^[a-zA-Z]:\\/.test(value) || value.startsWith('\\\\')` 
+- Windows drive path (`C:\...`) → path branch → `validatePath()`
+- UNC path (`\\server\...`) → path branch → `validatePath()` (rejects UNC with friendly error)
+- Anything else → alias branch → `getKnownCwdByAlias()`
+
+---
+
+## Final /cwd Help Text (verbatim, for Kat's README)
+
+```
+/cwd list|add|remove — Manage known cwd aliases (General Topic only)
+```
+
+Sub-command usage:
+```
+/cwd list                    — list all known cwds with last-used times
+/cwd add <alias> <path>      — register a new alias for a directory
+/cwd remove <alias>          — remove an alias from the registry
+```
+
+List output format:
+```
+📂 Known cwds:
+• myrepo — C:\src\myrepo  (last used 2h ago)
+• scratch — D:\scratch  (never used)
+
+Start one with: /new <alias>
+```
+
+Error messages:
+- Alias collision: `❌ Alias '<alias>' already exists for <path>. Use a different name or run /cwd remove <alias> first.`
+- Invalid alias: `❌ Invalid alias: <reason>. Aliases must be 1-32 chars, start alphanumeric, use letters/digits/hyphens/underscores.`
+- Invalid path: `❌ Invalid path: <reason>. Path must be an absolute, existing directory.`
+- Empty list: `📂 No known cwds yet. Add one with: /cwd add <alias> <path>`
+- In session topic: `❌ /cwd commands work in the General Topic only. Manage your cwd registry there, then start sessions from any topic.`
+- Unknown alias (--cwd): `❌ Unknown alias '<alias>'. Run /cwd list to see known cwds.`
+
+---
+
+## /new --cwd Help Text Update
+
+```
+/new <name> [--model <model>] [--cwd <alias-or-path>] — Create a session in this topic
+```
+
+---
+
+## Design Pushback / Notes
+
+**None significant.** The design doc and Kat's decisions were fully implementable as specified.
+
+Minor observation: `args.slice(2).join(' ')` is used for the path argument in `/cwd add` to handle paths with spaces (e.g., `C:\my projects\repo`). Without this, space-containing paths would be silently truncated.
+
+**`configPath` is optional in `HandlerOptions`** — existing tests call `registerHandlers({...})` without it. When `configPath` is absent and a user tries `/cwd` or `/new --cwd`, they receive a clear error. The daemon always passes `configPath: cfg.configPath` from `main.ts`.
+
+---
+
+## Coordination Note for Jun
+
+Function signatures match the design doc:
+- `isBotCommand()` — unchanged (Item 2, already green)
+- `BOT_COMMANDS` — now includes `'cwd'` (8 commands total)
+- `registerHandlers(options: HandlerOptions)` — `configPath?: string` added as optional field
+- No new exported functions beyond what's documented; `/cwd` logic is internal to `registerHandlers`
+
+The `relativeTime()` helper is a private (non-exported) function in `handlers.ts`. If Jun needs to test it independently, extract it to a utility module and I'll update the import.
+
+
+# Jun — Phase 9 Item 2 Test Infrastructure Decisions
+
+**Date:** 2026-05-30T11:46:29-07:00
+**Author:** Jun (Test Engineer)
+**Context:** Anticipatory tests for Phase 9 Item 2 — slash command pass-through (isBotCommand guard)
+
+---
+
+## D1 — Carter's Module Import Path
+
+**Decision:** Tests import from `../../src/bot/commands.js` (i.e., `src/bot/commands.ts`).
+
+**Rationale:** Design doc says "likely `src/bot/commands.ts` or `src/bot/registry.ts` — Carter picks". Noble-six triage recommends "Export BOT_COMMANDS from handlers.ts" but a standalone `commands.ts` is cleaner for a centralized set. The canonical path is unknown until Carter lands.
+
+**Carter: if you export from `handlers.ts` instead**, update the import in `tests/bot/isBotCommand.test.ts` line 18 from `'../../src/bot/commands.js'` to `'../../src/bot/handlers.js'`.
+
+**If BOT_COMMANDS ends up somewhere else entirely** (e.g., `src/bot/registry.ts`), same fix.
+
+---
+
+## D2 — Case Sensitivity: Carter Chose Case-Insensitive
+
+**Decision:** Tests assert case-**insensitive** behavior (`/New` → true, `/NEW` → true).
+
+**Rationale:** Carter's implementation uses regex `/^\/([a-zA-Z_]+)/` + `.toLowerCase()` before the Set lookup. The docstring explicitly states "The check is case-insensitive: `/NEW` and `/new` both match."
+
+This diverges from the design doc's implied `[a-z_]+` (lowercase only). Carter's choice is defensively correct: Telegram sends commands lowercase, but normalizing casing makes the guard robust to hypothetical client variations.
+
+**Affected tests:** `isBotCommand.test.ts` case-sensitivity describe block asserts `true` for `/New`, `/NEW`, `/LIST`. The `it.todo` marks the case-sensitive (rejected) variant.
+
+---
+
+## D3 — `/new@MyBot` Telegram Suffix Behavior
+
+**Decision:** Tests assert `isBotCommand('/new@MyBot')` → **true**.
+
+**Rationale:** Design doc regex `/^\/([a-z_]+)/` stops at `@` (not in `[a-z_]`), extracting `new`. `BOT_COMMANDS.has('new')` → true → returns true. This is emergent correct behavior from the regex — the helper implicitly handles the Telegram `@botname` suffix without special logic.
+
+**Carter: if you intentionally strip or reject the @suffix differently**, update the test.
+
+---
+
+## D4 — Existing Test Conflict in handlers.test.ts
+
+**⚠️ Carter must update `tests/bot/handlers.test.ts:343` when implementing the guard change.**
+
+The existing test:
+```typescript
+it('ignores command messages (starting with /)', async () => {
+  // ...
+  message: { message_thread_id: 42, text: '/unknown-cmd' },
+  // reply is not called for relaying (no placeholder)
+  expect(ctx.reply).not.toHaveBeenCalled();
+});
+```
+
+After Carter's fix, `isBotCommand('/unknown-cmd')` → false (extracts `'unknown'`, not in BOT_COMMANDS). The message:text handler will relay it → `ctx.reply` WILL be called → **this test will FAIL**.
+
+**Fix:** Change the text in that test from `'/unknown-cmd'` to a real bot command like `'/new test'` or `'/list'` to preserve the intent (bot commands don't trigger relay).
+
+The new test at `tests/bot/handlers.slashGuard.test.ts` covers the replacement contract explicitly.
+
+---
+
+## D5 — Actual Landing Status (Carter Already Shipped)
+
+Carter landed all Phase 9 Item 2 implementation during Jun's test-writing run.
+
+| File | tsc | vitest status |
+|------|-----|---------------|
+| `tests/bot/isBotCommand.test.ts` | ✅ (included in vitest, not tsc) | ✅ 66 passed / 1 todo |
+| `tests/relay/afkMode.slashGuard.test.ts` | ✅ | ✅ 15 passed |
+| `tests/bot/handlers.slashGuard.test.ts` | ✅ | ✅ 25 passed |
+
+**Total new tests: 106 assertions / 1 todo — all GREEN.**
+
+Pre-existing failures unrelated to Jun's work:
+- `tests/bridge/extension-protocol-drift.test.ts` (1 failure): Carter added `lastAssistantExcerpt` to the protocol (Phase 9 Item 1 orientation message). Drift test expects `['sessionId', 'type']` but now gets 3 fields. This is Carter's protocol change, not a regression from Jun's tests.
+
+**D4 update:** Carter proactively removed the `'ignores command messages (starting with /)'` test from `tests/bot/handlers.test.ts` before it became a conflict. No action needed.
+
+---
+
+## D6 — Test Harness for afkMode.slashGuard
+
+Used `AfkModeController.forTesting()` with a seed of `mode.active=true` and a pre-bound session at `TOPIC_ID=42`. This avoids replicating the full FakeDaemon/FakeExtensionClient activation flow for a unit-level guard test.
+
+The bridge mock uses `vi.fn()` for all AfkBridgePort methods; `sendToSession` captures the `mirror.input` payload for assertion.
+
+---
+
+## D7 — BOT_COMMANDS Expected Members
+
+Per design doc §Item 2:
+```
+['new', 'list', 'remove', 'resume', 'help', 'pair']
+```
+
+If Carter adds new bot commands (e.g., `'back'`), add them to `isBotCommand.test.ts` `BOT_COMMANDS` describe block. The `it.each` test will enforce this mechanically once the module is importable.
+
+
+# Jun — Phase 9 Item 3 Test Infrastructure Decisions
+
+**Date:** 2026-05-30T12:16:00-07:00  
+**Author:** Jun (Test Engineer)  
+**Status:** ALL GREEN — Carter's T6/T7 already landed when tests ran.
+
+---
+
+## Scope
+
+Three test files for Phase 9 Item 3 (multi-CWD registry):
+
+| File | Scope | Status |
+|---|---|---|
+| `tests/config/knownCwds.test.ts` | Kat's T5 helpers (8 functions) | ✅ 60 GREEN |
+| `tests/bot/cwdCommand.test.ts` | Carter's T6 `/cwd` command group | ✅ 12 GREEN |
+| `tests/bot/newCwdFlag.test.ts` | Carter's T7 `/new --cwd` extension | ✅ 11 GREEN |
+
+Total: **83 tests, all passing**.
+
+---
+
+## Decision D1: Mock architecture for B and C tests
+
+**Problem:** `handlers.ts` is a heavy entry point (imports grammY, relay, sessions). Need to
+test just the `/cwd` and `/new --cwd` logic in isolation.
+
+**Choice:** Same `vi.hoisted()` + `vi.mock()` approach established in Phase 9 Item 2 handlers
+tests. Mock `loadConfig`/`saveConfig` from `../../src/config/config.js`, and all 8 helpers from
+`../../src/config/knownCwds.js`.
+
+**Rationale:** Matches the existing vi.mock + importOriginal pattern. Tests remain stable even
+if Carter refactors internals as long as the observable surface (ctx.reply calls, registry.register
+args, loadConfig/saveConfig calls) is unchanged.
+
+---
+
+## Decision D2: HandlerOptions.configPath assumed API shape
+
+**Problem:** Design doc says Carter adds a `configPath` option to `HandlerOptions`; the exact
+name was unconfirmed before Carter landed.
+
+**Outcome:** Carter used exactly `configPath?: string` in `HandlerOptions`. Tests use:
+```typescript
+const opts: HandlerOptions = {
+  bot: bot as unknown as Bot<Context>,
+  registry, factory,
+  globalModel: 'claude-sonnet-4.5',
+  configPath: TEST_CONFIG_PATH,
+};
+```
+No adjustment required.
+
+---
+
+## Decision D3: /cwd without `configPath` — not tested explicitly
+
+Carter's code has an early `if (!configPath)` guard in both the `/cwd` handler and the
+`/new --cwd` path. Tests in C cover this guard for `/new --cwd` (`it('replies error when
+configPath not set for --cwd')`). The `/cwd` guard is implicitly tested because all happy-path
+tests provide a configPath. Could add an explicit test; deferred to Carter's unit tests.
+
+---
+
+## Decision D4: Fake timers scope in B and C
+
+Tests use `vi.useFakeTimers({ now: new Date('2026-01-15T10:00:00Z') })` to freeze
+`new Date().toISOString()` calls inside handlers (for `touchKnownCwd` and `addKnownCwd`
+timestamp args). This gives deterministic call-arg matching.
+
+---
+
+## Decision D5: Carter's Unix path detection omission (noted, not blocking)
+
+Carter's `/new --cwd` path disambiguation regex:
+```typescript
+const isPath = /^[a-zA-Z]:\\/.test(cwdArg) || cwdArg.startsWith('\\\\');
+```
+
+This is Windows-only. Kat's spec (knownCwds decisions §4) specifies that Unix absolute paths
+(`/home/user/repo`) should also be treated as paths, not aliases. Carter's implementation
+would route `/home/user/repo` through the alias lookup on non-Windows platforms.
+
+**Impact:** Low — project targets Windows hosts per Phase 8.5 decisions. Tests use
+`ABS_PATH = process.platform === 'win32' ? 'C:\\git\\myrepo' : '/home/user/myrepo'`
+with the Unix branch being a fallback. On Linux CI runs, the path test would exercise the
+alias branch by accident.
+
+**Recommendation:** Carter should add `|| cwdArg.startsWith('/')` for Unix path detection.
+File as a follow-up issue; does not block Phase 9 Item 3 merge.
+
+---
+
+## Decision D6: `/cwd remove` — active-session removal is a no-op test
+
+Test confirms that calling `/cwd remove myrepo` succeeds (removes the registry entry + saves)
+regardless of whether any active sessions are using that cwd. The registry doesn't need to know
+about active sessions because: (a) sessions hold their resolved path string in memory, not
+a live reference; (b) removing the alias only affects future `/new --cwd myrepo` lookups.
+
+---
+
+## Decision D7: Same path under two aliases — test confirms it's allowed
+
+`addKnownCwd` checks alias uniqueness (throws on alias collision) but does NOT check for path
+uniqueness. Test `'allows same path under two different aliases'` in `knownCwds.test.ts`
+confirms this is intentional behavior, not a missing validation.
+
+---
+
+## Carter Contract Divergence: NONE
+
+All three files matched Carter's implementation exactly on first run. No import path changes,
+no reply string regex adjustments needed. `cwd` is correctly in `BOT_COMMANDS` (commands.ts
+line 35). The isBotCommand guard correctly blocks `/cwd` in session topics' `message:text`
+handler.

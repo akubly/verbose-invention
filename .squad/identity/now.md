@@ -1,151 +1,135 @@
 ---
-updated_at: 2026-05-30T04:53:17Z
-focus_area: Phase 8 dogfooding plan ready. Comprehensive 16-scenario plan synthesized from Phase 6 checklist, Phase 7 ADR-11 decisions, and Phase 8 P1+watch deliverables. Awaiting Aaron's execution (~45–90 min, success bar ≥13/16 scenarios). Planning shifted from "Phase 8 shipped" to "dogfooding Phase 7+8 work before Phase 9 design."
-active_issues: []
+updated_at: 2026-05-30T06:15:44Z
+focus_area: Phase 8.5 — Reach install story. Design complete. 5-task micro-sprint to make npm run install work.
+active_issues:
+  - "#8 (CRITICAL): mirror.input SDK API drift — extension expects async iterable, SDK 0.2.2 returns Promise. Blocker for dogfood. Phase 8.5 scope."
+  - "#9 (HIGH): Telegram message echo in CLI — likely resolves with #8 fix. Re-verify after #8 closed."
 ---
 
-# Session Handoff — 2026-05-30 (Phase 8 Dogfood Plan Ready)
+# Session Handoff — 2026-05-30T06:15:44Z (Phase 8.5 Ready to Launch)
 
-## What Just Shipped
+## What Just Happened (This Session)
 
-**Phase 8 Watch Sweep — Post-P1 Audit & Dispositions (COMPLETE ✅)**
+**Dogfood Prep + Phase 8.5 Design Handoff (COMPLETE ✅)**
 
-This session audited all Phase 8 P2/watch items and resolved fired watches:
+### Phase 8 Recap
+- ✅ **P1 Sprint:** 4 hardening items (A7, A8, N2, N3) shipped 2026-05-27
+- ✅ **Watch Sweep:** F4 (stream router extraction) + A6-6 (fleet compensation) complete 2026-05-28
+- ✅ **Dogfood Prep:** Aaron ran `/afk` integration test → found 4 bugs, 2 critical
 
-- ✅ **F4 Watch (Kat):** Soft refactor — extracted stream routing subsystem
-  - New file: `src/bot/afkStreamRouter.ts` (133 LOC, single responsibility: chain-serialized stream routing)
-  - Modified: `afkMode.ts` (733 → 649 LOC, below threshold)
-  - What moved: 4 methods + 3 maps + stream state management
-  - What stayed: `compensatePartialActivation` (no second path yet), public exports
-  - Mirror rate limiter identified as future extractable subsystem (design note flagged for Noble Six)
-  - Status: RESOLVED; watch dormant until second compensation path appears or file grows past 700 LOC again
+### Bugs Found & Disposition
 
-- ✅ **A6-6 Watch (Jun):** Fleet compensation close burst — CLOSED
-  - New test file: `tests/integration/afk-mode-fleet-compensation.test.ts` (2 tests, N=20 validation)
-  - TC-A6-6-1: Parallel `Promise.all` close burst, no 429s — all closes complete before 7 s timeout, no leaks ✅
-  - TC-A6-6-2: 429 retry path — 7/20 topics 429→retry, all retries succeed, timeout holds ✅
-  - Evidence: Timeout cap (7 s) bounds wall time independently of N; per-call retry bounded; best-effort semantics prevent cascades
-  - Status: CLOSED; no code redesign needed; watch dormant until second compensation path appears
+| Bug | Severity | Root Cause | Status |
+|-----|----------|------------|--------|
+| #1: mirror.input crash | **CRITICAL** | SDK 0.2.2 API drift (Promise vs async iterable) | 🔴 Open — Phase 8.5 scope (issue #8) |
+| #2: Telegram message echo | HIGH | Likely cascades from #1 | 🟡 Inconclusive — re-verify after #8 (issue #9) |
+| #3: duplicate `/back` banner | ✅ FIXED | Both `back.confirmed` + `mode.changed` emitted | ✅ Branch `user/aaron/dogfood-bugs-3-4` (f78ccd6) |
+| #4: sessionId dupe in title | ✅ FIXED | `SESSION_NAME` fallback collision | ✅ Same branch |
 
-- ✅ **Audit (Jun):** All Phase 8 P2/watch items audited
-  - F4: FIRED ✅ (733 LOC > 700 threshold)
-  - A6-6: CLOSED ✅ (validation complete)
-  - A2, F8, F5, A10-4: DORMANT (no trigger conditions met)
+**Branch:** `user/aaron/dogfood-bugs-3-4` (f78ccd6, pushed, awaiting PR merge with Phase 8.5 work)
 
-**Test baseline:** 517 passed / 4 skipped / 0 failed (fleet test added). All code validated (tsc clean, lint zero warnings).
+### Phase 8.5 Design (LOCKED ✅)
 
-**Post-Watch-Sweep Housekeeping:**
-- ✅ Phase 8 watch sweep results merged into `decisions.md` (Phase 8 Watch Sweep section + watch status summary table)
-- ✅ 4 inbox files processed and deleted (jun-a66-verdict, kat-f4-soft-refactor, kat-afkmode-refactor-insights, phase-8-backlog)
-- ✅ Orchestration logs written:
-  - `.squad/orchestration-log/2026-05-28T17-00-30Z-kat-f4-refactor.md` (stream router extraction design + validation)
-  - `.squad/orchestration-log/2026-05-28T17-00-30Z-jun-a66-verdict.md` (fleet test results + safety evidence)
-  - `.squad/orchestration-log/2026-05-28T17-00-30Z-jun-audit.md` (watch audit findings)
-- ✅ Session log written (`.squad/log/2026-05-28T17-00-30Z-phase8-watch-sweep.md`)
-- ✅ Agent histories updated (Noble Six + Carter: Phase 8 watch sweep notes)
+**Primary Artifact:** `.copilot/reach-install-handoff.md` (340 LOC design doc)
 
-**Current HEAD:** origin/main. All changes staged for commit.
+**Recommendation:** Option C — single `npm run install` orchestrator
+```
+npm run install
+  ├─ Config wizard (token validation, allowed-users prompt)
+  ├─ Extension copy → %APPDATA%\GitHub Copilot\User\extensions\reach\
+  └─ Service install (unchanged, existing script)
 
-## What Just Shipped (Prior Session — Phase 8 P1 Sprint)
+npm run install:extension     # extension copy only (immediate dogfood unblock)
+npm run uninstall            # cleanup both daemon + extension
+```
 
-- ✅ **A7 (Carter):** Inbound message shape drift coverage — 30 new assertions
-  - All 6 inbound message types covered (hello, pong, stream, stream.error, afk.request, back.request)
-  - No drift found — all interfaces match ADR specs exactly
-  - File: `tests/bridge/extension-protocol-drift.test.ts` (31 tests total)
+**Scope:** Windows-only Phase 8.5; cross-platform deferred Phase 9
 
-- ✅ **A8 (Jun):** Composition-root integration harness — 7 tests for main() branches
-  - Mocked all external module boundaries (vi.hoisted + vi.mock)
-  - A8 REOPENED gate CLOSED
-  - File: `tests/integration/main-composition.test.ts` (new)
+**5 Task Sprint (Recommended):**
+1. **Carter:** `src/install/copyExtension.ts` — Unblocks dogfood immediately
+2. **Kat/Carter:** `src/install/index.ts` + wizard + uninstall — Full install UX
+3. **Jun:** Tests for copyExtension — Baseline coverage
+4. **Scribe:** README install section update — Docs complete
+5. **Parallel:** Resolve #8 (mirror.input SDK fix) — Phase 8.5 blocker
 
-- ✅ **N2 (Kat):** Deny-all configuration guard — production guard + unit test
-  - `allowedUserIds: Set([])` now fatal exit
-  - Guard location: `src/config/env.ts` lines 88–92
-  - Test: `tests/config/env.test.ts` (deny-all scenario)
+**Open for Aaron:** 5 UX preference questions in handoff doc (script naming, wizard hard-block behavior, dev symlink vs copy, --wipe flag, prompt for allowed IDs). No blockers — proceed with defaults if needed.
 
-- ✅ **N3 (Jun):** Config-layer allowed IDs end-to-end — 2 integration tests
-  - Config values flow through to `AfkModeController`
-  - File: `tests/integration/main-composition.test.ts` (N3 describe block)
-  - Complement: `tests/config/env.test.ts` (N2 env-var comma-only variant)
+### Scribe Housekeeping (COMPLETE ✅)
 
-**Test baseline:** 515 passed / 4 skipped / 0 failed. tsc clean, lint zero warnings.
+- ✅ Drained inbox: 6 files merged (kat-dogfood-bugs-3-4 + kat-pr7-cycle{1-4} + noble-six-install-story), deleted
+- ✅ Archived decisions.md: Pre-2026-05-22 entries → decisions-archive-2026-05-29.md (3254 lines)
+- ✅ Wrote 6 orchestration logs (agent work inventory for Phase 8.5 sprint)
+- ✅ Wrote session log (`.squad/log/2026-05-30-dogfood-prep-and-phase85-handoff.md`)
+- ✅ Updated this file (now.md) with Phase 8.5 focus
+- ✅ Git ready: All Scribe files staged for commit
 
-**Post-Sprint Housekeeping:**
-- ✅ Phase 8 section merged into `decisions.md` (158,980 bytes)
-- ✅ 4 inbox files merged (carter-a7, jun-phase8, kat-n2, phase-8-backlog status updated)
-- ✅ Orchestration logs written (`.squad/orchestration-log/2026-05-27T23-48-20Z-{kat,carter,jun}.md`)
-- ✅ Session log written (`.squad/log/2026-05-27T23-48-20-phase8-p1-sprint.md`)
-- ✅ Noble Six history updated with Phase 8 P1 note
-- ✅ 4 inbox files ready for deletion (merged into decisions.md)
-
-**Current HEAD:** origin/main. Working tree staging prep for commit.
+**Current HEAD:** origin/main. Ready to push after commit.
 
 ## What's Pending
 
-**Phase 8 Status:** Complete
-- P1 sprint: SHIPPED (2026-05-27)
-- Watch sweep: COMPLETE (2026-05-28)
-- All deliverables merged into decisions.md and orchestrated
-- Remaining P2 watches (A2, F8, F5, A10-4) dormant per Cycle 7 triage
+**PHASE 8.5 SPRINT (Next Session)**
 
-**Next Steps (Aaron Decides):**
-1. **ship-to-pr** — Create final PR with all Phase 8 changes (P1 + watch sweep), request review, merge
-2. **Noble Six review** — Architect reviews watch sweep disposition decisions (F4 soft refactor strategy, A6-6 safety evidence, architectural notes)
-3. **Pivot to new task** — If Aaron has next priority, Scribe can reset and begin work
+**Quick-Start (Read First):**
+1. Open `.copilot/reach-install-handoff.md` — 340 LOC design doc, all decisions locked
+2. Jump to **Quick-Start** section in handoff doc
+3. Execute **Task 1 (Carter)** first: write `src/install/copyExtension.ts` — unblocks dogfood
+4. Resolve **Issue #8** (mirror.input SDK fix) in parallel or immediately after Task 1
 
-**Phase 8 Closure Note:** All items delivered. Code stable. Ready for ship-to-pr or next sprint assignment.
+**Task Pipeline:**
+- **Task 1 (IMMEDIATE):** Carter → `src/install/copyExtension.ts` — Extension copy to %APPDATA%
+- **Task 2 (HIGH):** Kat/Carter → `src/install/index.ts` + config wizard + uninstall commands
+- **Task 3 (HIGH):** Jun → Tests for copyExtension (baseline coverage)
+- **Task 4 (MEDIUM):** Scribe → README install section update
+- **Parallel:** Issue #8 (mirror.input) — CRITICAL blocker for Phase 9 dogfood
 
-## What's Pending (Prior Session — Phase 8 P1)
+**Decision Inputs Needed from Aaron:**
+- Q1: Script naming (`install` vs `setup` vs other)
+- Q2: Wizard hard-block on empty allowed-user-IDs (yes/no/maybe-with-flag)
+- Q3: Dev symlink vs hard copy (flexibility for contributors)
+- Q4: `--wipe` flag for uninstall (aggressive vs safe)
+- Q5: Should wizard prompt for allowed IDs if not set? (skip vs require)
 
-Awaiting Noble Six review of Phase 8 P1 changes. Once approved:
-1. **ship-to-pr** — Create final PR and request merge review
-2. **Phase 8 overall closure** — Roll up P1 completion + P2 deferral + watch items into single Phase 8 decision note
+**Branch to Merge:** `user/aaron/dogfood-bugs-3-4` (f78ccd6) — bugs #3, #4 fixed, awaiting PR merge with Phase 8.5 work
 
-**Phase 8 Backlog Status (Living Document)**
-
-`.squad/decisions/inbox/phase-8-backlog.md` remains as living backlog to track:
-- **P2 items:** A2 (ERROR_CODES namespacing), F8 (AuthorizationPort), Module isolation note
-- **Triggered watches:** F4, F5, A6-6, A10-4 (no action until triggers fire)
-
-All P1 items (A7, A8, N2, N3) marked ✅ CLOSED.
-
-## Next Session — Focus Menu
-
-**Option A: Noble Six Review (Architect)**
-- Review Phase 8 P1 changes (production guard, drift coverage, composition harness)
-- Validate against Phase 8 closure criteria
-- Estimated effort: 30–45 min review
-
-**Option B: ship-to-pr (Coordinator)**
-- Create PR with Phase 8 P1 changes
-- Request Copilot code review
-- Merge upon approval
-- Estimated effort: 15 min + review time
-
-**Option C: Phase 8 Closure (Scribe)**
-- Roll up P1 completion + Phase 8+ decision note
-- Archive decisions.md if needed (currently 158KB, not yet at archival threshold after P1 merge)
-- Estimated effort: 30 min
-
----
-
-## Latest Artifacts (Phase 8 Watch Sweep)
-
-- **Decisions:** `.squad/decisions.md` (Phase 8 watch sweep section merged, 160KB+)
-- **Orchestration:** Phase 8 watch sweep logs (Kat F4, Jun A6-6 verdict, Jun audit)
-- **Session logs:** `.squad/log/2026-05-28T17-00-30Z-phase8-watch-sweep.md`
-- **Agent histories:** Noble Six + Carter updated with watch sweep notes
-- **Git state:** All Phase 8 changes ready for commit
-- **Test baseline:** 517 passed / 4 skipped / 0 failed
+**Open Issues (Squad Label):**
+- [#8](https://github.com/reach/copilot-cli/issues/8) — CRITICAL: mirror.input SDK API drift
+- [#9](https://github.com/reach/copilot-cli/issues/9) — HIGH: Telegram message echo (re-verify after #8)
 
 ## No Blockers
 
-- Phase 8 P1 complete and shipped
-- Watch sweep audit complete
-- F4 soft refactor delivered
-- A6-6 fleet validation closed
-- All tests green
-- Zero ADR drift detected
-- Code ready for ship-to-pr or next sprint
+- Phase 8 P1 shipped
+- Phase 8 watch sweep complete
+- Phase 8.5 install design locked
+- Bugs #3, #4 fixed in branch (awaiting merge)
+- Bugs #1, #2 diagnosed, issues filed
+- Dogfood plan ready (16 scenarios, ~45–90 min)
+- All tests green (538 passed / 4 skipped)
+- Code ready for Phase 8.5 sprint
 
-## Latest Artifacts (Phase 8 P1)
+## Latest Artifacts
+
+- **Decisions:** `.squad/decisions.md` (archived old entries; Phase 8+ current)
+- **Install Handoff:** `.copilot/reach-install-handoff.md` (primary Phase 8.5 artifact)
+- **Dogfood Plan:** `.copilot/reach-dogfood-plan-phase8.md` (16 scenarios, ready for execution)
+- **Orchestration:** 6 new agent logs (`.squad/orchestration-log/*`)
+- **Session Log:** `.squad/log/2026-05-30-dogfood-prep-and-phase85-handoff.md`
+- **Branch:** `user/aaron/dogfood-bugs-3-4` (f78ccd6, bugs #3, #4 fixed)
+- **Issues:** #8 (CRITICAL mirror.input), #9 (echo, re-verify after #8)
+- **Git:** origin/main current, ready to push
+
+---
+
+## Closing Notes (Phase 8)
+
+✅ **Phase 8 Complete (2026-05-27 to 2026-05-29)**
+- All P1 items resolved (A7, A8, N2, N3)
+- All fired watches resolved (F4, A6-6)
+- Remaining P2/dormant watches deferred per triage
+- Dogfood prep revealed 4 bugs; 2 fixed immediately, 2 identified for Phase 8.5
+- Fleet compensation validated at N=20+, no cascades
+
+**Phase 8.5 Ready to Launch**
+- Design locked (install orchestrator, 5-task sprint)
+- All dependencies identified
+- No architectural blockers
+- Aaron has all context needed

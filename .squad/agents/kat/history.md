@@ -54,9 +54,43 @@
 
 ---
 
-## Phase 8 Dogfood Plan (2026-05-29T21:53:17-07:00)
+## Phase 8 Dogfood Fixes (2026-05-29T22:34:52-07:00)
 
-Comprehensive dogfood plan synthesized and ready for Aaron's execution. Validates permission prompting edge cases, AFK mode fleet binding, stream routing, and config guards. Success bar: ≥13/16 scenarios, ~45–90 min. Awaiting outcome.
+**Branch:** `user/aaron/dogfood-bugs-3-4`  
+**Commit:** `fix(dogfood): dedupe /back banner + restore friendly session name in topic titles`
+
+### Bug #3 — Duplicate "🖥️ Back at desk" banner (FIXED)
+
+**Root cause:** When `/back` is run, `afkMode.ts:deactivate()` sends BOTH `back.confirmed`
+(session-scoped, guarded by `isForCurrentSession`) AND `mode.changed { active: false }` (broadcast
+to ALL sessions) to every registered session. In `extension.mjs`, `handleBackConfirmed` showed
+the banner AND `handleModeChanged(active=false)` also showed the banner — so the calling session
+received two banners.
+
+**Fix:** `handleModeChanged` for `active === false` is now silent. `handleBackConfirmed` is the
+sole owner of the "Back at desk" banner. The `mode.changed` event is a data event; the
+`back.confirmed`/`afk.activated` pair are the user-visible display events.
+
+**File changed:** `extension.mjs` — `handleModeChanged` function  
+**Test added:** `tests/bridge/extension-back-banner.test.ts` — 5 tests covering back.confirmed
+emits banner, mode.changed active=false is silent, both events together = exactly one banner.
+
+### Bug #4 — Topic title shows `sessionId (sessionId)` (FIXED)
+
+**Root cause:** `extension.mjs` line 143: `SESSION_NAME` falls back to `SESSION_ID` (a UUID)
+when the CLI does not export the `SESSION_NAME` env var. The topic title format at
+`afkMode.ts:451` is correct (`${session.sessionName} (${session.sessionId})`); the bug was
+upstream in how `sessionName` is populated. SDK `joinSession()` does not expose a `name` field,
+so the extension can't derive a friendly name from the session object.
+
+**Fix:** Fall back to `path.basename(process.cwd())` (e.g. `verbose-invention`) before falling
+back to `SESSION_ID`. `basename` added to the existing `node:path` import.
+
+**File changed:** `extension.mjs` — `SESSION_NAME` constant declaration  
+
+**Test baseline after fixes:** 538 passed / 4 skipped / 0 failed. tsc clean, lint zero warnings.
+
+
 
 ---
 

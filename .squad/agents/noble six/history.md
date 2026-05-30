@@ -116,6 +116,22 @@ Full Phase 1–6 documentation archived in history-archive.md. Key accomplishmen
 
 ---
 
+## 2026-05-29T22:22:08Z — Install Story Handoff Drafted
+
+**Session:** Install gap design (Noble Six architect, solo)
+
+**Trigger:** Aaron tried `/afk` during dogfood prep; extension not installed. Carter's audit confirmed the gap: daemon has `npm run service:install`; extension has no install path at all.
+
+**Outcome:** Install story designed and handed off. Recommendation = **Option C** (single `npm run install` orchestrator). Handoff document written at `.copilot/reach-install-handoff.md`.
+
+**Decision:** Option C — one `npm run install` command orchestrating service install + extension copy + config wizard. Cross-platform deferred (Windows-only). Copy-on-install for extension (not symlink). Extension copy is Task 1 (Carter) — immediate unblock for dogfooding.
+
+**Phase call:** Phase 8.5 micro-sprint. Four tasks. One session. Unblocks Phase 9 by ensuring dogfood is actually runnable.
+
+**Team inbox:** `.squad/decisions/inbox/noble-six-install-story.md`
+
+---
+
 ## Archive
 
 Full Phases 1–5 + detailed Phase 6 spike documentation in history-archive.md.

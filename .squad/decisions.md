@@ -3269,3 +3269,61 @@ During stream routing extraction, `allowMirrorInput` + `mirrorRates`/`globalMirr
 **Phase 8 Status:** P1 SHIPPED (2026-05-27) + watch sweep COMPLETE (2026-05-28). Remaining P2/dormant watches stay dormant per Cycle 7 triage.
 
 
+---
+
+
+# Phase 8 Dogfooding Plan (2026-05-29)
+
+**Date:** 2026-05-29T21:53:17-07:00  
+**From:** Noble Six (Lead/Architect)  
+**Status:** Ready for Aaron's execution
+
+## Summary
+
+Comprehensive dogfooding plan synthesized from Phase 6 checklist, Phase 7 ADR-11 decisions, and Phase 8 P1+watch sweep deliverables. Validates production-facing behavior before Phase 9 design decisions lock in.
+
+**Location:** `.copilot/reach-dogfood-plan-phase8.md`
+
+## What Was Tested
+
+Phase 8 completed four hardening items:
+1. **Permission prompting edge cases** (ADR-9, no-timeout guarantee)
+2. **AFK mode fleet binding & stream routing** (ADR-11 + F4 refactor)
+3. **Multi-chunk stream truncation & edge cases** (Cycle 3 fixes)
+4. **Config guard for deny-all protection** (N2 guard)
+
+## Plan Structure
+
+**4 scenario groups, 16 total scenarios:**
+
+| Group | Scenarios | High-Risk Behavior |
+|-------|-----------|-------------------|
+| A: Permission Prompting | 5 | No-timeout guarantee, concurrent prompts, deny execution |
+| B: AFK Mode | 6 | Auto-binding, fleet join, mid-stream deactivation |
+| C: Stream Routing | 6 | Truncation, empty placeholder, transient failure, race conditions |
+| D: Config Guard | 2 | Deny-all fatal exit + actionable message |
+
+**Success bar:** ≥80% green (≥13/16), zero critical severity.  
+**Time estimate:** 45–90 minutes.
+
+## Key Architectural Notes
+
+### Mirror Rate Limiter Extraction (Future)
+
+During F4 soft refactor (watch sweep), identified `allowMirrorInput` + `mirrorRates`/`globalMirrorRate` as a second cohesive extractable unit. Not extracted now because `afkMode.ts` is comfortably under 700 LOC post-refactor (649 LOC).
+
+**Natural trigger:** Extract when file approaches 700 again or rate-limit logic gains complexity.
+
+### ADR-10 Pipe Token Validation
+
+Pipe authentication (token validation on extension side) is documented but not implemented. Not a blocker for Phase 8 dogfooding on solo machine, but is a pre-production gap flagged for Phase 9+.
+
+## Triage Protocol
+
+**Critical (data loss, security):** File immediately, halt dogfooding.  
+**High (command fails, stream broken):** File immediately, continue other scenarios.  
+**Medium (UX friction, edge case):** Capture in "dogfood findings" issue after session.
+
+All issues labeled `squad` for team visibility.
+
+

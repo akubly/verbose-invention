@@ -79,6 +79,43 @@ Full Phase 1–6 documentation archived in history-archive.md. Key accomplishmen
 
 ---
 
+## 2026-05-29T21:53:17Z — Dogfooding Plan Phase 8 Drafted
+
+**Session:** Dogfooding plan synthesis (Noble Six architect)
+
+**Outcome:** Comprehensive dogfooding plan drafted and ready for Aaron's execution. Plan built on Phase 6 checklist foundation, incorporating Phase 7 AFK/mode decisions (ADR-11) and Phase 8 hardening (P1 + watch sweep).
+
+**Deliverable:** `.copilot/reach-dogfood-plan-phase8.md` (16 KB, 340 lines)
+
+**Plan structure:**
+- **Preflight** (1.1–1.3): Env setup, build, smoke test — reuses Phase 6 checks with Phase 8 updates
+- **Scenario matrix** (4 groups, 16 scenarios):
+  - A: Permission prompting (5 scenarios — edge cases from ADR-9)
+  - B: AFK mode (6 scenarios — ADR-11 round-trip)
+  - C: Stream routing (6 scenarios — F4 refactor + Cycle 3 fixes: truncation, empty placeholder, mid-deactivation races, fleet load)
+  - D: Config guard (2 scenarios — N2 deny-all protection)
+- **Known gaps** (deferred items + dormant watches)
+- **Triage protocol** (critical/high/medium handling)
+- **Success criteria** (preflight green, ≥80% scenarios, zero critical)
+
+**Key risks called out for Phase 8 validation:**
+1. Permission prompting timeout edge case (A5) — validates no-timeout guarantee from ADR-9
+2. Stream truncation at 4096 chars (C2) — Phase 8 Cycle 3 fix
+3. Empty chunk placeholder (C3) — Phase 8 Cycle 3 edge case
+4. Mid-stream deactivation race (C5) — error frame leak risk during `/back`
+5. Fleet compensation at N=20 (C6) — live validation of A6-6 verdict (test lab only; real-world confirmation)
+6. Config guard fatal path (D1–D2) — N2 production guard + message clarity
+
+**Architectural decisions captured for Phase 9:**
+- Mirror rate limiter identified as next extractable subsystem (when `afkMode.ts` approaches 700 LOC or logic gains complexity)
+- ADR-10 (pipe token validation) remains pre-production gap — noted as not blocking Phase 8 dogfooding on solo machine
+
+**Test baseline:** 517 passed / 4 skipped / 0 failed. All Phase 8 code validated. Plan assumes production-ready codebase.
+
+**Next:** Aaron executes plan (45–90 min). Issues filed to `squad` label. Noble Six reviews findings post-dogfood.
+
+---
+
 ## Archive
 
 Full Phases 1–5 + detailed Phase 6 spike documentation in history-archive.md.

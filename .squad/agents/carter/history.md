@@ -78,3 +78,17 @@ Full Phase 1–6 documentation (MarkdownV2, message splitting, relay plumbing, s
 - All P2 watches (A2/F8 auth-related, F5/A10-4 future phases) dormant.
 
 **Phase 8 closure:** All items delivered and merged into decisions.md. Ready for ship-to-pr.
+
+---
+
+## Phase 8 Dogfood Plan (2026-05-29T21:53:17-07:00)
+
+Noble Six synthesized comprehensive dogfood plan for Phase 8 validation (340 lines, 16 scenarios). Plan validates:
+- Permission prompting edge cases (ADR-9, no-timeout guarantee)
+- AFK mode fleet binding & stream routing (ADR-11 + F4 refactor)
+- Multi-chunk stream truncation (Cycle 3 fixes)
+- Config guard for deny-all protection (N2 guard)
+
+**Staging:** Dogfood plan merged to decisions.md. Awaiting Aaron's execution.
+
+**Note for Carter:** No bridge action required. Plan focuses on daemon/relay validation. Bridge code remains stable.

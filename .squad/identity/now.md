@@ -1,10 +1,10 @@
 ---
-updated_at: 2026-05-28T17:00:30Z
-focus_area: Phase 8 COMPLETE — P1 SHIPPED (2026-05-27) + watch sweep COMPLETE (2026-05-28). F4 resolved (afkMode refactor), A6-6 closed (fleet validation). Ready for ship-to-pr or next task.
+updated_at: 2026-05-30T04:53:17Z
+focus_area: Phase 8 dogfooding plan ready. Comprehensive 16-scenario plan synthesized from Phase 6 checklist, Phase 7 ADR-11 decisions, and Phase 8 P1+watch deliverables. Awaiting Aaron's execution (~45–90 min, success bar ≥13/16 scenarios). Planning shifted from "Phase 8 shipped" to "dogfooding Phase 7+8 work before Phase 9 design."
 active_issues: []
 ---
 
-# Session Handoff — 2026-05-28 (Watch Sweep Complete)
+# Session Handoff — 2026-05-30 (Phase 8 Dogfood Plan Ready)
 
 ## What Just Shipped
 

@@ -66,3 +66,15 @@ ADR-11 implementation (machine-wide mode state, session↔topic mapping, relay r
 
 - ProgramData prefix added to sensitive-dir list
 - Cross-platform path detection in /new --cwd (Unix support)
+
+---
+
+## Phase 9 Cycle 3 Update (2026-05-31)
+
+Cycle 3 README fixes (A1 + A2) shipped in commit 41a584e. Skeptic's findings addressed:
+- ALLOWED_USER_IDS reclassified "Strongly Recommended" with security callout
+- REACH_PERMISSION_POLICY expanded with side-effect warning
+- /resume signature corrected to `/resume <session-name>`
+- Spot-check verified all 8 command signatures (no sibling drift)
+
+Branch user/aaron/phase9 now 9 commits ahead. Suite stable at 783 tests. Ready for PR. No further review cycles required.

@@ -113,3 +113,9 @@ Key pattern: when public API mixes `throw` and `return { error? }`, consolidate 
 - .env file permissions hardening (minor Security, deferred)
 - newFlagParser single-quote `\'` handling (minor, acceptable)
 - redactSecrets over-redaction on very long model names (minor, acceptable per bias)
+
+---
+
+## Phase 9 Cycle 3 Complete (2026-05-31)
+
+A4 + A5 refactors (single command registry, discriminated ParseResult union) shipped in commit 41a584e. Architect's findings addressed. Branch user/aaron/phase9 now 9 commits ahead. Suite stable at 783 tests. Ready for PR. No further review cycles required.

@@ -2193,3 +2193,123 @@ Matched Phase 8.5 install section:
 
 Aaron is the primary reader — documentation prioritizes clarity and practicality.
 
+
+
+---
+
+# Phase 9: Persona Review Cycle 3 — Final Pre-PR Pass
+
+Date: 2026-05-31
+
+# Kat Phase 9 Cycle 3 README Review Fixes
+
+## A1: TELEGRAM_ALLOWED_USER_IDS Classification & REACH_PERMISSION_POLICY Documentation
+
+### Decision: "Strongly Recommended" vs "Required"
+- **Wording chosen:** "Strongly Recommended" (not "Optional")
+- **Rationale:** Runtime behavior treats TELEGRAM_ALLOWED_USER_IDS as optional (env.ts lines 65-87 show allowedUserIdSet can be undefined), allowing all users when unset. However, the security risk is high — any user in the chat can control the daemon. This warrants prominence above plain "Optional" but stops short of "Required" to match the actual runtime enforcement.
+- **Callout added:** "If not set, ANY user in the configured Telegram chat can control the daemon. Set this to your own numeric user ID to restrict access." (README line 47)
+
+### Decision: REACH_PERMISSION_POLICY Surfacing
+- **Location:** Configuration section (README lines 54), Environment Variables table (line 195)
+- **Rationale:** The default `approveAll` has a critical side-effect (blocks Telegram mirror input per main.ts line 56), which users should know about at configuration time.
+- **Wording:** "Tool approval policy (default: `approveAll`). Options: `approveAll` (daemon acts without approval — suitable for AFK usage), `denyAll` (daemon refuses tool use), or `interactiveDestructive` (daemon prompts for approval on destructive tools). Note: when `approveAll` is active, Telegram mirror input is blocked for safety." (README lines 54)
+
+### Verification:
+- env.ts lines 65–99: Confirmed allowedUserIdSet can be undefined
+- install/index.ts line 173: Confirmed wizard message matches new callout
+- main.ts line 56 + afkMode.ts line 168: Confirmed approveAll → mirror input disabled
+- Environment table updated with full policy descriptions
+
+## A2: /resume Command Signature
+- **Change:** `/resume` → `/resume <session-name>`
+- **Location:** README line 77 (Telegram Commands section)
+- **Verification:** handlers.ts line 247 confirms the handler enforces `ctx.match?.trim()` and errors if empty with usage hint `/resume <session-name>`
+- **Related edit:** npm run init description (line 34) clarified to match new classification
+
+### Spot-Check: Other Command Signatures
+All verified against handlers.ts and match README documentation:
+- `/new <name> [--model <model>] [--cwd <alias-or-path>]` ✅
+- `/list` (no args) ✅
+- `/remove` (no args, topic-scoped) ✅
+- `/pair <code>` ✅
+- `/help` (no args) ✅
+- `/status` (no args, topic-scoped) ✅
+- `/cwd list|add|remove` ✅
+
+No sibling command-signature drift detected.
+
+
+---
+
+# Carter — Phase 9 Review Cycle 3 Decisions
+
+Date: 2026-05-31
+
+---
+
+## A4 — Single source of truth for bot command registration
+
+**Choice: Option A (name-map variant)**
+
+Rationale: The existing handlers.ts shape already had large inline closures for each command, all capturing the same outer scope variables (registry, relay, factory, etc.). Extracting them into named properties of a `Record<CommandName, (ctx: Context) => Promise<void>>` object literal — rather than wrapping them in explicit `registerXxx` functions per Option B — preserves the existing closure pattern with minimal restructuring. Each handler body is unchanged; only the declaration site moved from `bot.command('x', async (ctx) => {` to `x: async (ctx) => {`.
+
+The registration loop `for (const name of COMMAND_NAMES) { bot.command(name, commandHandlers[name]); }` then drives registration from a single array, making the relationship mechanical rather than maintained-by-convention.
+
+**Drift check: deleted.**
+
+The check was comparing `REGISTERED_HERE` (a hand-maintained duplicate list in handlers.ts) against `BOT_COMMAND_NAMES` (derived from the same list in commands.ts). After the refactor, there is no `REGISTERED_HERE` — the `commandHandlers` object is typed as `Record<CommandName, ...>`, so TypeScript enforces at compile time that every name in `COMMAND_NAMES` has a corresponding handler. The old runtime throw is replaced by a build-time error. Dead safety code removed.
+
+**Final exports from commands.ts:**
+```typescript
+export const COMMAND_NAMES = ['new','list','remove','resume','help','pair','status','cwd'] as const;
+export type CommandName = typeof COMMAND_NAMES[number];
+export const BOT_COMMANDS: ReadonlySet<string> = new Set(COMMAND_NAMES);
+export const BOT_COMMAND_NAMES = BOT_COMMANDS;  // alias kept for isBotCommand.test.ts
+export function isBotCommand(text: string): boolean
+```
+
+**Note on ctx.match typing:** Inside `bot.command()`, grammY narrows `ctx.match` to `string | undefined`. With the `Record<CommandName, (ctx: Context) => Promise<void>>` annotation, the base `Context` type exposes `match` as `string | RegExpMatchArray | undefined`. Two callsites (`/new`, `/resume`) required `(ctx.match as string | undefined)?.trim()` casts. This is accurate — inside command handlers, match is always string.
+
+---
+
+## A5 — parseNewFlags discriminated Result type
+
+**Choice: discriminated `ParseResult<T>` union; all throws caught at public boundary.**
+
+Internal helpers (`tokenize`, `parseFlagValue`) continue throwing — that's natural for tokenizer internals. `parseNewFlags` wraps its entire body in `try/catch` and converts all throws to `{ ok: false, error }`. The multi-word session name path (previously `return { sessionName, error: '...' }`) now returns `{ ok: false, error: '...' }` as well, unifying both error paths.
+
+**Final public signature:**
+```typescript
+export type ParseResult<T> = { ok: true; value: T } | { ok: false; error: string };
+export interface ParsedNewFlagsValue { sessionName: string; model?: string; cwd?: string; }
+export function parseNewFlags(match: string): ParseResult<ParsedNewFlagsValue>
+```
+
+**Caller in handlers.ts `/new` handler (before: try/catch + if parsed.error):**
+```typescript
+const parsed = parseNewFlags(input);
+if (!parsed.ok) {
+  await ctx.reply(`❌ ${parsed.error}`, { message_thread_id: topicId });
+  return;
+}
+const name = parsed.value.sessionName;
+const model = parsed.value.model;
+const cwdArg = parsed.value.cwd;
+```
+No try/catch at the callsite. Cleaner control flow.
+
+**Test refactoring:**
+- All `expect(() => parseNewFlags(...)).toThrow()` → `expect(parseNewFlags(...).ok).toBe(false)` (5 tests)
+- Multi-word `expect(result.error).toMatch(...)` → `expect(result.ok).toBe(false)` + `expect(result.error).toMatch(...)` (2 tests)
+- Happy-path `result.sessionName` / `result.cwd` / `result.model` → `result.value.sessionName` / `result.value.cwd` / `result.value.model` (all remaining tests)
+- Added `if (!result.ok) return;` narrowing guard before value access in happy-path tests for TypeScript narrowing.
+
+---
+
+## Validation
+
+- `npx tsc --noEmit` — clean
+- `npm run lint --max-warnings 0` — clean  
+- `npx vitest run` — 783 passed / 4 skipped / 1 todo (identical to baseline)
+

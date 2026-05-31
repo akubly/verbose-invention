@@ -119,7 +119,7 @@ Use `/status` to refresh this manually. The last assistant message excerpt is ca
 
 ### Platform Note
 
-Path arguments to `/cwd add` and `/new --cwd` currently accept Windows-style absolute paths (`C:\path`) and UNC paths (`\\server\share`). Cross-platform path support is planned for a future release.
+Path arguments accept Windows-style absolute paths (e.g., `C:\path`). UNC paths (`\\server\share`) are not currently supported and will be rejected with an error.
 
 ## Development Workflow
 

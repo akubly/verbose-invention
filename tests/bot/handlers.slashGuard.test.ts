@@ -26,62 +26,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerHandlers } from '../../src/bot/handlers.js';
 import type { SessionEntry } from '../../src/types.js';
-import type { ISessionRegistry } from '../../src/sessions/registry.js';
 import { makeMockFactory, makeMockSession } from '../mocks/sdk.js';
+import { makeMockBot, makeMockCtx } from '../helpers/botMocks.js';
+import { makeStubRegistry } from '../helpers/registryMocks.js';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-
-type HandlerFn = (ctx: any) => Promise<void>;
 
 const SESSION_ENTRY: SessionEntry = {
   sessionName: 'reach-myapp',
   topicId: 42,
   chatId: -1001234567890,
   createdAt: '2024-01-01T00:00:00.000Z',
-};
-
-function makeMockBot() {
-  const commandHandlers = new Map<string, HandlerFn>();
-  const onHandlers = new Map<string, HandlerFn>();
-
-  const bot = {
-    command: vi.fn((name: string, handler: HandlerFn) => {
-      commandHandlers.set(name, handler);
-    }),
-    on: vi.fn((event: string, handler: HandlerFn) => {
-      onHandlers.set(event, handler);
-    }),
-    catch: vi.fn(),
-  };
-
-  return { bot, commandHandlers, onHandlers };
-}
-
-function makeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry {
-  const map = new Map(entries.map((e) => [e.topicId, e]));
-  return {
-    register: vi.fn(),
-    upsert: vi.fn(),
-    resolve: vi.fn((topicId: number) => map.get(topicId)),
-    findByName: vi.fn(),
-    findAllByName: vi.fn(() => []),
-    list: vi.fn(() => Array.from(map.values())),
-    remove: vi.fn(),
-    load: vi.fn(),
-    move: vi.fn(),
-  } as unknown as ISessionRegistry;
-}
-
-function makeMockCtx(text: string, topicId = 42) {
-  return {
-    message: { message_thread_id: topicId, text },
-    chat: { id: -1001234567890 },
-    reply: vi.fn().mockResolvedValue({ message_id: 100, chat: { id: -1001234567890 } }),
-    api: {
-      editMessageText: vi.fn().mockResolvedValue({ ok: true }),
-    },
-  };
-}
+} as SessionEntry;
 
 // ── tests ────────────────────────────────────────────────────────────────────
 
@@ -105,10 +61,14 @@ describe('registerHandlers message:text — slash command guard', () => {
     registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
 
     const handler = onHandlers.get('message:text')!;
-    await handler(makeMockCtx('/new test-name'));
+    // B2 FIX: capture ctx BEFORE invoking the handler and assert on the SAME object.
+    // Previously a fresh makeMockCtx() was created for the assertion — that new object
+    // was never passed to the handler, making the expect() vacuously true.
+    const ctx = makeMockCtx('/new test-name');
+    await handler(ctx);
 
     // relay does not run → no placeholder reply
-    expect(makeMockCtx('/new test-name').reply).not.toHaveBeenCalled();
+    expect(ctx.reply).not.toHaveBeenCalled();
   });
 
   it('bot command /list in topic → message:text exits early', async () => {

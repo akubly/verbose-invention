@@ -16,7 +16,7 @@
  *     in getKnownCwdByPath on any host OS.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as nodePath from 'path';
 import {
   validateAlias,
@@ -200,7 +200,77 @@ describe('validatePath', () => {
   });
 });
 
-// ─── listKnownCwds ────────────────────────────────────────────────────────────
+// ─── validatePath — I10: sensitive-dir warning (anticipatory) ────────────────
+//
+// Kat is adding `warning?: string` to the { ok: true } branch of validatePath.
+// A warning is emitted (but the path is still accepted) when the target is:
+//   - A Windows system directory (C:\Windows, C:\Program Files, etc.)
+//   - A different user's home directory (C:\Users\<other>)
+//
+// RED until Kat lands the warning field in src/config/knownCwds.ts.
+
+describe('validatePath — I10: sensitive-dir warning (anticipatory, Windows only)', () => {
+  // These tests run on any host OS but mock process.platform = 'win32' and
+  // USERPROFILE so the Windows-specific warning code path is exercised
+  // deterministically regardless of where CI runs.
+
+  let platformSpy: ReturnType<typeof vi.spyOn<typeof process, 'platform'>> | undefined;
+  let savedUserProfile: string | undefined;
+
+  beforeEach(() => {
+    savedUserProfile = process.env['USERPROFILE'];
+    process.env['USERPROFILE'] = 'C:\\Users\\akubl';
+    platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32' as NodeJS.Platform);
+    // Default: stat returns a directory so ok=true
+    mockStat.mockResolvedValue({ isDirectory: () => true });
+  });
+
+  afterEach(() => {
+    platformSpy?.mockRestore();
+    if (savedUserProfile === undefined) {
+      delete process.env['USERPROFILE'];
+    } else {
+      process.env['USERPROFILE'] = savedUserProfile;
+    }
+  });
+
+  it('C:\\Windows → ok:true with warning containing "sensitive"', async () => {
+    const r = await validatePath('C:\\Windows');
+    expect(r.ok).toBe(true);
+    expect((r as { ok: true; normalized: string; warning?: string }).warning).toMatch(/sensitive/i);
+  });
+
+  it('C:\\Program Files → ok:true with warning', async () => {
+    const r = await validatePath('C:\\Program Files');
+    expect(r.ok).toBe(true);
+    expect((r as { ok: true; normalized: string; warning?: string }).warning).toBeTruthy();
+  });
+
+  it('C:\\Users\\akubl\\repo (current user) → ok:true, NO warning', async () => {
+    const r = await validatePath('C:\\Users\\akubl\\repo');
+    expect(r.ok).toBe(true);
+    const warning = (r as { ok: true; normalized: string; warning?: string }).warning;
+    expect(warning).toBeUndefined();
+  });
+
+  it('C:\\Users\\otheruser\\repo (different user) → ok:true with warning', async () => {
+    const r = await validatePath('C:\\Users\\otheruser\\repo');
+    expect(r.ok).toBe(true);
+    expect((r as { ok: true; normalized: string; warning?: string }).warning).toBeTruthy();
+  });
+
+  it('non-Windows (mocked linux): warning code path skipped → no warning on any path', async () => {
+    platformSpy?.mockRestore();
+    platformSpy = vi.spyOn(process, 'platform', 'get').mockReturnValue('linux' as NodeJS.Platform);
+    // On Linux, C:\Windows is not a valid absolute path — test with a Unix style sensitive path
+    mockStat.mockResolvedValue({ isDirectory: () => true });
+    const r = await validatePath('/etc');
+    expect(r.ok).toBe(true);
+    const warning = (r as { ok: true; normalized: string; warning?: string }).warning;
+    expect(warning).toBeUndefined();
+  });
+});
+
 
 describe('listKnownCwds', () => {
   it('empty config → []', () => {

@@ -14,17 +14,17 @@
  * them reach the CLI session unchanged, with zero per-command daemon work.
  *
  * Source-of-truth citations for the command list:
- *   handlers.ts:53  — bot.command('new', ...)
- *   handlers.ts:131 — bot.command('list', ...)
- *   handlers.ts:145 — bot.command('remove', ...)
- *   handlers.ts:161 — bot.command('resume', ...)
- *   handlers.ts:244 — bot.command('help', ...)
- *   handlers.ts:259 — bot.command('pair', ...)
- *   handlers.ts     — bot.command('status', ...)
- *   handlers.ts     — bot.command('cwd', ...) (Phase 9 Item 3)
+ *   handlers.ts — bot.command('new', ...)
+ *   handlers.ts — bot.command('list', ...)
+ *   handlers.ts — bot.command('remove', ...)
+ *   handlers.ts — bot.command('resume', ...)
+ *   handlers.ts — bot.command('help', ...)
+ *   handlers.ts — bot.command('pair', ...)
+ *   handlers.ts — bot.command('status', ...)
+ *   handlers.ts — bot.command('cwd', ...) (Phase 9 Item 3)
  */
 
-export const BOT_COMMANDS: ReadonlySet<string> = new Set([
+const BOT_COMMAND_LIST = [
   'new',
   'list',
   'remove',
@@ -33,7 +33,10 @@ export const BOT_COMMANDS: ReadonlySet<string> = new Set([
   'pair',
   'status',
   'cwd',
-]);
+] as const;
+
+export const BOT_COMMANDS: ReadonlySet<string> = new Set(BOT_COMMAND_LIST);
+export const BOT_COMMAND_NAMES = BOT_COMMANDS;
 
 /**
  * Returns true if `text` is a Telegram bot command handled by this daemon.
@@ -47,6 +50,6 @@ export const BOT_COMMANDS: ReadonlySet<string> = new Set([
  */
 export function isBotCommand(text: string): boolean {
   if (!text.startsWith('/')) return false;
-  const match = text.match(/^\/([a-zA-Z_]+)/);
+  const match = text.match(/^\/([a-zA-Z_][a-zA-Z0-9_]*)/);
   return match !== null && BOT_COMMANDS.has(match[1]!.toLowerCase());
 }

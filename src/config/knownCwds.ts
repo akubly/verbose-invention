@@ -6,11 +6,14 @@
  *
  * Validation is split by sync/async:
  *   - validateAlias()  — sync  (string-only rules)
- *   - validatePath()   — async (requires fs.stat to verify existence + type)
+ *   - validatePath()   — async (requires fs.stat to verify existence + type;
+ *                               also returns an optional warning when the path
+ *                               is under a sensitive system directory)
  *
  * Typical /cwd add flow:
  *   1. validateAlias(alias)             → sync guard
  *   2. validatePath(rawPath)            → async guard, returns normalized path
+ *                                          + optional warning to surface to user
  *   3. addKnownCwd(config, alias, normalized, now) → immutable transform
  *   4. saveConfig(configPath, newConfig)           → persist
  */
@@ -21,15 +24,12 @@ import type { ReachConfig, KnownCwd } from './config.js';
 
 // ─── Alias validation ────────────────────────────────────────────────────────
 
-/** 1–32 chars, starts with alphanumeric, body is [a-zA-Z0-9_-]. */
-const ALIAS_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$/;
-
 /**
- * Words reserved to prevent collision with /new flags.
- * These all start with `-` and therefore already fail ALIAS_REGEX,
- * but the set is kept explicit so Carter's T6/T7 parser has a clear boundary.
+ * 1–32 chars, starts with alphanumeric, body is [a-zA-Z0-9_-].
+ * Aliases starting with `-` (e.g. `--cwd`, `--model`, `--name`) already fail
+ * this regex, which prevents collision with /new flag names.
  */
-const RESERVED_ALIASES = new Set(['--cwd', '--model', '--name']);
+const ALIAS_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$/;
 
 export function validateAlias(alias: string): { ok: true } | { ok: false; reason: string } {
   if (!ALIAS_REGEX.test(alias)) {
@@ -40,17 +40,68 @@ export function validateAlias(alias: string): { ok: true } | { ok: false; reason
         'and contain only letters, digits, underscores, or hyphens',
     };
   }
-  if (RESERVED_ALIASES.has(alias)) {
-    return { ok: false, reason: `"${alias}" is a reserved word and cannot be used as an alias` };
-  }
   return { ok: true };
 }
 
 // ─── Path validation ─────────────────────────────────────────────────────────
 
+/**
+ * Checks whether `pathToCheck` falls under a Windows sensitive prefix.
+ * Returns the matched prefix string, or `undefined` if not sensitive.
+ *
+ * Sensitive prefixes (Windows-only):
+ *   - %WINDIR% (C:\Windows by default)
+ *   - C:\Program Files
+ *   - C:\Program Files (x86)
+ *   - Any user-profile directory under C:\Users\ that is NOT the current
+ *     user's own profile (identified via process.env.USERPROFILE).
+ *
+ * All comparisons are case-insensitive (NTFS is case-preserving, not
+ * case-sensitive — same convention as getKnownCwdByPath).
+ */
+function sensitivePrefixOf(pathToCheck: string): string | undefined {
+  const lowerPath = pathToCheck.toLowerCase();
+
+  const windir = nodePath.resolve(process.env.WINDIR ?? 'C:\\Windows');
+  const fixedPrefixes = [windir, 'C:\\Program Files', 'C:\\Program Files (x86)'];
+
+  for (const prefix of fixedPrefixes) {
+    const prefixLower = prefix.toLowerCase();
+    if (lowerPath === prefixLower || lowerPath.startsWith(prefixLower + '\\')) {
+      return prefix;
+    }
+  }
+
+  // Other user profile directories under C:\Users\
+  const usersDirLower = 'c:\\users\\';
+  if (lowerPath.startsWith(usersDirLower)) {
+    const afterUsers = pathToCheck.slice(usersDirLower.length); // "Bob" or "Bob\Documents"
+    const nextSep = afterUsers.indexOf('\\');
+    const userName = nextSep !== -1 ? afterUsers.slice(0, nextSep) : afterUsers;
+    if (userName.length > 0) {
+      const profileDir = `C:\\Users\\${userName}`;
+      const selfProfile =
+        process.env.USERPROFILE !== undefined
+          ? nodePath.resolve(process.env.USERPROFILE).toLowerCase()
+          : undefined;
+      const profileDirLower = profileDir.toLowerCase();
+      // Flag only if this profile is NOT the current user's own profile.
+      if (
+        selfProfile === undefined ||
+        (lowerPath !== selfProfile && !lowerPath.startsWith(selfProfile + '\\'))
+      ) {
+        // Exclude the bare C:\Users\ root itself (userName empty guard above handles this).
+        return profileDirLower !== selfProfile ? profileDir : undefined;
+      }
+    }
+  }
+
+  return undefined;
+}
+
 export async function validatePath(
   inputPath: string,
-): Promise<{ ok: true; normalized: string } | { ok: false; reason: string }> {
+): Promise<{ ok: true; normalized: string; warning?: string } | { ok: false; reason: string }> {
   if (inputPath.includes('\x00')) {
     return { ok: false, reason: 'Path contains a null byte' };
   }
@@ -66,6 +117,23 @@ export async function validatePath(
 
   const normalized = nodePath.resolve(inputPath);
 
+  // Detect symlinks/junctions so we can flag junction-traversal warnings.
+  let isSymlink = false;
+  let realPath = normalized;
+  try {
+    const lstatResult = await fs.lstat(normalized);
+    isSymlink = lstatResult.isSymbolicLink();
+  } catch {
+    // lstat failure is non-critical; proceed without junction detection.
+  }
+  if (isSymlink) {
+    try {
+      realPath = await fs.realpath(normalized);
+    } catch {
+      // realpath failure — keep realPath === normalized.
+    }
+  }
+
   try {
     const stat = await fs.stat(normalized);
     if (!stat.isDirectory()) {
@@ -73,6 +141,28 @@ export async function validatePath(
     }
   } catch {
     return { ok: false, reason: 'Path does not exist or is not accessible' };
+  }
+
+  // Sensitive-prefix check (Windows only; warn, never block — Aaron's decision).
+  if (process.platform === 'win32') {
+    const directPrefix = sensitivePrefixOf(normalized);
+    if (directPrefix !== undefined) {
+      return {
+        ok: true,
+        normalized,
+        warning: `Warning: path is under a sensitive directory (${directPrefix}). Sessions started here may modify system files.`,
+      };
+    }
+    if (isSymlink) {
+      const resolvedPrefix = sensitivePrefixOf(realPath);
+      if (resolvedPrefix !== undefined) {
+        return {
+          ok: true,
+          normalized,
+          warning: `Warning: path is under a sensitive directory (${resolvedPrefix}). Sessions started here may modify system files. (resolved through junction)`,
+        };
+      }
+    }
   }
 
   return { ok: true, normalized };
@@ -138,6 +228,9 @@ export function addKnownCwd(
   if (!aliasCheck.ok) throw new Error(`Invalid alias: ${aliasCheck.reason}`);
 
   const existing = config.knownCwds ?? [];
+  if (existing.length >= 100) {
+    throw new Error('Maximum 100 known cwds reached');
+  }
   if (existing.some(c => c.alias === alias)) {
     throw new Error(`Alias "${alias}" already exists in knownCwds`);
   }

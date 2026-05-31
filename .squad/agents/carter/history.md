@@ -213,3 +213,8 @@ land a feature, check whether Jun's anticipatory tests are failing silently.
 
 **Known Phase 10 follow-up:** Cross-platform path detection in /new --cwd (Unix `/` startsWith check deferred).
 
+## Learnings (2026-05-30T14:08:11-07:00)
+
+- **`exactOptionalPropertyTypes` changes return-shape ergonomics.** For optional fields like `model?: string`, returning `{ model: undefined }` fails type-check; build objects conditionally (`...(model !== undefined && { model })`).
+- **Structured extraction helps contain handler growth.** Pulling `/cwd` into `handleCwdCommand` made warning surfacing and logging additions straightforward without destabilizing the relay path.
+- **Extension stream correctness needs two gates, not one.** Serialization (`streamQueue`) prevents cross-wired listeners; drain-aware writes (`writeFrame` + `writeQueue`) protects the pipe under backpressure. Either one alone is incomplete.

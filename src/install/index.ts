@@ -17,6 +17,7 @@
  */
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as readline from 'readline';
 import { fileURLToPath } from 'url';
@@ -78,7 +79,7 @@ function writeEnvKey(envPath: string, key: string, value: string): void {
     updated.push('');
   }
 
-  fs.writeFileSync(envPath, updated.join('\n'), 'utf-8');
+  fs.writeFileSync(envPath, updated.join(os.EOL), 'utf-8');
 }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +170,7 @@ async function runConfigWizard(envPath: string): Promise<void> {
         console.error('[reach] Aborted. Set TELEGRAM_ALLOWED_USER_IDS in .env and re-run.');
         process.exit(1);
       }
-      console.log('[reach] ⚠  Skipped. The daemon will refuse all requests until TELEGRAM_ALLOWED_USER_IDS is set.');
+      console.log('[reach] ⚠️ Skipped. ANY Telegram user in your configured chat can control the daemon until TELEGRAM_ALLOWED_USER_IDS is set.');
     }
     console.log('[reach]');
   }
@@ -213,8 +214,7 @@ export async function runInit(): Promise<void> {
 
 // Only run when executed directly, not when imported
 const isDirectRun =
-  process.argv[1] != null &&
-  (process.argv[1].endsWith('index.js') || process.argv[1].endsWith('index.ts'));
+  process.argv[1] === fileURLToPath(import.meta.url);
 if (isDirectRun) {
   runInit().catch((err: unknown) => {
     console.error('[reach] Fatal error:', err instanceof Error ? err.message : String(err));

@@ -4,6 +4,7 @@ import { ERROR_CODES, type BridgeSessionInfo, type ModeState, type RegistrationE
 import type { AfkBridgePort } from './afkBridgePort.js';
 import { AfkStreamRouter } from './afkStreamRouter.js';
 import { isBotCommand } from './commands.js';
+import { redactSecrets } from './redactSecrets.js';
 
 export interface TopicBinding extends BridgeSessionInfo {
   topicId: number;
@@ -533,7 +534,7 @@ export class AfkModeController {
   private formatOrientationMessage(binding: TopicBinding): string {
     const entry = this.resolveBindingEntry(binding);
     const model = entry?.model ?? this.options.globalModel ?? 'unknown';
-    const since = this.mode.since ? this.mode.since.slice(11, 16) + ' UTC' : '';
+    const since = (this.mode.since?.slice(11, 16) ?? '??:??') + ' UTC';
     const lines = [
       '📍 Session active',
       '━━━━━━━━━━━━━━━━━━',
@@ -542,8 +543,9 @@ export class AfkModeController {
       `🤖 ${model}`,
       `🎚️ Mode: AFK (since ${since})`,
     ];
-    const excerpt = this.lastKnownExcerpts.get(binding.sessionId);
-    if (excerpt) {
+    const rawExcerpt = this.lastKnownExcerpts.get(binding.sessionId);
+    if (rawExcerpt) {
+      const excerpt = redactSecrets(rawExcerpt);
       lines.push('');
       lines.push(`💬 Last from ${model}:`);
       lines.push(`> ${excerpt}`);
@@ -554,6 +556,8 @@ export class AfkModeController {
   /** Send orientation message to the topic and mark the binding as oriented. */
   private async sendOrientationMessage(binding: TopicBinding): Promise<void> {
     await this.safeSendMessage(this.formatOrientationMessage(binding), binding.topicId);
+    // Intentional mutation: binding is a live object tracked in sessionTopics; the
+    // flag prevents re-sending the orientation message within the same AFK cycle.
     binding.orientationSent = true;
   }
 

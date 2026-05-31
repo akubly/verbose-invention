@@ -1,94 +1,143 @@
 /**
- * Unit test for Bug #3 fix: deduplicate "🖥️ Back at desk" banner.
+ * Structural regression test for Bug #3 fix: deduplicate "🖥️ Back at desk" banner.
  *
- * When /back is run, the daemon sends BOTH `back.confirmed` (session-scoped,
- * handled by handleBackConfirmed) AND `mode.changed { active: false }` (broadcast,
- * handled by handleModeChanged) to the same session.  Before the fix, both
- * handlers emitted the banner, causing two identical messages in Telegram.
+ * APPROACH (I7 — option a failed, using source-analysis per extension-protocol-drift.test.ts):
+ *   Option (a) — direct import — is not feasible: `handleBackConfirmed` and
+ *   `handleModeChanged` are NOT exported by extension.mjs, and the file has
+ *   top-level side effects (reads env vars, imports @github/copilot-sdk/extension).
+ *   Option (b) — extracting to a separate importable module — would require modifying
+ *   extension.mjs, which is outside this wave's file-ownership scope.
+ *   Option (c) — subprocess integration test — adds complexity for a structural assertion.
  *
- * Post-fix contract:
- *   - handleBackConfirmed  → always shows "🖥️ Back at desk"
- *   - handleModeChanged(active=false) → silent (data event only; back.confirmed already owns the banner)
- *   - handleModeChanged(active=true)  → shows "🛰️ AFK mode active" (unaffected)
+ *   Chosen: source-analysis (same pattern as extension-protocol-drift.test.ts).
+ *   Parse extension.mjs with readFileSync, extract handleBackConfirmed and
+ *   handleModeChanged bodies via brace-balancing, then assert structural properties.
  *
- * These tests replicate the handler logic verbatim so that any deviation from
- * the expected post-fix behaviour is caught here.
+ * Post-fix contract verified structurally:
+ *   - handleBackConfirmed  → calls showCliMessage unconditionally with '🖥️ Back at desk'
+ *   - handleModeChanged(active=false) → showCliMessage NOT called at top level
+ *   - handleModeChanged(active=true)  → showCliMessage called inside `if (msg.active === true)`
+ *
+ * This WILL catch a regression where someone modifies these handlers and breaks
+ * the dedup contract (e.g., adds showCliMessage to the active=false branch,
+ * or removes the unconditional call from handleBackConfirmed).
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import * as path from 'node:path';
+import { describe, expect, it, beforeAll } from 'vitest';
 
-// ── Replicated handler logic (mirrors extension.mjs post-fix) ─────────────────
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
+const repoRoot   = path.resolve(__dirname, '../..');
+const extensionSource = readFileSync(path.resolve(repoRoot, 'extension.mjs'), 'utf8');
 
-type ShowCliMessage = (msg: string) => void;
+// ─── Source-analysis helpers ──────────────────────────────────────────────────
 
-function makeHandlers(showCliMessage: ShowCliMessage) {
-  function handleBackConfirmed(_msg: unknown): void {
-    showCliMessage('🖥️ Back at desk');
+/**
+ * Extracts the body (between the outer braces, exclusive) of a top-level
+ * `function <name>(...)` declaration in `source`.
+ * Uses a simple brace-balancing approach — works for non-nested function
+ * declarations that don't contain string literals with unbalanced braces.
+ * Returns the inner text (not including the surrounding `{` `}`), or null if
+ * the function is not found.
+ */
+function extractFunctionBody(source: string, name: string): string | null {
+  // Match "function handleXxx(...) {" at any indentation.
+  const sig = new RegExp(`function\\s+${name}\\s*\\([^)]*\\)\\s*\\{`);
+  const sigMatch = sig.exec(source);
+  if (!sigMatch) return null;
+
+  let depth  = 1;
+  let i      = sigMatch.index + sigMatch[0].length;
+  const start = i;
+
+  while (i < source.length && depth > 0) {
+    const ch = source[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') depth--;
+    i++;
   }
 
-  function handleModeChanged(msg: { active?: boolean; since?: string }): void {
-    if (msg.active === true) {
-      showCliMessage('🛰️ AFK mode active');
-    }
-    // active=false is intentionally silent: back.confirmed already owns the "Back at desk" banner.
-  }
-
-  return { handleBackConfirmed, handleModeChanged };
+  return depth === 0 ? source.slice(start, i - 1) : null;
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// ─── Suite ────────────────────────────────────────────────────────────────────
 
-describe('extension back-banner dedupe (Bug #3)', () => {
-  it('back.confirmed emits exactly one "Back at desk" banner', () => {
-    const showCliMessage = vi.fn();
-    const { handleBackConfirmed } = makeHandlers(showCliMessage);
+describe('extension back-banner dedupe — structural contract (Bug #3)', () => {
+  let backBody: string;
+  let modeBody: string;
 
-    handleBackConfirmed({});
+  beforeAll(() => {
+    const b = extractFunctionBody(extensionSource, 'handleBackConfirmed');
+    const m = extractFunctionBody(extensionSource, 'handleModeChanged');
 
-    expect(showCliMessage).toHaveBeenCalledTimes(1);
-    expect(showCliMessage).toHaveBeenCalledWith('🖥️ Back at desk');
+    if (b === null) {
+      throw new Error('Could not find handleBackConfirmed in extension.mjs');
+    }
+    if (m === null) {
+      throw new Error('Could not find handleModeChanged in extension.mjs');
+    }
+
+    backBody = b;
+    modeBody = m;
   });
 
-  it('mode.changed active=false is silent (no banner)', () => {
-    const showCliMessage = vi.fn();
-    const { handleModeChanged } = makeHandlers(showCliMessage);
+  // ── handleBackConfirmed ───────────────────────────────────────────────────
 
-    handleModeChanged({ active: false, since: '2026-05-29T22:34:52-07:00' });
-
-    expect(showCliMessage).not.toHaveBeenCalled();
+  it('handleBackConfirmed contains showCliMessage call', () => {
+    expect(backBody).toContain('showCliMessage');
   });
 
-  it('mode.changed active=true still emits "AFK mode active" banner', () => {
-    const showCliMessage = vi.fn();
-    const { handleModeChanged } = makeHandlers(showCliMessage);
-
-    handleModeChanged({ active: true, since: '2026-05-29T22:34:52-07:00' });
-
-    expect(showCliMessage).toHaveBeenCalledTimes(1);
-    expect(showCliMessage).toHaveBeenCalledWith('🛰️ AFK mode active');
+  it('handleBackConfirmed contains "🖥️ Back at desk" string literal', () => {
+    expect(backBody).toContain('🖥️ Back at desk');
   });
 
-  it('/back scenario: both events received → exactly one banner', () => {
-    // Simulates the session that ran /back receiving back.confirmed then mode.changed active=false.
-    const showCliMessage = vi.fn();
-    const { handleBackConfirmed, handleModeChanged } = makeHandlers(showCliMessage);
-
-    handleBackConfirmed({});
-    handleModeChanged({ active: false, since: '2026-05-29T22:34:52-07:00' });
-
-    expect(showCliMessage).toHaveBeenCalledTimes(1);
-    expect(showCliMessage).toHaveBeenCalledWith('🖥️ Back at desk');
+  it('handleBackConfirmed calls showCliMessage UNCONDITIONALLY (not inside any if block)', () => {
+    // Detect if the showCliMessage call is at the top level of the body:
+    // strip any nested if/else blocks and check showCliMessage remains visible.
+    // Simple heuristic: the showCliMessage call should appear before any `if (` in the body,
+    // OR the body should contain no `if (` at all.
+    const firstIfIndex   = backBody.indexOf('if (');
+    const showCliIndex   = backBody.indexOf('showCliMessage');
+    // Either no if-blocks at all, OR showCliMessage appears before the first if.
+    const isUnconditional = firstIfIndex === -1 || showCliIndex < firstIfIndex;
+    expect(isUnconditional).toBe(true);
   });
 
-  it('/afk scenario: afk.activated then mode.changed active=true → two banners (allowed, different sources)', () => {
-    // This was never reported as a bug — documenting expected behaviour.
-    const showCliMessage = vi.fn();
-    const { handleModeChanged } = makeHandlers(showCliMessage);
+  // ── handleModeChanged ─────────────────────────────────────────────────────
 
-    // afk.activated handler (not replicated here) would call showCliMessage('🛰️ AFK mode active')
-    showCliMessage('🛰️ AFK mode active'); // simulate afk.activated
-    handleModeChanged({ active: true });   // mode.changed broadcast
+  it('handleModeChanged contains showCliMessage call', () => {
+    expect(modeBody).toContain('showCliMessage');
+  });
 
-    expect(showCliMessage).toHaveBeenCalledTimes(2);
+  it('handleModeChanged contains "🛰️ AFK mode active" string literal', () => {
+    expect(modeBody).toContain('🛰️ AFK mode active');
+  });
+
+  it('handleModeChanged does NOT contain "🖥️ Back at desk" (banner ownership is handleBackConfirmed)', () => {
+    expect(modeBody).not.toContain('🖥️ Back at desk');
+  });
+
+  it('handleModeChanged guards showCliMessage inside msg.active === true check', () => {
+    // The fix: showCliMessage only called when active is true.
+    // Structural check: the body must contain `msg.active === true` (or equivalent),
+    // and "🛰️ AFK mode active" must appear AFTER that guard.
+    const guardIndex = modeBody.search(/msg\.active\s*===\s*true/);
+    expect(guardIndex).toBeGreaterThanOrEqual(0);
+
+    const afkBannerIndex = modeBody.indexOf('🛰️ AFK mode active');
+    expect(afkBannerIndex).toBeGreaterThan(guardIndex);
+  });
+
+  it('handleModeChanged active=false path: no unconditional showCliMessage before guard', () => {
+    // showCliMessage must NOT appear before the first if-block (i.e., not unconditional).
+    const firstIfIndex  = modeBody.indexOf('if (');
+    const showCliIndex  = modeBody.indexOf('showCliMessage');
+    // showCliMessage must be inside an if-block → its index must be > firstIfIndex.
+    expect(firstIfIndex).toBeGreaterThanOrEqual(0);   // there IS an if-block
+    expect(showCliIndex).toBeGreaterThan(firstIfIndex); // showCliMessage is inside it
   });
 });
+

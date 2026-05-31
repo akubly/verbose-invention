@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AfkModeController } from '../../src/bot/afkMode.js';
 import type { AfkBridgePort } from '../../src/bot/afkBridgePort.js';
 import type { ISessionRegistry } from '../../src/sessions/registry.js';
+import { makeStubRegistry } from '../helpers/registryMocks.js';
 
 // ── constants ────────────────────────────────────────────────────────────────
 
@@ -43,20 +44,6 @@ function makeMockBridge(): AfkBridgePort {
     }),
     setRegistrationAugmenter: vi.fn(),
   } as unknown as AfkBridgePort;
-}
-
-function makeStubRegistry(): ISessionRegistry {
-  return {
-    load: vi.fn(),
-    register: vi.fn(),
-    upsert: vi.fn(),
-    resolve: vi.fn(),
-    findByName: vi.fn(),
-    findAllByName: vi.fn(() => []),
-    list: vi.fn(() => []),
-    remove: vi.fn(),
-    move: vi.fn(),
-  } as unknown as ISessionRegistry;
 }
 
 function makeMockBot() {

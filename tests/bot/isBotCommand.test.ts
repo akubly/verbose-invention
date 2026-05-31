@@ -203,7 +203,45 @@ describe('isBotCommand — Telegram @botname suffix', () => {
   });
 });
 
-// ── isBotCommand — unicode / non-ASCII ──────────────────────────────────────
+// ── isBotCommand — B1: digit in command position ────────────────────────────
+//
+// Carter's fix changes extraction regex from /^\/([a-z_]+)/ to
+// /^\/([a-zA-Z_][a-zA-Z0-9_]*)/ (digits allowed after first char).
+//
+// BEFORE the fix: /new123 → regex stops at '1', extracts "new" → true  (BUG!)
+// AFTER the fix:  /new123 → extracts "new123" → not in BOT_COMMANDS → false ✓
+//
+// RED until Carter lands the regex change.
+
+describe('isBotCommand — B1: digit handling (anticipatory)', () => {
+  it('/new123 → false (digit suffix not in BOT_COMMANDS)', () => {
+    // Before fix: /^\/([a-z_]+)/ extracts "new" → true (wrong).
+    // After fix:  /^\/([a-zA-Z_][a-zA-Z0-9_]*)/ extracts "new123" → false.
+    expect(isBotCommand('/new123')).toBe(false);
+  });
+
+  it('/list1 → false (digit suffix not in BOT_COMMANDS)', () => {
+    expect(isBotCommand('/list1')).toBe(false);
+  });
+
+  it('/status42 → false (not in BOT_COMMANDS at all, even without digits)', () => {
+    expect(isBotCommand('/status42')).toBe(false);
+  });
+
+  it('/new_test → false (underscore allowed by regex but "new_test" not in BOT_COMMANDS)', () => {
+    // Regex /^\/([a-zA-Z_][a-zA-Z0-9_]*)/ matches "new_test". Not in set → false.
+    expect(isBotCommand('/new_test')).toBe(false);
+  });
+
+  it('/new → true (regression: existing /new still works after digit fix)', () => {
+    expect(isBotCommand('/new')).toBe(true);
+  });
+
+  it('/list → true (regression: existing /list still works)', () => {
+    expect(isBotCommand('/list')).toBe(true);
+  });
+});
+
 
 describe('isBotCommand — unicode in command position', () => {
   // [a-zA-Z_]+ is ASCII-only. Non-ASCII chars either stop the match (leaving a short

@@ -467,3 +467,27 @@ describe('Issue #8 regression — extension.mjs SDK send() API contract', () => 
     expect(extensionSource).toMatch(/sdkSession\.on\s*\(\s*['"]session\.idle['"]/);
   });
 });
+
+describe('Phase 9 I1+I2 regression — extension stream serialization and backpressure', () => {
+  it('serializes streamSdkResponse calls through streamQueue', () => {
+    expect(extensionSource).toMatch(/let\s+streamQueue\s*=\s*Promise\.resolve\(\)/);
+    expect(extensionSource).toMatch(/const\s+gate\s*=\s*streamQueue/);
+    expect(extensionSource).toMatch(/await\s+gate/);
+    expect(extensionSource).toMatch(/if\s*\(typeof\s+releaseLock\s*===\s*['"]function['"]\)\s*releaseLock\(\)/);
+  });
+
+  it('waits for stream writes with drain-aware frame writes', () => {
+    expect(extensionSource).toMatch(/async function writeFrame\s*\(/);
+    expect(extensionSource).toMatch(/const ok = socket\.write\(frame,\s*['"]utf-8['"]\)/);
+    expect(extensionSource).toMatch(/socket\.once\(\s*['"]drain['"]/);
+    expect(extensionSource).toMatch(/await writeQueue/);
+  });
+
+  it('enqueues per-chunk writes instead of fire-and-forget socket writes', () => {
+    expect(extensionSource).toMatch(/enqueueFrame\(frame\)/);
+    expect(extensionSource).toMatch(/writeQueue\s*=\s*writeQueue\.then/);
+    expect(extensionSource).not.toMatch(
+      /assistant\.message_delta[\s\S]*?pipeSocket\.write\(\s*frame,\s*['"]utf-8['"]\s*\)/,
+    );
+  });
+});

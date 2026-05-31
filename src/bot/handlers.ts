@@ -5,17 +5,15 @@ import type { ISessionRegistry } from '../sessions/registry.js';
 import type { SessionLookup, PermissionPrompter } from '../relay/ports.js';
 import { Relay } from '../relay/relay.js';
 import { promptUserForPermission, ensurePromptRegistry } from './prompt.js';
-import { isBotCommand } from './commands.js';
+import { isBotCommand, BOT_COMMAND_NAMES } from './commands.js';
 import { loadConfig, saveConfig } from '../config/config.js';
 import {
-  validateAlias,
   validatePath,
-  listKnownCwds,
   getKnownCwdByAlias,
-  addKnownCwd,
-  removeKnownCwd,
   touchKnownCwd,
 } from '../config/knownCwds.js';
+import { parseNewFlags } from './newFlagParser.js';
+import { handleCwdCommand, type CwdCommandLogger } from './cwdCommand.js';
 
 /** DNS-label style: lowercase alphanumeric + hyphens, 1–63 chars, no leading hyphen. */
 export const SESSION_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -30,17 +28,21 @@ export interface HandlerOptions {
   statusProvider?: { handleStatusCommand(ctx: Context): Promise<void> };
   /** Absolute path to config.json — required for /cwd commands and /new --cwd flag. */
   configPath?: string;
+  logger?: CwdCommandLogger;
 }
 
-/** Formats an ISO-8601 timestamp as a human-friendly "X ago" string. */
-function relativeTime(iso: string): string {
-  const diffMs = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diffMs / 60_000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
+function defaultLogger(): CwdCommandLogger {
+  return {
+    info(meta, message) {
+      console.log(`[bot] ${message}`, meta);
+    },
+    warn(meta, message) {
+      console.warn(`[bot] ${message}`, meta);
+    },
+    error(meta, message) {
+      console.error(`[bot] ${message}`, meta);
+    },
+  };
 }
 
 /**
@@ -57,7 +59,18 @@ function relativeTime(iso: string): string {
  *
  * All other text messages in forum topics are relayed to the linked session.
  */
-export function registerHandlers({ bot, registry, factory, globalModel, permissionPolicy, telegramMirror, statusProvider, configPath }: HandlerOptions): Relay {
+export function registerHandlers({ bot, registry, factory, globalModel, permissionPolicy, telegramMirror, statusProvider, configPath, logger }: HandlerOptions): Relay {
+  const cwdLogger = logger ?? defaultLogger();
+  const REGISTERED_HERE = ['new', 'list', 'remove', 'resume', 'help', 'pair', 'status', 'cwd'];
+  if (
+    REGISTERED_HERE.length !== BOT_COMMAND_NAMES.size ||
+    !REGISTERED_HERE.every((name) => BOT_COMMAND_NAMES.has(name))
+  ) {
+    throw new Error(
+      `BOT_COMMAND_NAMES drift: registry=[${[...BOT_COMMAND_NAMES].sort().join(', ')}] handlers=[${REGISTERED_HERE.sort().join(', ')}]`,
+    );
+  }
+
   const sessionLookup: SessionLookup = { resolve: (topicId) => registry.resolve(topicId) };
 
   let permissionPrompter: PermissionPrompter | undefined;
@@ -89,36 +102,17 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
       return;
     }
 
-    // Extract --model and --cwd flags (position-independent)
+    let name: string;
     let model: string | undefined;
     let cwdArg: string | undefined;
-    const name = input
-      .replace(/(^|\s)--(model|cwd)\s+(\S+)/g, (_m, _sep, flagName: string, flagValue: string) => {
-        if (flagName === 'model') model = flagValue;
-        else cwdArg = flagValue;
-        return '';
-      })
-      .replace(/\s{2,}/g, ' ')
-      .trim();
-
-    // Detect dangling flags (present without a value)
-    if (/(^|\s)--model($|\s)/.test(name)) {
-      await ctx.reply('❌ --model flag requires a model value (e.g., --model claude-opus-4.5)', {
-        message_thread_id: topicId,
-      });
-      return;
-    }
-    if (/(^|\s)--cwd($|\s)/.test(name)) {
-      await ctx.reply('❌ --cwd flag requires a value (an alias name or absolute path)', {
-        message_thread_id: topicId,
-      });
-      return;
-    }
-    if (/(^|\s)--\w/.test(name)) {
-      await ctx.reply(
-        '❌ Unknown flag. Usage: /new <session-name> [--model <model>] [--cwd <alias-or-path>]',
-        { message_thread_id: topicId },
-      );
+    try {
+      const parsed = parseNewFlags(input);
+      name = parsed.sessionName;
+      model = parsed.model;
+      cwdArg = parsed.cwd;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await ctx.reply(`❌ ${message}`, { message_thread_id: topicId });
       return;
     }
 
@@ -162,12 +156,18 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
           await ctx.reply('❌ --cwd requires a config path (daemon not fully configured).', { message_thread_id: topicId });
           return;
         }
-        const isPath = /^[a-zA-Z]:\\/.test(cwdArg) || cwdArg.startsWith('\\\\');
+        const isPath =
+          /^[a-zA-Z]:\\/.test(cwdArg) ||
+          cwdArg.startsWith('\\\\') ||
+          cwdArg.startsWith('/');
         if (isPath) {
           const pathResult = await validatePath(cwdArg);
           if (!pathResult.ok) {
             await ctx.reply(`❌ Invalid path: ${pathResult.reason}. Path must be an absolute, existing directory.`, { message_thread_id: topicId });
             return;
+          }
+          if (pathResult.warning) {
+            await ctx.reply(`⚠️ ${pathResult.warning}`, { message_thread_id: topicId });
           }
           resolvedCwd = pathResult.normalized;
         } else {
@@ -182,11 +182,11 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
         }
       }
 
-      if (resolvedCwd !== undefined) {
-        await registry.register(topicId, chatId, name, model, resolvedCwd);
-      } else {
-        await registry.register(topicId, chatId, name, model);
-      }
+      await (
+        resolvedCwd === undefined
+          ? registry.register(topicId, chatId, name, model)
+          : registry.register(topicId, chatId, name, model, resolvedCwd)
+      );
       const modelNote = model ? ` (model: ${model})` : '';
       const cwdNote = resolvedCwd ? ` (cwd: ${resolvedCwd})` : '';
       await ctx.reply(`✅ Session "${name}" registered and linked to this topic${modelNote}${cwdNote}.`, {
@@ -351,82 +351,14 @@ Commands:
 
   // /cwd list|add|remove — manage the known-cwds registry (General Topic only)
   bot.command('cwd', async (ctx) => {
-    // Q3-4: /cwd only works in the General Topic (message_thread_id === undefined means no thread)
-    const topicId = ctx.message?.message_thread_id;
-    if (topicId !== undefined) {
-      await ctx.reply(
-        '❌ /cwd commands work in the General Topic only. Manage your cwd registry there, then start sessions from any topic.',
-        { message_thread_id: topicId },
-      );
-      return;
-    }
-
-    if (!configPath) {
-      await ctx.reply('❌ /cwd is not available (config path not configured).');
-      return;
-    }
-
-    const args = (ctx.match ?? '').trim().split(/\s+/).filter(Boolean);
-    const subCmd = args[0]?.toLowerCase() ?? 'list';
-
-    if (subCmd === 'list') {
-      const config = await loadConfig(configPath);
-      const cwds = listKnownCwds(config);
-      if (cwds.length === 0) {
-        await ctx.reply('📂 No known cwds yet. Add one with: /cwd add <alias> <path>');
-        return;
-      }
-      const lines = cwds.map(c => {
-        const used = c.lastUsedAt ? `last used ${relativeTime(c.lastUsedAt)}` : 'never used';
-        return `• ${c.alias} — ${c.path}  (${used})`;
+    try {
+      await handleCwdCommand(ctx, {
+        logger: cwdLogger,
+        ...(configPath !== undefined && { configPath }),
       });
-      await ctx.reply(`📂 Known cwds:\n${lines.join('\n')}\n\nStart one with: /new <alias>`);
-
-    } else if (subCmd === 'add') {
-      const alias = args[1];
-      const rawPath = args.slice(2).join(' ');
-      if (!alias || !rawPath) {
-        await ctx.reply('❌ Usage: /cwd add <alias> <path>');
-        return;
-      }
-      const config = await loadConfig(configPath);
-      const aliasResult = validateAlias(alias);
-      if (!aliasResult.ok) {
-        await ctx.reply(`❌ Invalid alias: ${aliasResult.reason}. Aliases must be 1-32 chars, start alphanumeric, use letters/digits/hyphens/underscores.`);
-        return;
-      }
-      const existingAlias = getKnownCwdByAlias(config, alias);
-      if (existingAlias) {
-        await ctx.reply(`❌ Alias '${alias}' already exists for ${existingAlias.path}. Use a different name or run /cwd remove ${alias} first.`);
-        return;
-      }
-      const pathResult = await validatePath(rawPath);
-      if (!pathResult.ok) {
-        await ctx.reply(`❌ Invalid path: ${pathResult.reason}. Path must be an absolute, existing directory.`);
-        return;
-      }
-      const newConfig = addKnownCwd(config, alias, pathResult.normalized, new Date().toISOString());
-      await saveConfig(configPath, newConfig);
-      await ctx.reply(`✅ Added '${alias}' → ${pathResult.normalized}`);
-
-    } else if (subCmd === 'remove') {
-      const alias = args[1];
-      if (!alias) {
-        await ctx.reply('❌ Usage: /cwd remove <alias>');
-        return;
-      }
-      const config = await loadConfig(configPath);
-      const found = getKnownCwdByAlias(config, alias);
-      if (!found) {
-        await ctx.reply(`❌ Alias '${alias}' not found. Run /cwd list to see known cwds.`);
-        return;
-      }
-      const newConfig = removeKnownCwd(config, alias);
-      await saveConfig(configPath, newConfig);
-      await ctx.reply(`✅ Removed '${alias}'.`);
-
-    } else {
-      await ctx.reply('❌ Unknown sub-command. Usage: /cwd list | /cwd add <alias> <path> | /cwd remove <alias>');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await ctx.reply(`❌ Failed to process /cwd command: ${msg}`);
     }
   });
 

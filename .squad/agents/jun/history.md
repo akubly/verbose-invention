@@ -78,9 +78,45 @@ Suite: 720 passed / 4 skipped / 1 todo. +150 net tests (Phase 8.5 → Phase 9). 
 
 **Known Phase 10 follow-up:** Cross-platform path detection in /new --cwd (Unix `/` startsWith check deferred).
 
----
+## Phase 9 Review Wave (2026-05-30) — Test-Quality Blockers + Anticipatory Regression Tests
 
-## Full Archive
+**Sprint:** Phase 9 review blockers (B2, I7) + helpers extraction (F-8) + anticipatory tests for B1/B3/I3+I4/I10/I11.
+
+### B2 — Fixed vacuous `/new` assertion
+
+`handlers.slashGuard.test.ts` had a vacuously true assertion: the ctx passed to the handler and the ctx used in `expect()` were two different objects created by separate `makeMockCtx()` calls. Fixed by capturing ctx before the handler call. **Key lesson:** always capture the exact ctx reference and assert on THAT reference.
+
+### I7 — extension-back-banner.test.ts rewrite (source-analysis)
+
+Option (a) — direct import — failed: handlers are not exported, and extension.mjs has top-level side effects (reads env vars, imports SDK). Chose source-analysis (same pattern as extension-protocol-drift.test.ts): parse extension.mjs with `readFileSync`, extract function bodies via brace-balancing, assert structural properties (unconditional call in handleBackConfirmed, guarded call in handleModeChanged).
+
+### F-8 — Helpers extraction
+
+Extracted `makeMockBot` + `makeMockCtx` → `tests/helpers/botMocks.ts` and `makeStubRegistry` → `tests/helpers/registryMocks.ts`. Key finding: `afkMode.slashGuard.test.ts` had a DIFFERENT `makeMockBot` (AfkModeController API shape, not grammY) — kept that one local; only `makeStubRegistry` was extracted from that file.
+
+### Anticipatory tests — what was pre-landed vs genuinely anticipatory
+
+- **I10 (validatePath warning):** Kat already shipped this in `src/config/knownCwds.ts`. Tests went GREEN immediately — confirms design convergence.
+- **B1 (isBotCommand digit fix):** 3 tests RED (expected). Current regex `/[a-z_]+/` extracts "new" from "/new123" → true (bug). Tests: `/new123`→false, `/list1`→false, `/status42`→false (all fail until Carter fixes regex). Note: "status" IS in BOT_COMMANDS currently (surprise!).
+- **B3 (prod-over-dev junction):** TC15 RED (expected). `lstatSync` mock infrastructure added to copyExtension.test.ts.
+- **I11 (redactSecrets):** 3 tests RED. Module exists at `src/bot/redactSecrets.ts` but implementation is partial — ENV-style assignments and high-entropy strings not yet redacted.
+- **I3+I4 (flag parser):** Collection error (module not found). `src/bot/newFlagParser.ts` doesn't exist yet.
+
+### Final suite state (Phase 9 review wave)
+
+- tsc: GREEN (exit 0)
+- vitest: 7 failed (all anticipated RED) / 746 passed / 4 skipped / 1 todo
+- Failing: B1 (3) + I11 partial (3) + B3 TC15 (1). Collection error: newFlagParser.test.ts.
+
+### Learnings
+
+1. **Source-analysis tests require brace-balancing parsers** — a simple regex won't reliably extract function bodies. The brace-counter approach from extension-protocol-drift.test.ts is the established pattern for this project.
+2. **Always verify "RED" expectations by checking what the current impl returns** — I10 tests went GREEN because Kat had already shipped. Don't assume all anticipatory tests will be red.
+3. **`process.platform` is configurable via `vi.spyOn` getter mock** — works reliably to test platform-specific code paths without actually running on that OS.
+4. **Check BOT_COMMANDS membership before writing anticipatory tests** — "status" was unexpectedly in BOT_COMMANDS, which changed which B1 tests would be red.
+5. **afkMode's `makeMockBot` is NOT the grammY bot mock** — its shape is `{api: {editMessageText, sendMessage}}` for AfkModeController. The two mocks are not interchangeable.
+
+
 
 Phases 1–6, Phase 7 detailed learnings, Phase 8 P1 analysis → `history-archive.md`.
 

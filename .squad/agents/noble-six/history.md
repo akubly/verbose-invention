@@ -67,3 +67,19 @@ All 8 agent decision files reviewed and merged to `.squad/decisions.md`:
 
 Noble Six's triage work complete. Ready for follow-up architectural work if Phase 10 needs lead planning.
 
+---
+
+## 2026-05-30T22:08:00-07:00 — Phase 9 Streaming Fix Design (I1 + I2)
+
+**Session:** Phase 9 review follow-up — streaming architecture fix design for backpressure (I1) and cross-wiring race (I2) in `extension.mjs:streamSdkResponse`.
+
+**Key finding:** SDK `session.idle` has no correlation field — serialization queue is the only correct approach. Mirrors daemon-side `CopilotSessionAdapter.sendQueue` pattern (impl.ts:109). Concurrency concern is REAL (no serialization gate in pipe message dispatch).
+
+**Decisions:** Serialization queue (A), drain-aware writes (B), existing cleanup sufficient (C), send() return value not needed (D).
+
+**Deliverable:** `.copilot/reach-phase9-streaming-fix-design.md`
+
+### Learnings (Streaming)
+
+- SDK `assistant.message_delta.data.messageId` correlates to `send()` return, but `session.idle` has NO messageId — completion detection requires serialization
+- Serialization queue is a cross-layer pattern: both daemon and extension must serialize independently against the same SDK session

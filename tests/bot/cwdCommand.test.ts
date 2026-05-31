@@ -35,9 +35,10 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerHandlers } from '../../src/bot/handlers.js';
-import type { ISessionRegistry } from '../../src/sessions/registry.js';
 import type { SessionEntry } from '../../src/types.js';
 import { makeMockFactory } from '../mocks/sdk.js';
+import { makeMockBot } from '../helpers/botMocks.js';
+import { makeStubRegistry } from '../helpers/registryMocks.js';
 
 // ─── Hoisted mock state ───────────────────────────────────────────────────────
 
@@ -87,40 +88,10 @@ vi.mock('../../src/config/knownCwds.js', async (importOriginal) => {
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
-type HandlerFn = (ctx: any) => Promise<void>;
-
 const TEST_CONFIG_PATH = '/test/reach/config.json';
 const ALIAS = 'myrepo';
 const CWD_PATH = process.platform === 'win32' ? 'C:\\git\\myrepo' : '/home/user/myrepo';
 const NOW = '2024-06-01T00:00:00.000Z';
-
-function makeMockBot() {
-  const commandHandlers = new Map<string, HandlerFn>();
-  const onHandlers      = new Map<string, HandlerFn>();
-  const bot = {
-    command: vi.fn((name: string, handler: HandlerFn) => {
-      commandHandlers.set(name, handler);
-    }),
-    on:    vi.fn((event: string, handler: HandlerFn) => { onHandlers.set(event, handler); }),
-    catch: vi.fn(),
-  };
-  return { bot, commandHandlers, onHandlers };
-}
-
-function makeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry {
-  const map = new Map(entries.map((e) => [e.topicId, e]));
-  return {
-    load:         vi.fn(),
-    register:     vi.fn(),
-    upsert:       vi.fn(),
-    resolve:      vi.fn((id: number) => map.get(id)),
-    findByName:   vi.fn(),
-    findAllByName: vi.fn(() => []),
-    list:          vi.fn(() => Array.from(map.values())),
-    remove:        vi.fn(),
-    move:          vi.fn(),
-  } as unknown as ISessionRegistry;
-}
 
 /**
  * ctx for the General Topic (no message_thread_id → /cwd is allowed).

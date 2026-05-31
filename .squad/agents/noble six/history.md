@@ -225,6 +225,42 @@ Important distinction for daemon-to-CLI bridges:
 
 Phase 9's cwd registry is descriptive + selection UX. Prescriptive spawn is a different feature (Telegram-initiated sessions), correctly deferred.
 
+## 2026-05-30T22:08:00-07:00 — Phase 9 Streaming Fix Design (I1 + I2)
+
+**Session:** Phase 9 review follow-up — streaming architecture fix design
+
+**Trigger:** Phase 9 code review surfaced two architecturally-coupled streaming concerns in `extension.mjs:streamSdkResponse`:
+- **I1 (Backpressure):** `pipeSocket.write()` fire-and-forget, no drain handling
+- **I2 (Cross-wiring):** Concurrent `mirror.input` calls register duplicate listeners on shared `sdkSession`; chunks and idle signals cross between requests
+
+**Investigation findings:**
+1. SDK `assistant.message_delta` carries `data.messageId` (correlatable to `send()` return value), but `session.idle` has **no correlation field** — only `data.aborted?: boolean`. Pure messageId correlation is therefore insufficient for completion detection.
+2. Daemon-side `CopilotSessionAdapter` (impl.ts:109–123) already uses a serialization queue (`sendQueue`) — proven pattern.
+3. Extension-side `handleMirrorInput` is `async` but called from synchronous pipe dispatch — `await` does NOT prevent concurrent calls.
+4. Rate limiting (20 msg/min) is a throughput cap, not a serialization gate. Two messages 1s apart → concurrent streams.
+
+**Decisions:**
+- **A (Correlation):** Serialization queue — mirrors daemon pattern. `session.idle` having no messageId makes concurrent correlation infeasible.
+- **B (Backpressure):** Drain-aware writes — check `write()` return, await `drain` event. Defense-in-depth for local IPC pipe.
+- **C (Listener lifecycle):** Current cleanup is correct (unsub functions called in `cleanup()`). No structural change needed.
+- **D (Error handling):** `send()` return value (messageId) not needed under serialization. Current fire-and-forget + `.catch()` is correct.
+
+**Concurrency verdict:** REAL but low-probability. No serialization gate exists between pipe message dispatch and `streamSdkResponse()`.
+
+**Deliverable:** `.copilot/reach-phase9-streaming-fix-design.md`
+
+---
+
+## Learnings
+
+### SDK Event Correlation Asymmetry
+
+`assistant.message_delta` carries `data.messageId` (correlatable to `send()` return), but `session.idle` has NO correlation field. This asymmetry means you can filter deltas by message but cannot determine which send() triggered idle. Serialization is the only correct approach when both delta routing and completion detection matter.
+
+### Serialization Queue as Cross-Layer Pattern
+
+Both daemon (`CopilotSessionAdapter.sendQueue`) and extension need the same pattern. When two code paths talk to the same SDK session, the serialization must happen at each entry point independently — the SDK itself processes serially but doesn't enforce serial submission.
+
 ---
 
 ## Archive

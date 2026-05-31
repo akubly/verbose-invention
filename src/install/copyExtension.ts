@@ -54,6 +54,7 @@ export function copyExtension(): void {
     // The junction points reach/ → repo root; Copilot CLI resolves
     // reach\extension.mjs through it.
     if (fs.existsSync(targetDir)) {
+      // On Windows, rmSync on a junction removes the reparse point only, not the target.
       try {
         fs.rmSync(targetDir, { recursive: true, force: true });
       } catch (err: unknown) {
@@ -68,13 +69,16 @@ export function copyExtension(): void {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[reach] ERROR: Could not create junction: ${message}`);
-      console.error('[reach] HINT: Try running from an elevated terminal (junction creation may require it).');
+      console.error('[reach] HINT: Junction creation failed. Common causes:');
+      console.error('[reach]   - Parent directory not writable (check permissions on the extensions/ folder)');
+      console.error('[reach]   - Target is on a network or FAT drive (junctions require NTFS)');
+      console.error('[reach]   - Another process has the path locked');
       process.exit(1);
     }
 
     console.log(`[reach] Extension linked (dev mode): ${targetDir}`);
   } else {
-    // Production mode: validate source, create directory, copy file.
+    // Production mode: validate source, ensure real directory, copy file.
 
     // --- Validate source file exists ---
     const sourcePath = path.join(repoRoot, 'extension.mjs');
@@ -84,8 +88,12 @@ export function copyExtension(): void {
       process.exit(1);
     }
 
-    // --- Create reach/ subdir if needed ---
+    // Production: ensure targetDir is a real directory, not a stale junction
+    // from a prior dev install.
     try {
+      if (fs.existsSync(targetDir)) {
+        fs.rmSync(targetDir, { recursive: true, force: true });
+      }
       fs.mkdirSync(targetDir, { recursive: true });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -109,8 +117,7 @@ export function copyExtension(): void {
 
 // Only run when executed directly, not when imported
 const isDirectRun =
-  process.argv[1] != null &&
-  (process.argv[1].endsWith('copyExtension.js') || process.argv[1].endsWith('copyExtension.ts'));
+  process.argv[1] === fileURLToPath(import.meta.url);
 if (isDirectRun) {
   copyExtension();
 }

@@ -15,6 +15,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import { uninstall } from '../service/install.js';
 
 export interface UninstallOptions {
@@ -55,6 +56,19 @@ function wipeLocalData(): void {
   }
   const localDir = path.join(localAppData, 'reach');
   if (fs.existsSync(localDir)) {
+    const markerFiles = ['config.json', 'bridge-auth.json'];
+    try {
+      const entries = new Set(fs.readdirSync(localDir));
+      const hasMarker = markerFiles.some((marker) => entries.has(marker));
+      if (!hasMarker) {
+        console.error(
+          `[reach] Refusing to wipe ${localDir}: doesn't look like a Reach state directory.`,
+        );
+        return;
+      }
+    } catch {
+      // If we cannot inspect the directory entries, continue with best-effort wipe.
+    }
     try {
       fs.rmSync(localDir, { recursive: true, force: true });
       console.log(`[reach] Local state wiped: ${localDir}`);
@@ -106,11 +120,9 @@ export function runUninstall(opts: UninstallOptions): void {
 
 // Only run when executed directly, not when imported
 const isDirectRun =
-  process.argv[1] != null &&
-  (process.argv[1].endsWith('uninstall.js') || process.argv[1].endsWith('uninstall.ts'));
+  process.argv[1] === fileURLToPath(import.meta.url);
 
 if (isDirectRun) {
   const wipe = process.argv.includes('--wipe');
   runUninstall({ wipe });
 }
-

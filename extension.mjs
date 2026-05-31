@@ -147,6 +147,9 @@ const SESSION_NAME = process.env['SESSION_NAME'] || basename(process.cwd()) || S
 /** Copilot SDK session handle (set on first successful joinSession). */
 let sdkSession = null;
 
+/** Serializes streamSdkResponse calls to prevent listener cross-wiring on sdkSession. */
+let streamQueue = Promise.resolve();
+
 /** Current pipe socket. null when disconnected. */
 let pipeSocket = null;
 
@@ -373,6 +376,22 @@ function handleMessage(msg) {
 const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
+ * Write one frame to the daemon pipe and wait for drain when backpressure is signaled.
+ *
+ * @param {import('node:net').Socket} socket
+ * @param {string} frame
+ * @returns {Promise<void>}
+ */
+async function writeFrame(socket, frame) {
+  const ok = socket.write(frame, 'utf-8');
+  if (!ok) {
+    await new Promise((resolve) => {
+      socket.once('drain', resolve);
+    });
+  }
+}
+
+/**
  * Run text through the SDK session and stream the assistant response back to the daemon.
  *
  * SDK v0.2.2 contract (Issue #8 fix): send() is fire-and-forget; chunks arrive via
@@ -385,10 +404,24 @@ const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
  * @param {string} label
  */
 async function streamSdkResponse(text, requestId, label) {
-  activeInjectIds.add(requestId);
-
+  let releaseLock;
+  const gate = streamQueue;
+  streamQueue = new Promise((resolve) => {
+    releaseLock = resolve;
+  });
   try {
+    await gate;
+    activeInjectIds.add(requestId);
     let chunkCount = 0;
+    let writeQueue = Promise.resolve();
+
+    const enqueueFrame = (frame) => {
+      if (pipeSocket === null || pipeSocket.destroyed) return;
+      writeQueue = writeQueue.then(() => {
+        if (pipeSocket === null || pipeSocket.destroyed) return;
+        return writeFrame(pipeSocket, frame);
+      });
+    };
 
     await new Promise((resolve, reject) => {
       let settled = false;
@@ -404,6 +437,7 @@ async function streamSdkResponse(text, requestId, label) {
 
       unsubs = [
         sdkSession.on('assistant.message_delta', (event) => {
+          if (settled) return;
           const chunk = String(event?.data?.deltaContent ?? '');
           const frame = JSON.stringify({
             type: 'stream',
@@ -412,9 +446,12 @@ async function streamSdkResponse(text, requestId, label) {
             chunk,
             done: false,
           }) + '\n';
-          if (pipeSocket !== null && !pipeSocket.destroyed) {
-            pipeSocket.write(frame, 'utf-8');
-          }
+          enqueueFrame(frame);
+          writeQueue.catch((err) => {
+            if (settled) return;
+            cleanup();
+            reject(err instanceof Error ? err : new Error(String(err)));
+          });
           chunkCount++;
         }),
         sdkSession.on('session.idle', () => {
@@ -438,6 +475,7 @@ async function streamSdkResponse(text, requestId, label) {
         reject(err instanceof Error ? err : new Error(String(err)));
       });
     });
+    await writeQueue;
 
     sendToDaemon({ type: 'stream', sessionId: SESSION_ID, requestId, chunk: '', done: true });
     log('info', `${label} complete: requestId=${requestId} chunks=${chunkCount}`);
@@ -447,6 +485,7 @@ async function streamSdkResponse(text, requestId, label) {
     sendToDaemon({ type: 'stream.error', sessionId: SESSION_ID, requestId, error: message });
   } finally {
     activeInjectIds.delete(requestId);
+    if (typeof releaseLock === 'function') releaseLock();
   }
 }
 
@@ -920,6 +959,7 @@ async function main() {
 
   try {
     sdkSession = await joinSession({ commands: createReachCommands() });
+    streamQueue = Promise.resolve();
     log('info', `SDK session joined (id: ${SESSION_ID})`);
     wireSessionEvents(sdkSession);
   } catch (err) {

@@ -196,3 +196,43 @@ back to `SESSION_ID`. `basename` added to the existing `node:path` import.
 
 **Known Phase 10 follow-up:** Cross-platform path detection in /new --cwd (Unix `/` startsWith check deferred).
 
+---
+
+## Phase 9 Review Wave — Security Fixes (2026-05-30)
+
+**Branch:** `user/aaron/phase9`
+
+### I10 — Sensitive-directory warning in `validatePath` (`knownCwds.ts`)
+
+**Extended return type:** `{ ok: true; normalized: string; warning?: string }`. Callers surface the warning to the user; the entry is still added (warn, not block — Aaron's explicit decision).
+
+**Symlink/junction pattern:** `fs.lstat` → `isSymbolicLink()` → if true, `fs.realpath()` to get actual target. Sensitive-prefix check runs on BOTH the normalized string path AND the realpath. If only the realpath triggers → append `(resolved through junction)` to the warning. lstat/realpath failures are non-critical and silently fall through.
+
+**`exactOptionalPropertyTypes` discipline:** Return `{ ok: true, normalized, warning }` vs `{ ok: true, normalized }` as separate branches — never `warning: undefined` in the object literal. Same pattern Kat learned in Phase 9 Item 3.
+
+**F-11 dead code removal:** `RESERVED_ALIASES` set was unreachable (ALIAS_REGEX already blocks all `-`-starting strings). Moved the explanation into the ALIAS_REGEX JSDoc instead of keeping a dead Set. Pattern: when a regex makes a runtime check impossible, remove the check and document the invariant in the regex comment.
+
+**100-entry cap:** Placed BEFORE the duplicate-alias check in `addKnownCwd`. Ordering matters: the cap is a hard limit, so it should fail fast before any alias comparison work.
+
+### I11 — Secret redaction (`redactSecrets.ts`)
+
+**New module:** `src/bot/redactSecrets.ts` → `redactSecrets(text: string): string`. Daemon-side, Telegram-facing. Extension stays a pure cache.
+
+**Pattern order discipline:** Keyword-adjacent (most specific, preserves context) → high-entropy bare (40+ chars, aggressive) → URL creds (structural). Running keyword pattern first means the value group is replaced with `[REDACTED]` before the high-entropy pass sees it — avoids double-matching the same characters in a different pattern.
+
+**`no-useless-escape` lint hit:** `[A-Za-z0-9_\-]` in a character class → `\-` is a useless escape (hyphen at end of character class is literal). Fix: remove the backslash. Always check character-class escaping when writing regexes in TypeScript for ESLint environments.
+
+**Regex replacement with captured separator:** Pattern 1 captures `(keyword)(sep)(value)`. Using `(_match, keyword, sep) => \`${keyword}${sep}[REDACTED]\`` preserves the separator (`: `, `= `, ` `, etc.) in the redacted output, keeping the message readable.
+
+### F-13 — Safe `since.slice`
+
+`(this.mode.since?.slice(11, 16) ?? '??:??') + ' UTC'` — the optional chain on `?.slice` handles both `undefined` and strings shorter than 11 chars, both of which would silently return wrong values with the old conditional form.
+
+### F-15 — orientationSent mutation comment
+
+The mutation `binding.orientationSent = true` is intentional — `binding` is a live reference in `sessionTopics`. Brief comment added so the next reader doesn't refactor it into immutable form and break the AFK cycle guard.
+
+### F-16 — Drift-proof citations
+
+Replacing `handlers.ts:53` with `handlers.ts — bot.command('new', ...)` (symbol-only). Line numbers drift on every refactor; symbol-name references remain stable. Apply this pattern to all cross-file citations in header comments.
+

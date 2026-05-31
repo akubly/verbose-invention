@@ -37,6 +37,7 @@ const mockMkdirSync    = vi.fn<[unknown, unknown?], void>(() => undefined);
 const mockCopyFileSync = vi.fn<[unknown, unknown], void>(() => undefined);
 const mockSymlinkSync  = vi.fn<[unknown, unknown, unknown?], void>(() => undefined);
 const mockRmSync       = vi.fn<[unknown, unknown?], void>(() => undefined);
+const mockLstatSync    = vi.fn<[unknown], { isSymbolicLink(): boolean }>();
 
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
@@ -47,6 +48,7 @@ vi.mock('fs', async (importOriginal) => {
     copyFileSync: (...args: unknown[]) => mockCopyFileSync(...args),
     symlinkSync:  (...args: unknown[]) => mockSymlinkSync(...args),
     rmSync:       (...args: unknown[]) => mockRmSync(...args),
+    lstatSync:    (...args: unknown[]) => mockLstatSync(...args),
   };
 });
 
@@ -119,6 +121,7 @@ describe('copyExtension()', () => {
     mockCopyFileSync.mockImplementation(() => undefined);
     mockSymlinkSync.mockImplementation(() => undefined);
     mockRmSync.mockImplementation(() => undefined);
+    mockLstatSync.mockImplementation(() => ({ isSymbolicLink: () => false }));
   });
 
   afterEach(() => {
@@ -386,5 +389,60 @@ describe('copyExtension()', () => {
 
     expect(mockCopyFileSync).toHaveBeenCalledOnce();
     expect(mockSymlinkSync).not.toHaveBeenCalled();
+  });
+
+  // ── B3: prod-over-dev junction ────────────────────────────────────────────
+  //
+  // ⚠️  TC15 is RED until Carter adds lstatSync check + rmSync in the production branch.
+  //     Bug: if reach/ is a dev junction, mkdirSync({recursive:true}) silently succeeds
+  //     (the junction satisfies the "dir exists" check), then copyFileSync resolves
+  //     through the junction into the project root, causing a self-copy of extension.mjs.
+  //
+  //     Fix requires: if lstatSync(reachDir).isSymbolicLink() → rmSync(reachDir) first.
+  //
+  //     Regression contract (this test must PASS after Carter's fix):
+  //       1. rmSync is called on reachDir  (junction removed)
+  //       2. mkdirSync is called on reachDir  (real dir created)
+  //       3. copyFileSync is called with (SOURCE_PATH, TARGET_PATH)
+  //       4. source ≠ target  (no self-copy)
+
+  it('TC15 B3 prod-over-dev junction: existing junction removed before real-dir copy (RED until Carter)', () => {
+    // Simulate reach/ exists as a junction (symbolic link).
+    mockExistsSync.mockImplementation((filePath: unknown) => {
+      const p = String(filePath);
+      if (p === EXTENSIONS_DIR) return true;
+      if (p === REACH_DIR)       return true;  // junction is present
+      if (p === SOURCE_PATH)     return true;
+      return false;
+    });
+    mockLstatSync.mockImplementation((filePath: unknown) => {
+      const p = String(filePath);
+      if (p === REACH_DIR) return { isSymbolicLink: () => true };
+      return { isSymbolicLink: () => false };
+    });
+
+    // Production mode (NODE_ENV unset).
+    delete process.env['NODE_ENV'];
+
+    copyExtension();
+
+    // 1. Junction removed.
+    expect(mockRmSync).toHaveBeenCalledWith(REACH_DIR, expect.objectContaining({ recursive: true }));
+
+    // 2. Real directory created after removal.
+    expect(mockMkdirSync).toHaveBeenCalledWith(REACH_DIR, expect.objectContaining({ recursive: true }));
+
+    // 3. File copied to target (not skipped).
+    expect(mockCopyFileSync).toHaveBeenCalledWith(SOURCE_PATH, TARGET_PATH);
+
+    // 4. No self-copy.
+    expect(SOURCE_PATH).not.toBe(TARGET_PATH);
+
+    // 5. Ordering: rmSync before mkdirSync before copyFileSync.
+    const rmOrder   = mockRmSync.mock.invocationCallOrder[0] ?? Infinity;
+    const mkdirOrder = mockMkdirSync.mock.invocationCallOrder[0] ?? Infinity;
+    const copyOrder  = mockCopyFileSync.mock.invocationCallOrder[0] ?? -Infinity;
+    expect(rmOrder).toBeLessThan(mkdirOrder);
+    expect(mkdirOrder).toBeLessThan(copyOrder);
   });
 });

@@ -117,8 +117,14 @@ export class AfkModeController {
       chatId: this.chatId,
     });
     this.bridge.on('afk.request', (sessionId, lastAssistantExcerpt) => {
-      if (lastAssistantExcerpt !== undefined) {
+      // Always reflect the current snapshot: set when present and non-empty, delete when absent
+      // or empty. An omitted/empty excerpt means "no assistant turn yet at this activation" —
+      // keeping a stale value from a prior activation would show outdated context in /status.
+      // Empty string is treated the same as absent because redaction can produce ''.
+      if (lastAssistantExcerpt !== undefined && lastAssistantExcerpt !== '') {
         this.lastKnownExcerpts.set(sessionId, lastAssistantExcerpt);
+      } else {
+        this.lastKnownExcerpts.delete(sessionId);
       }
       this.activate(sessionId).catch((err) => { console.error('[afk] activate failed (session %s):', sessionId, errorText(err)); });
     });

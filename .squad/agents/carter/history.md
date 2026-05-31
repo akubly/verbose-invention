@@ -47,6 +47,26 @@
 
 **Test impact:** 771 → 783 (+12 net).
 
+### PR #10 Review — Stale Excerpt Fix
+
+**Bug:** `lastKnownExcerpts` was "update on present, leave on absent". A subsequent
+`afk.request` without `lastAssistantExcerpt` (older extension, session just started)
+left the stale excerpt from a prior activation in the map. `/status` and orientation
+messages would then show outdated context.
+
+**Fix:** `src/bot/afkMode.ts:119-128` — changed the `afk.request` handler to always
+reflect the current snapshot: `set` when excerpt is present and non-empty, `delete`
+otherwise. Empty-string treated as absent (redaction can produce `''`).
+
+**Consumer check:** `formatOrientationMessage` already guards with `if (rawExcerpt)`
+(falsy for `undefined` after delete, and for `''`) — no consumer changes needed.
+
+**Test:** `tests/bot/afkMode.staleExcerpt.test.ts` — 3 cases: with excerpt, omitted
+excerpt after prior activation, empty-string excerpt. Uses EventEmitter-backed
+TestBridge to fire the real handler with args.
+
+**Test impact:** 783 → 786 (+3 net).
+
 ---
 
 ## Key Learnings

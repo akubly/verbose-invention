@@ -405,7 +405,12 @@ describe('A7 inbound message shapes — field-level drift assertions', () => {
 
     it('no undeclared fields — extra fields must be rejected', () => {
       const names = fields.map((f) => f.name).sort();
-      expect(names).toEqual(['sessionId', 'type']);
+      expect(names).toEqual(['lastAssistantExcerpt', 'sessionId', 'type']);
+    });
+
+    it('lastAssistantExcerpt is optional string', () => {
+      expect(byName['lastAssistantExcerpt']?.optional).toBe(true);
+      expect(byName['lastAssistantExcerpt']?.typeStr).toBe('string');
     });
   });
 
@@ -429,5 +434,36 @@ describe('A7 inbound message shapes — field-level drift assertions', () => {
       const names = fields.map((f) => f.name).sort();
       expect(names).toEqual(['sessionId', 'type']);
     });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #8 — mirror.input SDK API drift regression guard
+//
+// SDK v0.2.2: session.send() returns Promise<string> (message ID), NOT an
+// async iterable. The extension must use the event-emitter streaming pattern:
+//   - session.on('assistant.message_delta', ...) for chunks
+//   - session.on('session.idle', ...) for completion
+//   - session.send({ prompt: text }) as fire-and-forget
+//
+// These tests catch any regression back to the old `for await ... of send()`
+// pattern, which crashes at runtime with "not async iterable".
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Issue #8 regression — extension.mjs SDK send() API contract', () => {
+  it('does NOT use for-await over sdkSession.send (old async-iterable pattern — breaks on SDK v0.2.2)', () => {
+    expect(extensionSource).not.toMatch(/for\s+await\s*\([^)]+of\s+sdkSession\.send\s*\(/);
+  });
+
+  it('subscribes to assistant.message_delta for streaming chunks (SDK v0.2.2 event-emitter pattern)', () => {
+    expect(extensionSource).toMatch(/sdkSession\.on\s*\(\s*['"]assistant\.message_delta['"]/);
+  });
+
+  it('calls send() with MessageOptions object { prompt: ... } not a bare string (SDK v0.2.2 API)', () => {
+    expect(extensionSource).toMatch(/sdkSession\.send\s*\(\s*\{\s*prompt:/);
+  });
+
+  it('subscribes to session.idle to detect stream completion', () => {
+    expect(extensionSource).toMatch(/sdkSession\.on\s*\(\s*['"]session\.idle['"]/);
   });
 });

@@ -8,10 +8,13 @@
  * - CLI-only /back semantics, local resume banner, topic close
  * - immediate daemon-unreachable and invalid-state failures
  *
- * T4 protocol clarification: ADR-11 §2 says /back is CLI-only and is never
- * honored from Telegram. The T4 audit case is therefore intentionally rewritten
- * as a negative test: Telegram topic text "/back" must not produce
- * back.confirmed, mode transition, topic close, or relay re-targeting.
+ * T4 protocol clarification (updated Phase 9): ADR-11 §2 said /back is
+ * CLI-only and was never honored from Telegram as a direct back.request.
+ * Phase 9 pass-through supersedes the "no relay re-targeting" part: /back
+ * typed in a Telegram topic is now forwarded verbatim via mirror.input (same
+ * as any other non-bot-command slash). It still does NOT produce back.confirmed,
+ * a mode transition, or a topic close — those require the full extension
+ * back.request round-trip, which text pass-through does not trigger.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -156,17 +159,19 @@ describe('ADR-11 AFK mode contract', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('T4 — Telegram /back is ignored because ADR-11 §2 makes /back CLI-only', async () => {
+  it('T4 — Telegram /back passes through via mirror.input but does not trigger back.confirmed or mode transition', async () => {
     const topicId = 6262;
     const { client, telegram, relayTargets, driver } = await makeHarness([
       makeSessionEntry({ topicId, lastTopicId: topicId, mode: 'afk', afkSince: ADR11_TIMESTAMP }),
     ]);
-    // Prime baseline: relay was already targeting Telegram before the ignored Telegram /back.
+    // Prime baseline: relay was already targeting Telegram before /back arrives.
     relayTargets.targetTelegram('sess-1', topicId);
 
     await driver.handleTelegramMessage(topicId, '/back');
     await flush();
 
+    // Text pass-through does not produce protocol effects — those require
+    // the full extension back.request round-trip.
     expect(client.receivedOfType('back.confirmed')).toHaveLength(0);
     expect(client.receivedOfType('mode.changed').filter((msg) => msg.active === false)).toHaveLength(0);
     expect(telegram.api.closeForumTopic).not.toHaveBeenCalled();
@@ -175,7 +180,9 @@ describe('ADR-11 AFK mode contract', () => {
       expect.stringContaining('Session resumed locally'),
       expect.anything(),
     );
-    expect(relayTargets.lastTarget('sess-1')).toBe('telegram');
+    // Phase 9: /back is no longer in BOT_COMMANDS, so it forwards via
+    // mirror.input like any other CLI slash command — relay target becomes cli.
+    expect(relayTargets.lastTarget('sess-1')).toBe('cli');
   });
 
   it('T5 — CLI /back clears AFK mode, banners the topic, closes it, and broadcasts mode.changed false', async () => {

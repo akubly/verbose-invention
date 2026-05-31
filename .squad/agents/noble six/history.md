@@ -161,7 +161,75 @@ Full Phase 1–6 documentation archived in history-archive.md. Key accomplishmen
 
 ---
 
+## 2026-05-30T11:32:20Z — Phase 9 Triage Complete
+
+**Session:** Phase 9 dogfood feedback triage (Noble Six architect, solo)
+
+**Trigger:** Aaron brought 3 feedback items from Phase 8.5 dogfood. Noble Six tasked with triage + design.
+
+**Deliverable:** `.copilot/reach-phase9-design.md` (21 KB design doc)
+
+### Three Items Triaged
+
+| Item | Problem | Recommendation | Complexity |
+|------|---------|----------------|------------|
+| 1 | No orientation message on topic activation | Send session status (sessionId, cwd, model, mode) on first activation per-session | S |
+| 2 | Slash commands don't pass through from Telegram | **Path B (pass-through)** — `isBotCommand()` guard that allows CLI commands through | M |
+| 3 | No way to start sessions in different cwds | Extend config.json with `knownCwds`, add `/cwd` commands, extend `/new --cwd` | M-L |
+
+### Key Investigation Findings
+
+1. **Item 2 root cause:** `afkMode.ts:151` explicitly drops all `/` prefixed messages. This was a blanket guard to avoid intercepting Telegram bot commands. Recommendation: distinguish bot commands (`/new`, `/list`, etc.) from CLI commands (`/clear`, `/agent`, `/model`) via `isBotCommand()` helper.
+
+2. **`relay.command` envelope is stubbed:** The protocol supports structured command dispatch (`relay.command` message type), but the daemon has no producer and the extension handler is a no-op. Phase 9 recommends `mirror.input` pass-through; `relay.command` deferred to Phase 10+ for curated command UX.
+
+3. **Session cwd is descriptive, not prescriptive:** Registry stores cwd for informational purposes. Spawn-from-Telegram (daemon choosing where to start CLI) is Phase 11+ scope.
+
+### Sprint Decomposition
+
+9 tasks across 3 parallel tracks:
+- Track 1 (Item 1+2): Kat + Carter + Jun — S+M tasks
+- Track 2 (Item 3): Kat + Carter + Jun — M-L tasks
+- Track 3 (Docs): Scribe
+
+Estimated total: ~20–25h team-wide, 1–2 sessions.
+
+### Open Questions for Aaron
+
+8 questions documented in design doc §6. All have sensible defaults if Aaron doesn't weigh in.
+
+**Team inbox:** `.squad/decisions/inbox/noble-six-phase9-triage.md`
+
+---
+
+## Learnings
+
+### Slash Command Pass-Through Pattern
+
+When bridging between messaging platforms (Telegram) and CLI tools, blanket `/` guards to avoid bot command collision are too broad. Better pattern:
+1. Enumerate known bot commands explicitly (`BOT_COMMANDS` set)
+2. Only intercept messages matching that set
+3. Pass through everything else (including CLI slash commands like `/clear`, `/model`)
+
+This preserves CLI command parity while still letting the bot handle its own commands.
+
+### Protocol Envelope Reservation
+
+The `relay.command` pattern shows good forward thinking: reserve the protocol envelope even if implementation is deferred. This allows structured command dispatch later without protocol changes. The stub in `extension.mjs` serves as documentation + placeholder.
+
+### CWD as Descriptive vs. Prescriptive
+
+Important distinction for daemon-to-CLI bridges:
+- **Descriptive cwd:** Record where CLI was started (passive, informational)
+- **Prescriptive cwd:** Control where CLI starts (active, requires process spawn)
+
+Phase 9's cwd registry is descriptive + selection UX. Prescriptive spawn is a different feature (Telegram-initiated sessions), correctly deferred.
+
+---
+
 ## Archive
+
+Full Phases 1–5 + detailed Phase 6 spike documentation in history-archive.md.
 
 Full Phases 1–5 + detailed Phase 6 spike documentation in history-archive.md.
 

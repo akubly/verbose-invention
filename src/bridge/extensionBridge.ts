@@ -122,7 +122,7 @@ export interface BridgeEmitter {
     event: 'permission.cancelled',
     listener: (sessionId: string, permissionId: string) => void,
   ): this;
-  on(event: 'afk.request', listener: (sessionId: string) => void): this;
+  on(event: 'afk.request', listener: (sessionId: string, lastAssistantExcerpt?: string) => void): this;
   on(event: 'back.request', listener: (sessionId: string) => void): this;
   off(event: string, listener: (...args: unknown[]) => void): this;
 }
@@ -172,7 +172,7 @@ export class ExtensionBridge implements BridgeEmitter {
     event: 'permission.cancelled',
     listener: (sessionId: string, permissionId: string) => void,
   ): this;
-  on(event: 'afk.request', listener: (sessionId: string) => void): this;
+  on(event: 'afk.request', listener: (sessionId: string, lastAssistantExcerpt?: string) => void): this;
   on(event: 'back.request', listener: (sessionId: string) => void): this;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   on(event: string, listener: (...args: any[]) => void): this {
@@ -482,7 +482,10 @@ export class ExtensionBridge implements BridgeEmitter {
         if (conn !== undefined) {
           const ar = msg as AfkRequestMessage;
           if (ar.sessionId === conn.sessionId) {
-            this._emitter.emit('afk.request', conn.sessionId);
+            const excerpt = typeof ar.lastAssistantExcerpt === 'string' && ar.lastAssistantExcerpt.length > 0
+              ? ar.lastAssistantExcerpt
+              : undefined;
+            this._emitter.emit('afk.request', conn.sessionId, excerpt);
           } else {
             console.warn('[bridge] afk.request: sessionId mismatch — dropping');
           }

@@ -60,6 +60,7 @@ export async function main(): Promise<void> {
     ? new AfkModeController(bot, bridge, registry, chatId, undefined, {
       ...(cfg.allowedUserIdSet !== undefined && { allowedUserIds: cfg.allowedUserIdSet }),
       allowTelegramInput: cfg.permissionPolicy !== 'approveAll',
+      globalModel: cfg.model,
     })
     : undefined;
 
@@ -67,7 +68,8 @@ export async function main(): Promise<void> {
     bot, registry, factory,
     globalModel: cfg.model,
     permissionPolicy: cfg.permissionPolicy,
-    ...(afkMode !== undefined && { telegramMirror: afkMode }),
+    configPath: cfg.configPath,
+    ...(afkMode !== undefined && { telegramMirror: afkMode, statusProvider: afkMode }),
   });
 
   console.log(`[reach] Model: ${cfg.model}`);

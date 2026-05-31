@@ -9,7 +9,7 @@
 import type { BridgeSessionInfo, OutboundMessage, RegistrationAugmenter } from '../bridge/protocol.js';
 
 export interface AfkBridgeEvents {
-  'afk.request': [sessionId: string];
+  'afk.request': [sessionId: string, lastAssistantExcerpt?: string];
   'back.request': [sessionId: string];
   'session.disconnected': [sessionId: string];
   stream: [sessionId: string, requestId: string, chunk: string, done: boolean];

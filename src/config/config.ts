@@ -11,9 +11,17 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 
+export interface KnownCwd {
+  alias: string;       // Unique friendly name, e.g. "reach", "scratch"
+  path: string;        // Absolute, normalized (path.resolve) path
+  addedAt: string;     // ISO-8601 timestamp
+  lastUsedAt?: string; // ISO-8601 timestamp, updated when a session starts here
+}
+
 export interface ReachConfig {
   telegramChatId?: number;
   telegramAllowedUserIds?: number[];
+  knownCwds?: KnownCwd[]; // Optional — old configs without this field load cleanly
 }
 
 /**

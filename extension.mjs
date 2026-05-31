@@ -185,6 +185,14 @@ const pendingPermissions = new Map();
 const activeInjectIds = new Set();
 
 /**
+ * Most recent completed assistant message text, cached for AFK orientation (Phase 9 Item 1).
+ * Updated by the `assistant.message` SDK event. Reset to '' on extension reload.
+ *
+ * @type {string}
+ */
+let lastAssistantMessage = '';
+
+/**
  * Returns the requestId of the most recently started inject still in flight,
  * or '' if no inject is currently running. Used in permission.request messages
  * as informational context (ADR-9 §3.1 — "context only").
@@ -361,8 +369,16 @@ function handleMessage(msg) {
   }
 }
 
+/** SDK v0.2.2: send() returns Promise<string> (message ID); streaming arrives via event emitters. */
+const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
+
 /**
  * Run text through the SDK session and stream the assistant response back to the daemon.
+ *
+ * SDK v0.2.2 contract (Issue #8 fix): send() is fire-and-forget; chunks arrive via
+ * 'assistant.message_delta' events; 'session.idle' signals completion.
+ * Previous code used `for-await-of sdkSession.send(text)` which assumed
+ * an async-iterable return — that was valid against an older SDK version but breaks on v0.2.2.
  *
  * @param {string} text
  * @param {string} requestId
@@ -373,28 +389,56 @@ async function streamSdkResponse(text, requestId, label) {
 
   try {
     let chunkCount = 0;
-    for await (const chunk of sdkSession.send(text)) {
-      const frame = JSON.stringify({
-        type: 'stream',
-        sessionId: SESSION_ID,
-        requestId,
-        chunk: String(chunk),
-        done: false,
-      }) + '\n';
-      if (pipeSocket !== null && !pipeSocket.destroyed) {
-        const canWriteMore = pipeSocket.write(frame, 'utf-8');
-        if (!canWriteMore) {
-          await new Promise((resolve) => {
-            if (pipeSocket !== null) {
-              pipeSocket.once('drain', resolve);
-            } else {
-              resolve(undefined);
-            }
-          });
-        }
+
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      let timeoutId;
+      let unsubs = [];
+
+      function cleanup() {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        for (const unsub of unsubs) unsub();
       }
-      chunkCount++;
-    }
+
+      unsubs = [
+        sdkSession.on('assistant.message_delta', (event) => {
+          const chunk = String(event?.data?.deltaContent ?? '');
+          const frame = JSON.stringify({
+            type: 'stream',
+            sessionId: SESSION_ID,
+            requestId,
+            chunk,
+            done: false,
+          }) + '\n';
+          if (pipeSocket !== null && !pipeSocket.destroyed) {
+            pipeSocket.write(frame, 'utf-8');
+          }
+          chunkCount++;
+        }),
+        sdkSession.on('session.idle', () => {
+          cleanup();
+          resolve(undefined);
+        }),
+        sdkSession.on('session.error', (event) => {
+          cleanup();
+          reject(new Error(event?.data?.message ?? 'session error'));
+        }),
+      ];
+
+      timeoutId = setTimeout(() => {
+        cleanup();
+        reject(new Error('Stream timeout: no response from SDK'));
+      }, STREAM_TIMEOUT_MS);
+
+      // Fire-and-forget: chunks arrive via event listeners above
+      sdkSession.send({ prompt: text }).catch((err) => {
+        cleanup();
+        reject(err instanceof Error ? err : new Error(String(err)));
+      });
+    });
+
     sendToDaemon({ type: 'stream', sessionId: SESSION_ID, requestId, chunk: '', done: true });
     log('info', `${label} complete: requestId=${requestId} chunks=${chunkCount}`);
   } catch (err) {
@@ -577,6 +621,15 @@ function abortPendingPermissions() {
  */
 function wireSessionEvents(session) {
   log('info', 'Session event forwarding wired (ADR-9 permission hook active)');
+
+  // Phase 9 Item 1: cache last completed assistant message for AFK orientation.
+  if (typeof session.on === 'function') {
+    session.on('assistant.message', (event) => {
+      if (event?.data?.content) {
+        lastAssistantMessage = String(event.data.content);
+      }
+    });
+  }
 
   // ADR-9 §5: Extension classifies tool risk and forwards only destructive tools.
   // The daemon routes permission.request to the user via Telegram inline keyboard.
@@ -808,7 +861,14 @@ async function runConnectionLoop() {
  */
 function sendModeRequest(type) {
   try {
-    const sent = sendToDaemon({ type, sessionId: SESSION_ID });
+    const msg = { type, sessionId: SESSION_ID };
+    if (type === 'afk.request' && lastAssistantMessage.length > 0) {
+      // Truncate to 500 chars for orientation message (Phase 9 Item 1).
+      msg.lastAssistantExcerpt = lastAssistantMessage.length > 500
+        ? lastAssistantMessage.slice(0, 499) + '…'
+        : lastAssistantMessage;
+    }
+    const sent = sendToDaemon(msg);
     if (!sent) {
       showCliMessage('⚠ Reach daemon not running — start it first.', 'warning');
     }

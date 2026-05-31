@@ -5,6 +5,17 @@ import type { ISessionRegistry } from '../sessions/registry.js';
 import type { SessionLookup, PermissionPrompter } from '../relay/ports.js';
 import { Relay } from '../relay/relay.js';
 import { promptUserForPermission, ensurePromptRegistry } from './prompt.js';
+import { isBotCommand } from './commands.js';
+import { loadConfig, saveConfig } from '../config/config.js';
+import {
+  validateAlias,
+  validatePath,
+  listKnownCwds,
+  getKnownCwdByAlias,
+  addKnownCwd,
+  removeKnownCwd,
+  touchKnownCwd,
+} from '../config/knownCwds.js';
 
 /** DNS-label style: lowercase alphanumeric + hyphens, 1–63 chars, no leading hyphen. */
 export const SESSION_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
@@ -16,14 +27,29 @@ export interface HandlerOptions {
   globalModel: string;
   permissionPolicy?: PermissionPolicy;
   telegramMirror?: { handleTelegramMessage(ctx: Context): Promise<boolean> };
+  statusProvider?: { handleStatusCommand(ctx: Context): Promise<void> };
+  /** Absolute path to config.json — required for /cwd commands and /new --cwd flag. */
+  configPath?: string;
+}
+
+/** Formats an ISO-8601 timestamp as a human-friendly "X ago" string. */
+function relativeTime(iso: string): string {
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diffMs / 60_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }
 
 /**
  * Registers all bot commands and the catch-all relay handler.
  *
  * Commands:
- *   /new <name>    — register a topic→name mapping in the session registry
- *                    (the SDK session is created lazily on first relayed message)
+ *   /new <name> [--model <model>] [--cwd <alias-or-path>]
+ *                    — register a topic→name mapping (SDK session created lazily)
+ *   /cwd list|add|remove  — manage the known-cwds registry (General Topic only)
  *   /list          — list all registered topic→session mappings
  *   /remove        — delete the session linked to the current topic
  *   /resume <name> — re-link a named session to the current topic (move semantics)
@@ -31,7 +57,7 @@ export interface HandlerOptions {
  *
  * All other text messages in forum topics are relayed to the linked session.
  */
-export function registerHandlers({ bot, registry, factory, globalModel, permissionPolicy, telegramMirror }: HandlerOptions): Relay {
+export function registerHandlers({ bot, registry, factory, globalModel, permissionPolicy, telegramMirror, statusProvider, configPath }: HandlerOptions): Relay {
   const sessionLookup: SessionLookup = { resolve: (topicId) => registry.resolve(topicId) };
 
   let permissionPrompter: PermissionPrompter | undefined;
@@ -49,7 +75,7 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
 
   const relay = new Relay(sessionLookup, factory, globalModel, permissionPrompter);
 
-  // /new <name> [--model <model>] — register a topic→name mapping; SDK session is created lazily on first relay
+  // /new <name> [--model <model>] [--cwd <alias-or-path>] — register a topic→name mapping; SDK session is created lazily on first relay
   bot.command('new', async (ctx) => {
     const topicId = ctx.message?.message_thread_id;
     if (!topicId) {
@@ -59,27 +85,41 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
 
     const input = ctx.match?.trim();
     if (!input) {
-      await ctx.reply('❌ Usage: /new <session-name> [--model <model>]', { message_thread_id: topicId });
+      await ctx.reply('❌ Usage: /new <session-name> [--model <model>] [--cwd <alias-or-path>]', { message_thread_id: topicId });
       return;
     }
 
-    // Parse name and optional --model flag
-    let name = input;
+    // Extract --model and --cwd flags (position-independent)
     let model: string | undefined;
-    
-    // Check for --model flag
-    if (/\s--model(\s|$)/.test(input)) {
-      const modelMatch = input.match(/^(.+?)\s+--model\s+(\S+)$/);
-      if (modelMatch && modelMatch[1] && modelMatch[2]) {
-        name = modelMatch[1].trim();
-        model = modelMatch[2].trim();
-      } else {
-        // --model flag present but no value provided
-        await ctx.reply('❌ --model flag requires a model value (e.g., --model claude-opus-4.5)', {
-          message_thread_id: topicId,
-        });
-        return;
-      }
+    let cwdArg: string | undefined;
+    const name = input
+      .replace(/(^|\s)--(model|cwd)\s+(\S+)/g, (_m, _sep, flagName: string, flagValue: string) => {
+        if (flagName === 'model') model = flagValue;
+        else cwdArg = flagValue;
+        return '';
+      })
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+
+    // Detect dangling flags (present without a value)
+    if (/(^|\s)--model($|\s)/.test(name)) {
+      await ctx.reply('❌ --model flag requires a model value (e.g., --model claude-opus-4.5)', {
+        message_thread_id: topicId,
+      });
+      return;
+    }
+    if (/(^|\s)--cwd($|\s)/.test(name)) {
+      await ctx.reply('❌ --cwd flag requires a value (an alias name or absolute path)', {
+        message_thread_id: topicId,
+      });
+      return;
+    }
+    if (/(^|\s)--\w/.test(name)) {
+      await ctx.reply(
+        '❌ Unknown flag. Usage: /new <session-name> [--model <model>] [--cwd <alias-or-path>]',
+        { message_thread_id: topicId },
+      );
+      return;
     }
 
     if (!SESSION_NAME_RE.test(name)) {
@@ -114,9 +154,42 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
         await ctx.reply('❌ Could not determine chat ID.', { message_thread_id: topicId });
         return;
       }
-      await registry.register(topicId, chatId, name, model);
+
+      // Resolve --cwd if provided
+      let resolvedCwd: string | undefined;
+      if (cwdArg !== undefined) {
+        if (!configPath) {
+          await ctx.reply('❌ --cwd requires a config path (daemon not fully configured).', { message_thread_id: topicId });
+          return;
+        }
+        const isPath = /^[a-zA-Z]:\\/.test(cwdArg) || cwdArg.startsWith('\\\\');
+        if (isPath) {
+          const pathResult = await validatePath(cwdArg);
+          if (!pathResult.ok) {
+            await ctx.reply(`❌ Invalid path: ${pathResult.reason}. Path must be an absolute, existing directory.`, { message_thread_id: topicId });
+            return;
+          }
+          resolvedCwd = pathResult.normalized;
+        } else {
+          const cfg = await loadConfig(configPath);
+          const known = getKnownCwdByAlias(cfg, cwdArg);
+          if (!known) {
+            await ctx.reply(`❌ Unknown alias '${cwdArg}'. Run /cwd list to see known cwds.`, { message_thread_id: topicId });
+            return;
+          }
+          resolvedCwd = known.path;
+          await saveConfig(configPath, touchKnownCwd(cfg, cwdArg, new Date().toISOString()));
+        }
+      }
+
+      if (resolvedCwd !== undefined) {
+        await registry.register(topicId, chatId, name, model, resolvedCwd);
+      } else {
+        await registry.register(topicId, chatId, name, model);
+      }
       const modelNote = model ? ` (model: ${model})` : '';
-      await ctx.reply(`✅ Session "${name}" registered and linked to this topic${modelNote}.`, {
+      const cwdNote = resolvedCwd ? ` (cwd: ${resolvedCwd})` : '';
+      await ctx.reply(`✅ Session "${name}" registered and linked to this topic${modelNote}${cwdNote}.`, {
         message_thread_id: topicId,
       });
     } catch (err) {
@@ -246,11 +319,13 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
     const helpText = `Reach — Telegram ↔ Copilot CLI bridge
 
 Commands:
-/new <name> [--model <model>] — Create a session in this topic
+/new <name> [--model <model>] [--cwd <alias-or-path>] — Create a session in this topic
 /resume <name> — Re-link an existing session to this topic
 /list — Show all active sessions
 /remove — Unlink the session from this topic
+/status — Show current AFK session status
 /pair <code> — Pair this chat with the Reach daemon
+/cwd list|add|remove — Manage known cwd aliases (General Topic only)
 /help — Show this message`;
     await ctx.reply(helpText, topicId ? { message_thread_id: topicId } : undefined);
   });
@@ -264,10 +339,101 @@ Commands:
     );
   });
 
+  // /status — send current session orientation message (AFK topics only)
+  bot.command('status', async (ctx) => {
+    if (!statusProvider) {
+      const topicId = ctx.message?.message_thread_id;
+      await ctx.reply('⚠️ Status requires the extension bridge to be active.', topicId ? { message_thread_id: topicId } : undefined);
+      return;
+    }
+    await statusProvider.handleStatusCommand(ctx);
+  });
+
+  // /cwd list|add|remove — manage the known-cwds registry (General Topic only)
+  bot.command('cwd', async (ctx) => {
+    // Q3-4: /cwd only works in the General Topic (message_thread_id === undefined means no thread)
+    const topicId = ctx.message?.message_thread_id;
+    if (topicId !== undefined) {
+      await ctx.reply(
+        '❌ /cwd commands work in the General Topic only. Manage your cwd registry there, then start sessions from any topic.',
+        { message_thread_id: topicId },
+      );
+      return;
+    }
+
+    if (!configPath) {
+      await ctx.reply('❌ /cwd is not available (config path not configured).');
+      return;
+    }
+
+    const args = (ctx.match ?? '').trim().split(/\s+/).filter(Boolean);
+    const subCmd = args[0]?.toLowerCase() ?? 'list';
+
+    if (subCmd === 'list') {
+      const config = await loadConfig(configPath);
+      const cwds = listKnownCwds(config);
+      if (cwds.length === 0) {
+        await ctx.reply('📂 No known cwds yet. Add one with: /cwd add <alias> <path>');
+        return;
+      }
+      const lines = cwds.map(c => {
+        const used = c.lastUsedAt ? `last used ${relativeTime(c.lastUsedAt)}` : 'never used';
+        return `• ${c.alias} — ${c.path}  (${used})`;
+      });
+      await ctx.reply(`📂 Known cwds:\n${lines.join('\n')}\n\nStart one with: /new <alias>`);
+
+    } else if (subCmd === 'add') {
+      const alias = args[1];
+      const rawPath = args.slice(2).join(' ');
+      if (!alias || !rawPath) {
+        await ctx.reply('❌ Usage: /cwd add <alias> <path>');
+        return;
+      }
+      const config = await loadConfig(configPath);
+      const aliasResult = validateAlias(alias);
+      if (!aliasResult.ok) {
+        await ctx.reply(`❌ Invalid alias: ${aliasResult.reason}. Aliases must be 1-32 chars, start alphanumeric, use letters/digits/hyphens/underscores.`);
+        return;
+      }
+      const existingAlias = getKnownCwdByAlias(config, alias);
+      if (existingAlias) {
+        await ctx.reply(`❌ Alias '${alias}' already exists for ${existingAlias.path}. Use a different name or run /cwd remove ${alias} first.`);
+        return;
+      }
+      const pathResult = await validatePath(rawPath);
+      if (!pathResult.ok) {
+        await ctx.reply(`❌ Invalid path: ${pathResult.reason}. Path must be an absolute, existing directory.`);
+        return;
+      }
+      const newConfig = addKnownCwd(config, alias, pathResult.normalized, new Date().toISOString());
+      await saveConfig(configPath, newConfig);
+      await ctx.reply(`✅ Added '${alias}' → ${pathResult.normalized}`);
+
+    } else if (subCmd === 'remove') {
+      const alias = args[1];
+      if (!alias) {
+        await ctx.reply('❌ Usage: /cwd remove <alias>');
+        return;
+      }
+      const config = await loadConfig(configPath);
+      const found = getKnownCwdByAlias(config, alias);
+      if (!found) {
+        await ctx.reply(`❌ Alias '${alias}' not found. Run /cwd list to see known cwds.`);
+        return;
+      }
+      const newConfig = removeKnownCwd(config, alias);
+      await saveConfig(configPath, newConfig);
+      await ctx.reply(`✅ Removed '${alias}'.`);
+
+    } else {
+      await ctx.reply('❌ Unknown sub-command. Usage: /cwd list | /cwd add <alias> <path> | /cwd remove <alias>');
+    }
+  });
+
   // Relay all non-command text messages in forum topics to their linked session
   bot.on('message:text', async (ctx) => {
     if (!ctx.message.message_thread_id) return;
-    if (ctx.message.text.startsWith('/')) return;
+    if (isBotCommand(ctx.message.text)) return;
     if (await telegramMirror?.handleTelegramMessage(ctx)) return;
     await relay.relay(ctx);
   });

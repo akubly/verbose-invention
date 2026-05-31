@@ -85,6 +85,11 @@ export interface PermissionCancelledMessage {
 export interface AfkRequestMessage {
   type: 'afk.request';
   sessionId: string;
+  /**
+   * Last buffered assistant message at AFK activation, truncated to 500 chars.
+   * Optional — older extensions won't send it.
+   */
+  lastAssistantExcerpt?: string;
 }
 
 /** Extension → daemon: user requested machine-wide back-at-desk mode from this CLI session. */

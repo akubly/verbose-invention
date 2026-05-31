@@ -48,7 +48,7 @@ describe('ExtensionBridge ADR-11 request dispatcher', () => {
     internals.handleLine(socket, JSON.stringify({ type: 'afk.request', sessionId }));
     internals.handleLine(socket, JSON.stringify({ type: 'back.request', sessionId }));
 
-    expect(onAfk).toHaveBeenCalledWith(sessionId);
+    expect(onAfk).toHaveBeenCalledWith(sessionId, undefined);
     expect(onBack).toHaveBeenCalledWith(sessionId);
   });
 

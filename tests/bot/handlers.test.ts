@@ -340,7 +340,7 @@ describe('registerHandlers', () => {
       expect(ctx.reply).not.toHaveBeenCalled();
     });
 
-    it('ignores command messages (starting with /)', async () => {
+    it('ignores Telegram bot commands like /list (handled by bot.command())', async () => {
       const { bot, onHandlers } = makeMockBot();
       const registry = makeStubRegistry([ENTRY]);
       const factory = makeMockFactory();
@@ -348,7 +348,7 @@ describe('registerHandlers', () => {
 
       const handler = onHandlers.get('message:text')!;
       const ctx = makeMockCtx({
-        message: { message_thread_id: 42, text: '/unknown-cmd' },
+        message: { message_thread_id: 42, text: '/list' },
       });
       await handler(ctx);
 

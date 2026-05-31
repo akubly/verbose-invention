@@ -107,6 +107,10 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
     let cwdArg: string | undefined;
     try {
       const parsed = parseNewFlags(input);
+      if (parsed.error) {
+        await ctx.reply(`❌ ${parsed.error}`, { message_thread_id: topicId });
+        return;
+      }
       name = parsed.sessionName;
       model = parsed.model;
       cwdArg = parsed.cwd;

@@ -218,3 +218,66 @@ land a feature, check whether Jun's anticipatory tests are failing silently.
 - **`exactOptionalPropertyTypes` changes return-shape ergonomics.** For optional fields like `model?: string`, returning `{ model: undefined }` fails type-check; build objects conditionally (`...(model !== undefined && { model })`).
 - **Structured extraction helps contain handler growth.** Pulling `/cwd` into `handleCwdCommand` made warning surfacing and logging additions straightforward without destabilizing the relay path.
 - **Extension stream correctness needs two gates, not one.** Serialization (`streamQueue`) prevents cross-wired listeners; drain-aware writes (`writeFrame` + `writeQueue`) protects the pipe under backpressure. Either one alone is incomplete.
+
+---
+
+## Phase 9 Review Cycle 2 (2026-05-30T23:32:46-07:00) — Surgical Pass
+
+**6 source changes, 12 new tests. 783 passing (baseline 771 + 12).**
+
+### C2-B1 — writeFrame drain-hang on socket close
+
+Fixed `writeFrame` in `extension.mjs` to race `drain` against `close`/`error`.
+Resolve-not-reject on socket close: downstream code checks `socket.destroyed`
+on the next call, keeping error surfaces at natural boundaries rather than
+producing spurious turn failures.
+
+Structural regression tests added to `tests/bridge/extension-protocol-drift.test.ts`:
+verify that `writeFrame` contains `socket.destroyed` guard + `close`/`error`
+listeners + cleanup off-calls.
+
+Also added `extractFunctionBody` helper to the drift test file (was only in
+back-banner test, needed for body extraction by name).
+
+### C2-I1 — redactSecrets AWS key patterns
+
+- `ENV_ASSIGNMENT_PATTERN`: added `ACCESS_KEY(?:_ID)?` branch — `AWS_ACCESS_KEY_ID`
+  was previously unmatched (not covered by `ACCESS_TOKEN`).
+- `HIGH_ENTROPY_PATTERN`: added `/` and `+` to charset — base64 values with slashes
+  (like `wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`) were being split at `/` and
+  each fragment was too short to trigger the 39-char threshold.
+- Docstring updated: "40+" → "39+" (doc was lagging behind the code); added
+  coverage notes for ACCESS_KEY(_ID)? and slash-bearing high-entropy values.
+
+### newFlagParser escape handling (Option A)
+
+Removed `\\`→`\` and `\"`→`"` escape sequences from double-quoted tokenizer.
+Backslash is now always literal — symmetric with single-quote mode and correct
+for Windows paths (`"C:\Users\name"`, UNC `"\\server\share"`).
+
+**Key lesson:** The escape-handling code was inconsistent with the spec comment
+that lived in the test file. Always check test file comments for documented
+behavioral contracts before implementing "helpful" extras in parsers.
+
+Removed `'has spaces'` from `handlers.test.ts` invalid-chars loop — that input
+now hits the new multi-word early return in `parseNewFlags` and is separately
+tested in `newFlagParser.test.ts`.
+
+### newFlagParser multi-word session name
+
+`sessionParts.length > 1` now returns `{ error: '...' }` with a hint about
+quoting instead of silently joining and letting SESSION_NAME_RE produce a
+generic "invalid session name" error. Added `error?: string` to `ParsedNewFlags`
+interface; updated `handlers.ts` to check `parsed.error` before using
+`sessionName`.
+
+### knownCwds ProgramData sensitive prefix
+
+Added `process.env.PROGRAMDATA ?? 'C:\\ProgramData'` to `fixedPrefixes` in
+`sensitivePrefixOf()`. System-wide app state and service configs are as
+sensitive as `C:\Windows` and `C:\Program Files`.
+
+### JSDoc on cwdCommand.ts and newFlagParser.ts
+
+Added file-level docstrings, JSDoc on exports, and inline comments matching the
+documentation quality of `redactSecrets.ts` (the cycle 2 reference standard).

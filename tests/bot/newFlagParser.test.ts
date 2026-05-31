@@ -136,3 +136,35 @@ describe('parseNewFlags — no flags (regression)', () => {
     expect(result.sessionName).toBe('reach-v2-2024');
   });
 });
+
+// ─── C2 regression: backslash is literal inside double quotes ─────────────────
+
+describe('parseNewFlags — backslash is literal in double-quoted values (C2 regression)', () => {
+  it('UNC-style path "\\\\\\\\server\\\\share" → cwd = \\\\server\\share (no escape collapse)', () => {
+    // Input string to parseNewFlags: mysession --cwd "\\server\share"
+    // With backslash-as-literal: \\server\share is preserved as-is.
+    // With old escape processing: \\ would collapse to \ giving \server\share.
+    const result = parseNewFlags('mysession --cwd "\\\\server\\share"');
+    expect(result.cwd).toBe('\\\\server\\share');
+  });
+});
+
+// ─── C2 regression: multi-word session name returns error, not silent join ────
+
+describe('parseNewFlags — multi-word session name returns error (C2 regression)', () => {
+  it('two unquoted words as session name → returns error field', () => {
+    const result = parseNewFlags('my session');
+    expect(result.error).toMatch(/spaces/i);
+  });
+
+  it('multi-word error message hints at quoting', () => {
+    const result = parseNewFlags('my big project');
+    expect(result.error).toMatch(/quote/i);
+  });
+
+  it('single-word session name → no error field', () => {
+    const result = parseNewFlags('myproject');
+    expect(result.error).toBeUndefined();
+    expect(result.sessionName).toBe('myproject');
+  });
+});

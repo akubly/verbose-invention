@@ -1,3 +1,16 @@
+/**
+ * /cwd command handler for the Reach bot.
+ *
+ * This module owns the General-Topic-only enforcement for /cwd commands and
+ * dispatches to three sub-commands: list, add, remove.  It bridges Telegram
+ * context (grammy Context) to the knownCwds registry helpers and the config
+ * persistence layer.
+ *
+ * All /cwd commands are restricted to the General Topic (message_thread_id
+ * undefined).  Attempting to run /cwd from a non-General topic is rejected
+ * with an explanatory error.
+ */
+
 import type { Context } from 'grammy';
 import type { ReachConfig } from '../config/config.js';
 import {
@@ -25,6 +38,7 @@ export interface CwdCommandOptions {
   };
 }
 
+// Human-readable age: 'just now' | 'Xm ago' | 'Xh ago' | 'Xd ago'
 function relativeTime(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
   const mins = Math.floor(diffMs / 60_000);
@@ -35,6 +49,24 @@ function relativeTime(iso: string): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
+/**
+ * Handles the /cwd command and its sub-commands.
+ *
+ * Sub-commands:
+ *   `list`           — display all known cwds sorted by last-used date
+ *   `add <alias> <path>` — validate and register a new alias → absolute-path mapping
+ *   `remove <alias>` — remove an existing alias from the registry
+ *
+ * Enforcement:
+ *   - Restricted to the General Topic (no `message_thread_id`).  Calls from
+ *     named topics receive an informative rejection.
+ *   - When `options.configPath` is undefined the command is unavailable and
+ *     the user is told so explicitly.
+ *
+ * Dispatches by the first argument token (sub-command).  Unknown sub-commands
+ * receive a usage hint.  Structured events are logged via `options.logger`
+ * at info/warn/error level for every significant action.
+ */
 export async function handleCwdCommand(ctx: Context, options: CwdCommandOptions): Promise<void> {
   const topicId = ctx.message?.message_thread_id;
   if (topicId !== undefined) {

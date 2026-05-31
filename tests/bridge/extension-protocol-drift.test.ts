@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, beforeAll } from 'vitest';
 import type {
   RegisterMessage,
   PongMessage,
@@ -16,6 +16,28 @@ const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '../..');
 const protocolSource = readFileSync(path.resolve(repoRoot, 'src/bridge/protocol.ts'), 'utf8');
 const extensionSource = readFileSync(path.resolve(repoRoot, 'extension.mjs'), 'utf8');
+
+/**
+ * Extracts the body (between the outer braces, exclusive) of a top-level
+ * `function <name>(...)` or `async function <name>(...)` declaration in `source`.
+ * Uses brace-balancing — works for non-nested declarations without unbalanced
+ * braces inside string literals.  Returns inner text or null if not found.
+ */
+function extractFunctionBody(source: string, name: string): string | null {
+  const sig = new RegExp(`(?:async\\s+)?function\\s+${name}\\s*\\([^)]*\\)\\s*\\{`);
+  const sigMatch = sig.exec(source);
+  if (!sigMatch) return null;
+  let depth = 1;
+  let i = sigMatch.index + sigMatch[0].length;
+  const start = i;
+  while (i < source.length && depth > 0) {
+    const ch = source[i];
+    if (ch === '{') depth++;
+    else if (ch === '}') depth--;
+    i++;
+  }
+  return depth === 0 ? source.slice(start, i - 1) : null;
+}
 
 function parseOutboundProtocolTypes(source: string): string[] {
   // ASSUMES: no semicolons in member type expressions or comments inside the OutboundMessage union.
@@ -489,5 +511,49 @@ describe('Phase 9 I1+I2 regression — extension stream serialization and backpr
     expect(extensionSource).not.toMatch(
       /assistant\.message_delta[\s\S]*?pipeSocket\.write\(\s*frame,\s*['"]utf-8['"]\s*\)/,
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// C2-B1 regression — writeFrame drain-hang on socket close
+//
+// Before the C2-B1 fix, writeFrame only listened for 'drain'. If the socket
+// was destroyed while waiting for backpressure to clear, 'drain' never fired
+// and writeFrame hung forever, permanently stalling streamQueue.
+//
+// Fix: race drain against close/error; resolve (not reject) on either so the
+// next writeFrame call sees socket.destroyed === true and exits immediately.
+//
+// These structural assertions verify the fix is present and will catch any
+// regression that removes the close/error listeners from writeFrame.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('C2-B1 regression — writeFrame drain-hang on socket close', () => {
+  let writeFrameBody: string;
+
+  beforeAll(() => {
+    const body = extractFunctionBody(extensionSource, 'writeFrame');
+    if (body === null) {
+      throw new Error('C2-B1: could not locate writeFrame in extension.mjs');
+    }
+    writeFrameBody = body;
+  });
+
+  it('guards against already-destroyed socket at entry (socket.destroyed check)', () => {
+    expect(writeFrameBody).toMatch(/socket\.destroyed/);
+  });
+
+  it('registers a close listener to settle the drain-wait promise', () => {
+    expect(writeFrameBody).toMatch(/socket\.(once|on)\s*\(\s*['"]close['"]/);
+  });
+
+  it('registers an error listener to settle the drain-wait promise', () => {
+    expect(writeFrameBody).toMatch(/socket\.(once|on)\s*\(\s*['"]error['"]/);
+  });
+
+  it('removes all three listeners (cleanup) to avoid leaks', () => {
+    expect(writeFrameBody).toMatch(/socket\.off\s*\(\s*['"]drain['"]/);
+    expect(writeFrameBody).toMatch(/socket\.off\s*\(\s*['"]close['"]/);
+    expect(writeFrameBody).toMatch(/socket\.off\s*\(\s*['"]error['"]/);
   });
 });

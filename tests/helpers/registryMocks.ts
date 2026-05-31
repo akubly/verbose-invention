@@ -13,6 +13,12 @@
  * afkMode used resolve: vi.fn() (no map lookup) and list: vi.fn(() => []).
  * With an empty default entries array both are equivalent: map.get() returns
  * undefined for any topicId and Array.from(emptyMap.values()) returns [].
+ *
+ * Behavioural note: remove() defaults to mockResolvedValue(true) so that
+ * "success" tests work without extra per-test mocking.  Tests that need a
+ * falsy result (e.g. "no session linked" branches) should call
+ * (registry.remove as ReturnType<typeof vi.fn>).mockResolvedValue(false)
+ * explicitly.
  */
 
 import { vi } from 'vitest';
@@ -34,7 +40,7 @@ export function makeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry
     findByName: vi.fn(),
     findAllByName: vi.fn(() => []),
     list: vi.fn(() => Array.from(map.values())),
-    remove: vi.fn(),
+    remove: vi.fn().mockResolvedValue(true),
     move: vi.fn(),
   } as unknown as ISessionRegistry;
 }

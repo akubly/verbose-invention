@@ -246,6 +246,12 @@ describe('validatePath — I10: sensitive-dir warning (anticipatory, Windows onl
     expect((r as { ok: true; normalized: string; warning?: string }).warning).toBeTruthy();
   });
 
+  it('C:\\ProgramData\\SomeApp → ok:true with warning', async () => {
+    const r = await validatePath('C:\\ProgramData\\SomeApp');
+    expect(r.ok).toBe(true);
+    expect((r as { ok: true; normalized: string; warning?: string }).warning).toMatch(/sensitive/i);
+  });
+
   it('C:\\Users\\akubl\\repo (current user) → ok:true, NO warning', async () => {
     const r = await validatePath('C:\\Users\\akubl\\repo');
     expect(r.ok).toBe(true);

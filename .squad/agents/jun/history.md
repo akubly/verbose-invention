@@ -118,5 +118,26 @@ Extracted `makeMockBot` + `makeMockCtx` → `tests/helpers/botMocks.ts` and `mak
 
 
 
+## Cycle 2 Cleanup — handlers.test.ts migration (2026-05-30)
+
+**Task:** Replace local `makeStubRegistry` in `tests/bot/handlers.test.ts` with the shared helper from `tests/helpers/registryMocks.ts`.
+
+**Investigation findings:**
+- Local stub was missing `upsert` (masked by `as unknown as ISessionRegistry` cast)
+- Local stub's `findByName` was a functional linear-search; no test in the file asserted on `findByName` behavior → straight migration, no need to extend shared helper with `findByName` override
+- **Craft reviewer's GOTCHA was not triggered** — no name-collision tests exist
+
+**Behavioral gap discovered during validation:**
+- Local `remove: vi.fn(async (topicId) => map.delete(topicId))` returned `true` on success
+- Shared `remove: vi.fn()` returned `undefined` (falsy) → "removes the session and confirms" test failed
+- Fix: updated shared helper to `remove: vi.fn().mockResolvedValue(true)` as default. Tests that need falsy (e.g. "no session linked") already call `.mockResolvedValue(false)` explicitly. No other consumers were affected.
+
+**Cast situation:** `as unknown as ISessionRegistry` lives inside the shared helper's implementation — consumers always receive `ISessionRegistry` from the function signature. No consumer-visible casts were introduced.
+
+**Learnings:**
+1. **Check all vi.fn() return values, not just types** — a no-op `vi.fn()` returning `undefined` is behaviorally different from a stub that returns `true` even when the TS interface says `Promise<boolean>`. Type check passes; runtime test fails.
+2. **Successful-default principle for stubs** — mutating stubs (`remove`, `register`, etc.) should default to "success" semantics (`mockResolvedValue(true)`) so that "happy path" tests require no extra setup. Override to failure only when the test specifically exercises the failure branch.
+3. **Review all test assertions before assuming straight migration** — even when no test directly calls `expect(registry.findByName)`, a mock's side-effects (return value) can still flow through the SUT and affect other assertions.
+
 Phases 1–6, Phase 7 detailed learnings, Phase 8 P1 analysis → `history-archive.md`.
 

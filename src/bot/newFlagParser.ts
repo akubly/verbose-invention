@@ -1,7 +1,32 @@
+/**
+ * Quote-aware tokenizer for /new command arguments.
+ *
+ * Quote semantics:
+ *   - Double-quoted ("…") and single-quoted ('…') values may contain spaces.
+ *   - Quote chars are stripped from the result token.
+ *   - Backslash is ALWAYS literal inside quoted strings — no escape sequences.
+ *     This is intentional and required for Windows paths like
+ *     `"C:\Users\Aaron Smith\repo"` and UNC paths like `"\\server\share"`.
+ *   - An unmatched quote is an error (thrown).
+ *
+ * Whitespace handling:
+ *   - Leading/trailing whitespace in the raw input is trimmed.
+ *   - Unquoted tokens are delimited by whitespace.
+ */
+
+/**
+ * Represents the parsed result of a /new command argument string.
+ *
+ * When `error` is set it short-circuits all other fields — the caller should
+ * surface the error message and ignore `sessionName`, `model`, and `cwd`.
+ */
 export interface ParsedNewFlags {
+  /** The session name token (or the raw multi-word input when error is set). */
   sessionName: string;
   model?: string;
   cwd?: string;
+  /** Set when a recoverable parse error is detected (e.g., multi-word session name). */
+  error?: string;
 }
 
 function tokenize(raw: string): string[] {
@@ -22,14 +47,6 @@ function tokenize(raw: string): string[] {
 
       while (i < input.length) {
         const current = input[i]!;
-        if (quote === '"' && current === '\\') {
-          const next = input[i + 1];
-          if (next === '"' || next === '\\') {
-            value += next;
-            i += 2;
-            continue;
-          }
-        }
         if (current === quote) {
           closed = true;
           i++;
@@ -57,6 +74,14 @@ function tokenize(raw: string): string[] {
   return tokens;
 }
 
+/**
+ * Extracts the value token for a named flag from the token list.
+ *
+ * Flag-as-value detection: if the next token starts with `--`, it is treated
+ * as a flag, not a value, and an error is thrown.
+ *
+ * @throws {Error} If the flag value is missing or the next token looks like a flag.
+ */
 function parseFlagValue(
   tokens: string[],
   index: number,
@@ -77,6 +102,22 @@ function parseFlagValue(
   return { value: next, nextIndex: index + 1 };
 }
 
+/**
+ * Parses the argument string following the /new command into structured flags.
+ *
+ * Supported flags:
+ *   `--model <model>` — override the default Copilot model for this session
+ *   `--cwd <alias-or-path>` — working directory alias or absolute path
+ *
+ * Returns `{ error }` (non-throwing) when the session name contains spaces —
+ * the caller should surface the error rather than passing `sessionName` downstream.
+ *
+ * @throws {Error} Missing session name — no non-flag tokens found.
+ * @throws {Error} Unclosed quoted value — unmatched `"` or `'` in input.
+ * @throws {Error} Unknown flag — a `--` token that is not `--model` or `--cwd`.
+ * @throws {Error} Flag-as-value — `--model` or `--cwd` followed immediately by another flag.
+ * @throws {Error} Missing flag value — `--model` or `--cwd` at end of input with no value.
+ */
 export function parseNewFlags(match: string): ParsedNewFlags {
   const tokens = tokenize(match);
   if (tokens.length === 0) {
@@ -112,6 +153,13 @@ export function parseNewFlags(match: string): ParsedNewFlags {
   const sessionName = sessionParts.join(' ').trim();
   if (!sessionName) {
     throw new Error('Missing session name');
+  }
+
+  if (sessionParts.length > 1) {
+    return {
+      sessionName,
+      error: 'Session name cannot contain spaces. Did you forget to quote a flag value?',
+    };
   }
 
   return {

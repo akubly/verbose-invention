@@ -10,8 +10,11 @@
  *
  * Pattern order matters — most specific first:
  *   1. Keyword-adjacent tokens  (token=, key:, Authorization: Bearer …)
- *   2. High-entropy bare strings (40+ base-y chars not preceded by <)
- *   3. URLs with embedded credentials (user:pass@host)
+ *   2. ENV-style assignments    (GITHUB_TOKEN=, AWS_ACCESS_KEY_ID=,
+ *                                AWS_SECRET_ACCESS_KEY=, ACCESS_KEY(_ID)? vars)
+ *   3. High-entropy bare strings (39+ base64/base62 chars including / and +,
+ *                                 not preceded by <)
+ *   4. URLs with embedded credentials (user:pass@host)
  */
 
 /**
@@ -21,16 +24,16 @@
 const KEYWORD_PATTERN =
   /\b(token|key|secret|password|authorization|bearer|api[_-]?key|access[_-]?token)\b(\s*[:=]?\s*['"]?)([A-Za-z0-9_\-.+/=]{16,})['"]?/gi;
 
-/** Matches env-style secret assignments (e.g. TELEGRAM_BOT_TOKEN=..., GITHUB_TOKEN=...). */
+/** Matches env-style secret assignments (e.g. TELEGRAM_BOT_TOKEN=..., GITHUB_TOKEN=..., AWS_ACCESS_KEY_ID=..., AWS_SECRET_ACCESS_KEY=...). */
 const ENV_ASSIGNMENT_PATTERN =
-  /\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API[_-]?KEY|ACCESS[_-]?TOKEN))\b(\s*=\s*['"]?)([^\s'"]{8,})['"]?/g;
+  /\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API[_-]?KEY|ACCESS[_-]?TOKEN|ACCESS_KEY(?:_ID)?))\b(\s*=\s*['"]?)([^\s'"]{8,})['"]?/g;
 
 /**
- * Matches bare high-entropy strings (40+ base-y characters).
+ * Matches bare high-entropy strings (39+ base64/base62 characters including `/` and `+`).
  * Negative lookbehind `(?<!<)` skips values already inside angle-bracket
  * delimiters (e.g. XML/HTML elements or code-block markers).
  */
-const HIGH_ENTROPY_PATTERN = /(?<!<)[A-Za-z0-9_-]{39,}/g;
+const HIGH_ENTROPY_PATTERN = /(?<!<)[A-Za-z0-9_\-/+]{39,}/g;
 
 /**
  * Matches URLs with embedded credentials (https://user:pass@host/…).

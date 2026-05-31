@@ -128,3 +128,27 @@ describe('redactSecrets — whole-excerpt path', () => {
     expect(result).toContain('Please verify your network connection');
   });
 });
+
+// ─── C2-I1 — AWS key patterns ─────────────────────────────────────────────────
+
+describe('redactSecrets — AWS key patterns (C2-I1)', () => {
+  it('redacts value in AWS_ACCESS_KEY_ID=<value>', () => {
+    const input  = 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE';
+    const result = redactSecrets(input);
+    expect(result).not.toContain('AKIAIOSFODNN7EXAMPLE');
+    expect(result).toContain('AWS_ACCESS_KEY_ID');
+  });
+
+  it('redacts value in AWS_SECRET_ACCESS_KEY=<value with slashes>', () => {
+    // 40-char value containing forward slashes (base64-style)
+    const input  = 'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+    const result = redactSecrets(input);
+    expect(result).not.toContain('wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY');
+    expect(result).toContain('AWS_SECRET_ACCESS_KEY');
+  });
+
+  it('plain prose with words "access" or "key" NOT adjacent to assignment → not redacted', () => {
+    const input = 'Please access the key storage system for config details.';
+    expect(redactSecrets(input)).toBe(input);
+  });
+});

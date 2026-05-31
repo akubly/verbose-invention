@@ -378,17 +378,33 @@ const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
 /**
  * Write one frame to the daemon pipe and wait for drain when backpressure is signaled.
  *
+ * Races drain against close/error so that a socket destroyed while we are
+ * waiting for backpressure to clear still resolves the promise.  Resolving
+ * (not rejecting) on close/error means the next writeFrame call sees
+ * `socket.destroyed === true` and exits immediately — keeps error propagation
+ * at the natural boundary and avoids a spurious turn-failure when the real
+ * failure was upstream.
+ *
  * @param {import('node:net').Socket} socket
  * @param {string} frame
  * @returns {Promise<void>}
  */
 async function writeFrame(socket, frame) {
+  if (socket.destroyed) return;
   const ok = socket.write(frame, 'utf-8');
-  if (!ok) {
-    await new Promise((resolve) => {
-      socket.once('drain', resolve);
-    });
-  }
+  if (ok) return;
+  await new Promise((resolve) => {
+    const cleanup = () => {
+      socket.off('drain', onDrain);
+      socket.off('close', onSettle);
+      socket.off('error', onSettle);
+    };
+    const onDrain = () => { cleanup(); resolve(); };
+    const onSettle = () => { cleanup(); resolve(); };
+    socket.once('drain', onDrain);
+    socket.once('close', onSettle);
+    socket.once('error', onSettle);
+  });
 }
 
 /**

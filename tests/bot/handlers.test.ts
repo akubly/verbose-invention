@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { registerHandlers } from '../../src/bot/handlers.js';
 import { disposePromptRegistry } from '../../src/bot/prompt.js';
 import type { SessionEntry } from '../../src/types.js';
-import type { ISessionRegistry } from '../../src/sessions/registry.js';
 import { makeMockFactory, makeMockSession } from '../mocks/sdk.js';
+import { makeStubRegistry } from '../helpers/registryMocks.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -11,6 +11,7 @@ type HandlerFn = (ctx: any) => Promise<void>;
 
 /** Captures handlers registered via bot.command() and bot.on(). */
 function makeMockBot() {
+
   const commandHandlers = new Map<string, HandlerFn>();
   const onHandlers = new Map<string, HandlerFn>();
 
@@ -25,21 +26,6 @@ function makeMockBot() {
   };
 
   return { bot, commandHandlers, onHandlers };
-}
-
-/** Stub ISessionRegistry — mirrors the pattern from relay tests. */
-function makeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry {
-  const map = new Map(entries.map((e) => [e.topicId, e]));
-  return {
-    register: vi.fn(),
-    resolve: vi.fn((topicId: number) => map.get(topicId)),
-    findByName: vi.fn((name: string) => Array.from(map.values()).find((e) => e.sessionName === name)),
-    findAllByName: vi.fn((name: string) => Array.from(map.values()).filter((e) => e.sessionName === name)),
-    list: vi.fn(() => Array.from(map.values())),
-    remove: vi.fn(async (topicId: number) => map.delete(topicId)),
-    load: vi.fn(),
-    move: vi.fn(),
-  } as unknown as ISessionRegistry;
 }
 
 const ENTRY: SessionEntry = {
@@ -204,7 +190,7 @@ describe('registerHandlers', () => {
 
       const handler = commandHandlers.get('new')!;
 
-      for (const bad of ['My-Session', 'has spaces', 'back`tick', '-leading', 'under_score']) {
+      for (const bad of ['My-Session', 'back`tick', '-leading', 'under_score']) {
         const ctx = makeMockCtx({ match: bad });
         await handler(ctx);
 

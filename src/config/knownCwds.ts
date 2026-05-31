@@ -51,6 +51,8 @@ export function validateAlias(alias: string): { ok: true } | { ok: false; reason
  *
  * Sensitive prefixes (Windows-only):
  *   - %WINDIR% (C:\Windows by default)
+ *   - %PROGRAMDATA% (C:\ProgramData by default) — system-wide application state,
+ *     service configs, and scheduled task definitions
  *   - C:\Program Files
  *   - C:\Program Files (x86)
  *   - Any user-profile directory under C:\Users\ that is NOT the current
@@ -63,7 +65,8 @@ function sensitivePrefixOf(pathToCheck: string): string | undefined {
   const lowerPath = pathToCheck.toLowerCase();
 
   const windir = nodePath.resolve(process.env.WINDIR ?? 'C:\\Windows');
-  const fixedPrefixes = [windir, 'C:\\Program Files', 'C:\\Program Files (x86)'];
+  const programData = nodePath.resolve(process.env.PROGRAMDATA ?? 'C:\\ProgramData');
+  const fixedPrefixes = [windir, programData, 'C:\\Program Files', 'C:\\Program Files (x86)'];
 
   for (const prefix of fixedPrefixes) {
     const prefixLower = prefix.toLowerCase();

@@ -31,7 +31,7 @@ The `npm run init` command orchestrates the full setup: configuration wizard →
 
 ### What `npm run init` Does
 
-1. **Config wizard** — Checks for required environment variables. Prompts for `TELEGRAM_BOT_TOKEN` if missing; warns about optional `TELEGRAM_ALLOWED_USER_IDS` and `TELEGRAM_CHAT_ID`.
+1. **Config wizard** — Checks for required environment variables. Prompts for `TELEGRAM_BOT_TOKEN` if missing; recommends `TELEGRAM_ALLOWED_USER_IDS` to restrict access and `TELEGRAM_CHAT_ID` for direct linking.
 2. **Extension install** — Copies `extension.mjs` to `%APPDATA%\GitHub Copilot\User\extensions\reach\` so the Copilot CLI can load the Reach extension.
 3. **Service install** — Registers Reach as a Windows Service under your user account. Prompts for your Windows password once (required for service registration; not stored by Reach).
 4. **Next steps** — Prints instructions for configuring Telegram and creating your first session.
@@ -41,14 +41,17 @@ The `npm run init` command orchestrates the full setup: configuration wizard →
 **Required:**
 
 - `TELEGRAM_BOT_TOKEN` — Bot token from [@BotFather](https://t.me/BotFather)
-- `TELEGRAM_ALLOWED_USER_IDS` — Your Telegram numeric user ID (prevents unauthorized access). Find it by messaging [@userinfobot](https://t.me/userinfobot) in Telegram; it replies with your ID.
+
+**Strongly Recommended:**
+
+- `TELEGRAM_ALLOWED_USER_IDS` — Your Telegram numeric user ID (restricts who can control the daemon). Find it by messaging [@userinfobot](https://t.me/userinfobot) in Telegram; it replies with your ID. **If not set, ANY user in the configured Telegram chat can control the daemon.** Set this to your own numeric user ID to restrict access.
 
 **Optional:**
 
 - `TELEGRAM_CHAT_ID` — Your supergroup chat ID (e.g., `-1001234567890`). If not set, Reach starts in pairing mode — send `/pair <code>` from your supergroup to link it.
 - `REACH_MODEL` — Default Copilot model for new sessions (default: `claude-sonnet-4`)
 - `IDLE_TIMEOUT_MS` — In-memory session eviction timeout in ms (default: `300000` / 5 min)
-- `REACH_PERMISSION_POLICY` — Tool approval policy: `approveAll` (default), `denyAll`, or `interactiveDestructive`
+- `REACH_PERMISSION_POLICY` — Tool approval policy (default: `approveAll`). Options: `approveAll` (daemon acts without approval — suitable for AFK usage), `denyAll` (daemon refuses tool use), or `interactiveDestructive` (daemon prompts for approval on destructive tools). Note: when `approveAll` is active, Telegram mirror input is blocked for safety.
 
 The config wizard will write required variables to `.env` on first run. You can edit `.env` anytime to adjust settings.
 
@@ -71,7 +74,7 @@ At startup, the daemon creates a randomized named pipe and writes auth credentia
 
 - `/new <name> [--model <model>] [--cwd <alias-or-path>]` — Create a session in this topic. Optionally specify a Copilot model or working directory alias.
 - `/list` — Show all active sessions with their topic IDs and models.
-- `/resume` — Resume a named session (equivalent to `/new <name>` if it exists).
+- `/resume <session-name>` — Resume a named session by re-linking it to the current topic.
 - `/remove` — Unlink this topic from its session. Session history persists.
 
 **CWD registry (General Topic only):**
@@ -185,10 +188,11 @@ Also deletes `%LOCALAPPDATA%\reach\`, removing all configuration and session his
 | Variable | Required | Description | Default |
 |----------|----------|-------------|---------|
 | `TELEGRAM_BOT_TOKEN` | Yes | Bot token from @BotFather | — |
+| `TELEGRAM_ALLOWED_USER_IDS` | No | Comma-separated Telegram user IDs allowed to control the daemon (e.g., `123456789,987654321`). If not set, any user in the configured chat can control the daemon. Find your ID by messaging @userinfobot in Telegram. | — |
 | `TELEGRAM_CHAT_ID` | No | Supergroup chat ID (numeric, e.g. `-1001234567890`). Resolved in order: env var → `config.json` → pairing mode (`/pair <code>`) | — |
 | `REACH_MODEL` | No | Default Copilot model for new sessions | `claude-sonnet-4` |
 | `IDLE_TIMEOUT_MS` | No | In-memory session eviction timeout (ms) | `300000` (5 min) |
-| `REACH_PERMISSION_POLICY` | No | Tool approval policy: `approveAll` (default), `denyAll`, or `interactiveDestructive` (prompt for coarse-grained destructive tools) | `approveAll` |
+| `REACH_PERMISSION_POLICY` | No | Tool approval policy: `approveAll` (daemon acts without approval — AFK-safe), `denyAll` (refuses tool use), or `interactiveDestructive` (prompts for destructive tools). When `approveAll` is active, Telegram mirror input is blocked for safety. | `approveAll` |
 
 ## Development
 

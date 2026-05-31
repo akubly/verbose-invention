@@ -13,18 +13,13 @@
  * users type `/clear`, `/agent`, `/model`, etc. in Telegram topics and have
  * them reach the CLI session unchanged, with zero per-command daemon work.
  *
- * Source-of-truth citations for the command list:
- *   handlers.ts — bot.command('new', ...)
- *   handlers.ts — bot.command('list', ...)
- *   handlers.ts — bot.command('remove', ...)
- *   handlers.ts — bot.command('resume', ...)
- *   handlers.ts — bot.command('help', ...)
- *   handlers.ts — bot.command('pair', ...)
- *   handlers.ts — bot.command('status', ...)
- *   handlers.ts — bot.command('cwd', ...) (Phase 9 Item 3)
+ * COMMAND_NAMES is the single array source. BOT_COMMANDS is derived from it, so
+ * there is no second list to synchronize. Adding a command: add the name here and
+ * add a handler property to commandHandlers in handlers.ts — TypeScript enforces
+ * coverage via Record<CommandName, ...>.
  */
 
-const BOT_COMMAND_LIST = [
+export const COMMAND_NAMES = [
   'new',
   'list',
   'remove',
@@ -35,7 +30,9 @@ const BOT_COMMAND_LIST = [
   'cwd',
 ] as const;
 
-export const BOT_COMMANDS: ReadonlySet<string> = new Set(BOT_COMMAND_LIST);
+export type CommandName = typeof COMMAND_NAMES[number];
+
+export const BOT_COMMANDS: ReadonlySet<string> = new Set(COMMAND_NAMES);
 export const BOT_COMMAND_NAMES = BOT_COMMANDS;
 
 /**

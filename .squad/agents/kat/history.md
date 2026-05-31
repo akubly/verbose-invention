@@ -9,7 +9,7 @@
 
 ## Current Status
 
-**Phase 9 COMPLETE.** Cycle 1: I10 (validatePath warning) + I11 (redactSecrets module) shipped. Cycle 2: Verified + ProgramData deferred to Phase 10. Branch user/aaron/phase9 (4 commits ahead), 783 tests passing. Ready for merge.
+**Phase 9 COMPLETE. Cycle 3 README fixes shipped.** Cycle 1: I10 (validatePath warning) + I11 (redactSecrets module) shipped. Cycle 2: Verified + ProgramData deferred. Cycle 3: Skeptic caught docs drift (TELEGRAM_ALLOWED_USER_IDS + REACH_PERMISSION_POLICY + /resume signature) — fixed in README.md. Branch user/aaron/phase9 (4 commits ahead), 783 tests passing. Ready for merge.
 
 **Test baseline:** 783 passed / 4 skipped / 1 todo. tsc clean, lint zero warnings.
 
@@ -17,13 +17,22 @@
 
 ## Major Work Summary
 
-### Phase 9 — Secret Redaction & Config Validation (Cycle 1)
+### Phase 9 — Secret Redaction & Config Validation (Cycles 1–3)
 
-**I10 — validatePath warning:** Extended return type `{ ok: true; normalized: string; warning?: string }`. Windows-only sensitive-prefix detection (WINDIR, Program Files, other users). Junction/symlink resolution. Caller surfaces warning before adding entry (warn-not-block per Aaron).
+**Cycle 1 – I10 & I11:**
+- **I10 — validatePath warning:** Extended return type `{ ok: true; normalized: string; warning?: string }`. Windows-only sensitive-prefix detection (WINDIR, Program Files, other users). Junction/symlink resolution. Caller surfaces warning before adding entry (warn-not-block per Aaron).
+- **I11 — redactSecrets module:** Daemon-side regex engine with 3 pattern groups (keyword-adjacent, high-entropy base64, URL-embedded). Over-redaction bias. Called from afkMode.ts before Telegram delivery. Module: `src/bot/redactSecrets.ts`.
 
-**I11 — redactSecrets module:** Daemon-side regex engine with 3 pattern groups (keyword-adjacent, high-entropy base64, URL-embedded). Over-redaction bias. Called from afkMode.ts before Telegram delivery. Module: `src/bot/redactSecrets.ts`.
+**Cycle 2 – Verification:**
+Verified implementations. Security reviewer diagnosed AWS key leakage (missing `/` and `+` in base64 charset) — fixed by Carter in C2-I1. ProgramData prefix noted for Phase 10.
 
-**Cycle 2:** Verified implementations. Security reviewer diagnosed AWS key leakage (missing `/` and `+` in base64 charset) — fixed by Carter in C2-I1. ProgramData prefix noted for Phase 10.
+**Cycle 3 – README Documentation Drift (Kat):**
+Skeptic flagged three docs-vs-runtime mismatches:
+- **TELEGRAM_ALLOWED_USER_IDS:** README listed as "Required"; runtime treats as optional. Reclassified to "Strongly Recommended" with security callout: "If not set, ANY user in the configured Telegram chat can control the daemon."
+- **REACH_PERMISSION_POLICY:** Default `approveAll` blocks Telegram mirror input (safety measure). Added full policy descriptions to Configuration section and Environment Variables table.
+- **/resume command:** README showed `/resume` with no argument; implementation requires `/resume <session-name>`. Fixed. Spot-checked all other command signatures (`/new`, `/list`, `/remove`, `/pair`, `/help`, `/status`, `/cwd`) — all match.
+
+Decision doc: `.squad/decisions/inbox/kat-phase9-review-cycle3-readme.md`
 
 ### Phase 8.5 — Install Documentation
 

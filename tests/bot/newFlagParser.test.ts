@@ -35,21 +35,27 @@ import { parseNewFlags } from '../../src/bot/newFlagParser.js';
 describe('parseNewFlags — double-quoted paths (I3)', () => {
   it('extracts --cwd with a double-quoted path containing spaces', () => {
     const result = parseNewFlags('mysession --cwd "C:\\Users\\Aaron Smith\\repo"');
-    expect(result.sessionName).toBe('mysession');
-    expect(result.cwd).toBe('C:\\Users\\Aaron Smith\\repo');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.sessionName).toBe('mysession');
+    expect(result.value.cwd).toBe('C:\\Users\\Aaron Smith\\repo');
   });
 
   it('strips surrounding quotes from double-quoted --cwd value', () => {
     const result = parseNewFlags('my-project --cwd "D:\\git\\verbose invention"');
-    expect(result.cwd).toBe('D:\\git\\verbose invention');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.cwd).toBe('D:\\git\\verbose invention');
     // Quotes must be stripped — not present in the value.
-    expect(result.cwd).not.toMatch(/^"/);
-    expect(result.cwd).not.toMatch(/"$/);
+    expect(result.value.cwd).not.toMatch(/^"/);
+    expect(result.value.cwd).not.toMatch(/"$/);
   });
 
   it('handles double-quoted Unix-style path', () => {
     const result = parseNewFlags('my-project --cwd "/home/user/my project"');
-    expect(result.cwd).toBe('/home/user/my project');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.cwd).toBe('/home/user/my project');
   });
 });
 
@@ -58,15 +64,19 @@ describe('parseNewFlags — double-quoted paths (I3)', () => {
 describe('parseNewFlags — single-quoted paths (I3)', () => {
   it('extracts --cwd with a single-quoted path containing spaces', () => {
     const result = parseNewFlags("mysession --cwd 'C:\\path with spaces'");
-    expect(result.sessionName).toBe('mysession');
-    expect(result.cwd).toBe('C:\\path with spaces');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.sessionName).toBe('mysession');
+    expect(result.value.cwd).toBe('C:\\path with spaces');
   });
 
   it('strips surrounding single quotes from --cwd value', () => {
     const result = parseNewFlags("my-project --cwd '/home/user/my project'");
-    expect(result.cwd).toBe('/home/user/my project');
-    expect(result.cwd).not.toMatch(/^'/);
-    expect(result.cwd).not.toMatch(/'$/);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.cwd).toBe('/home/user/my project');
+    expect(result.value.cwd).not.toMatch(/^'/);
+    expect(result.value.cwd).not.toMatch(/'$/);
   });
 });
 
@@ -75,49 +85,58 @@ describe('parseNewFlags — single-quoted paths (I3)', () => {
 describe('parseNewFlags — multiple flags, order-independent (I4)', () => {
   it('--model before --cwd: both extracted correctly', () => {
     const result = parseNewFlags('mysession --model gpt-5 --cwd myalias');
-    expect(result.sessionName).toBe('mysession');
-    expect(result.model).toBe('gpt-5');
-    expect(result.cwd).toBe('myalias');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.sessionName).toBe('mysession');
+    expect(result.value.model).toBe('gpt-5');
+    expect(result.value.cwd).toBe('myalias');
   });
 
   it('--cwd before --model: both extracted correctly', () => {
     const result = parseNewFlags('mysession --cwd myalias --model gpt-5');
-    expect(result.sessionName).toBe('mysession');
-    expect(result.cwd).toBe('myalias');
-    expect(result.model).toBe('gpt-5');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.sessionName).toBe('mysession');
+    expect(result.value.cwd).toBe('myalias');
+    expect(result.value.model).toBe('gpt-5');
   });
 
   it('--model with --cwd as quoted path: both extracted', () => {
     const result = parseNewFlags('mysession --model claude-4 --cwd "C:\\git\\my project"');
-    expect(result.sessionName).toBe('mysession');
-    expect(result.model).toBe('claude-4');
-    expect(result.cwd).toBe('C:\\git\\my project');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.sessionName).toBe('mysession');
+    expect(result.value.model).toBe('claude-4');
+    expect(result.value.cwd).toBe('C:\\git\\my project');
   });
 });
 
 // ─── Error cases ──────────────────────────────────────────────────────────────
 
 describe('parseNewFlags — error cases', () => {
-  it('flag-as-value: --model --cwd value → throws descriptive error', () => {
-    // "--model" is itself a flag, not a valid model name.
-    expect(() => parseNewFlags('mysession --model --cwd value')).toThrow();
+  it('flag-as-value: --model --cwd value → ok: false', () => {
+    const result = parseNewFlags('mysession --model --cwd value');
+    expect(result.ok).toBe(false);
   });
 
-  it('missing --cwd value (flag at end of input) → throws', () => {
-    expect(() => parseNewFlags('mysession --cwd')).toThrow();
+  it('missing --cwd value (flag at end of input) → ok: false', () => {
+    const result = parseNewFlags('mysession --cwd');
+    expect(result.ok).toBe(false);
   });
 
-  it('missing session name (/new --cwd value) → throws', () => {
-    // "--cwd" as the first token is not a valid session name.
-    expect(() => parseNewFlags('--cwd value')).toThrow();
+  it('missing session name (/new --cwd value) → ok: false', () => {
+    const result = parseNewFlags('--cwd value');
+    expect(result.ok).toBe(false);
   });
 
-  it('empty match string → throws', () => {
-    expect(() => parseNewFlags('')).toThrow();
+  it('empty match string → ok: false', () => {
+    const result = parseNewFlags('');
+    expect(result.ok).toBe(false);
   });
 
-  it('whitespace-only match string → throws', () => {
-    expect(() => parseNewFlags('   ')).toThrow();
+  it('whitespace-only match string → ok: false', () => {
+    const result = parseNewFlags('   ');
+    expect(result.ok).toBe(false);
   });
 });
 
@@ -126,14 +145,18 @@ describe('parseNewFlags — error cases', () => {
 describe('parseNewFlags — no flags (regression)', () => {
   it('session name only: no cwd, no model', () => {
     const result = parseNewFlags('my-project');
-    expect(result.sessionName).toBe('my-project');
-    expect(result.cwd).toBeUndefined();
-    expect(result.model).toBeUndefined();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.sessionName).toBe('my-project');
+    expect(result.value.cwd).toBeUndefined();
+    expect(result.value.model).toBeUndefined();
   });
 
   it('session name with special chars (hyphens, numbers)', () => {
     const result = parseNewFlags('reach-v2-2024');
-    expect(result.sessionName).toBe('reach-v2-2024');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.sessionName).toBe('reach-v2-2024');
   });
 });
 
@@ -145,26 +168,33 @@ describe('parseNewFlags — backslash is literal in double-quoted values (C2 reg
     // With backslash-as-literal: \\server\share is preserved as-is.
     // With old escape processing: \\ would collapse to \ giving \server\share.
     const result = parseNewFlags('mysession --cwd "\\\\server\\share"');
-    expect(result.cwd).toBe('\\\\server\\share');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.cwd).toBe('\\\\server\\share');
   });
 });
 
 // ─── C2 regression: multi-word session name returns error, not silent join ────
 
 describe('parseNewFlags — multi-word session name returns error (C2 regression)', () => {
-  it('two unquoted words as session name → returns error field', () => {
+  it('two unquoted words as session name → ok: false with spaces error', () => {
     const result = parseNewFlags('my session');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
     expect(result.error).toMatch(/spaces/i);
   });
 
   it('multi-word error message hints at quoting', () => {
     const result = parseNewFlags('my big project');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
     expect(result.error).toMatch(/quote/i);
   });
 
-  it('single-word session name → no error field', () => {
+  it('single-word session name → ok: true, no error', () => {
     const result = parseNewFlags('myproject');
-    expect(result.error).toBeUndefined();
-    expect(result.sessionName).toBe('myproject');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.sessionName).toBe('myproject');
   });
 });

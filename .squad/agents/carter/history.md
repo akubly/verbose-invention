@@ -9,7 +9,7 @@
 
 ## Current Status
 
-**Phase 9 COMPLETE.** Cycle 1 fix wave shipped (1d9955b): I1+I2 streaming queue, I3+I4 quote-aware parser, I6 shared registry, I8+I9 /cwd extraction, B1+B3 minors. Cycle 2 cleanup shipped (07358fe): C2-B1 drain race fix, C2-I1 AWS key redaction patterns. Branch user/aaron/phase9 (4 commits ahead), 783 tests passing. Ready for merge.
+**Phase 9 COMPLETE.** Cycle 1 fix wave shipped (1d9955b): I1+I2 streaming queue, I3+I4 quote-aware parser, I6 shared registry, I8+I9 /cwd extraction, B1+B3 minors. Cycle 2 cleanup shipped (07358fe): C2-B1 drain race fix, C2-I1 AWS key redaction patterns. Cycle 3 structural cleanup in flight (A4+A5). Branch user/aaron/phase9, 783 tests passing.
 
 **Test baseline:** 783 passed / 4 skipped / 1 todo. tsc clean, lint zero warnings.
 
@@ -87,6 +87,22 @@
 ## Phase 7 — Pipe Types & Extension Commands
 
 Protocol union owner (src/bridge/extensionBridge.ts). ADR-11 pipe surface added. Extension slash command infrastructure. All suite green.
+
+---
+
+## Phase 9 Cycle 3 — Structural Cleanups (A4 + A5)
+
+**A4 — Single source of truth for command registration:**
+
+Exported `COMMAND_NAMES` array + `CommandName` type from `commands.ts`. `BOT_COMMANDS` is now derived (`new Set(COMMAND_NAMES)`) rather than separately constructed. In `handlers.ts`, the 8 `bot.command()` calls were restructured into a `Record<CommandName, (ctx: Context) => Promise<void>>` object literal, then registered in a `for (const name of COMMAND_NAMES)` loop. `REGISTERED_HERE` + the runtime drift check were deleted. TypeScript now enforces handler coverage via the `Record<CommandName, ...>` type — build-time instead of runtime.
+
+Discovered: `bot.command()` in grammY narrows `ctx.match` to `string | undefined`, but the base `Context` type has `match: string | RegExpMatchArray | undefined`. When extracting handlers to a typed object with `(ctx: Context)`, two callsites (`/new` input, `/resume` name) required `(ctx.match as string | undefined)?.trim()` casts. Pattern to remember: `bot.command()` overloads narrow context generics; extracting to plain object loses that narrowing.
+
+**A5 — parseNewFlags discriminated Result type:**
+
+Replaced `ParsedNewFlags` (had optional `error?` field) with `ParseResult<ParsedNewFlagsValue>` discriminated union. `parseNewFlags` now wraps its entire body in try/catch, converting all internal throws to `{ ok: false, error }`. Caller in `/new` handler simplified from try/catch + if-error to a single `if (!parsed.ok)` guard. Test file updated: `.toThrow()` assertions become `ok: false` checks; `result.sessionName` becomes `result.value.sessionName` etc.
+
+Key pattern: when public API mixes `throw` and `return { error? }`, consolidate at the public boundary — internal helpers can keep throwing, the outer function catches and normalizes. This eliminates dual error-handling at every callsite.
 
 ---
 

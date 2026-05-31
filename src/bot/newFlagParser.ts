@@ -15,18 +15,20 @@
  */
 
 /**
- * Represents the parsed result of a /new command argument string.
+ * Discriminated result type for the public parseNewFlags boundary.
  *
- * When `error` is set it short-circuits all other fields — the caller should
- * surface the error message and ignore `sessionName`, `model`, and `cwd`.
+ * Internal helpers (tokenize, parseFlagValue) may throw — parseNewFlags catches
+ * those throws and converts them to { ok: false, error }.
  */
-export interface ParsedNewFlags {
-  /** The session name token (or the raw multi-word input when error is set). */
+export type ParseResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error: string };
+
+/** Success value shape returned by parseNewFlags. */
+export interface ParsedNewFlagsValue {
   sessionName: string;
   model?: string;
   cwd?: string;
-  /** Set when a recoverable parse error is detected (e.g., multi-word session name). */
-  error?: string;
 }
 
 function tokenize(raw: string): string[] {
@@ -109,62 +111,64 @@ function parseFlagValue(
  *   `--model <model>` — override the default Copilot model for this session
  *   `--cwd <alias-or-path>` — working directory alias or absolute path
  *
- * Returns `{ error }` (non-throwing) when the session name contains spaces —
- * the caller should surface the error rather than passing `sessionName` downstream.
- *
- * @throws {Error} Missing session name — no non-flag tokens found.
- * @throws {Error} Unclosed quoted value — unmatched `"` or `'` in input.
- * @throws {Error} Unknown flag — a `--` token that is not `--model` or `--cwd`.
- * @throws {Error} Flag-as-value — `--model` or `--cwd` followed immediately by another flag.
- * @throws {Error} Missing flag value — `--model` or `--cwd` at end of input with no value.
+ * Returns `{ ok: false, error }` for all error conditions — including tokenizer
+ * errors (unclosed quote), missing session name, unknown flags, flag-as-value
+ * detection, multi-word session names, and missing flag values. Never throws.
  */
-export function parseNewFlags(match: string): ParsedNewFlags {
-  const tokens = tokenize(match);
-  if (tokens.length === 0) {
-    throw new Error('Missing session name');
-  }
-
-  const sessionParts: string[] = [];
-  let model: string | undefined;
-  let cwd: string | undefined;
-
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i]!;
-    if (token === '--model') {
-      const { value, nextIndex } = parseFlagValue(tokens, i, '--model');
-      model = value;
-      i = nextIndex;
-      continue;
+export function parseNewFlags(match: string): ParseResult<ParsedNewFlagsValue> {
+  try {
+    const tokens = tokenize(match);
+    if (tokens.length === 0) {
+      throw new Error('Missing session name');
     }
-    if (token === '--cwd') {
-      const { value, nextIndex } = parseFlagValue(tokens, i, '--cwd');
-      cwd = value;
-      i = nextIndex;
-      continue;
-    }
-    if (token.startsWith('--')) {
-      throw new Error(
-        'Unknown flag. Usage: /new <session-name> [--model <model>] [--cwd <alias-or-path>]',
-      );
-    }
-    sessionParts.push(token);
-  }
 
-  const sessionName = sessionParts.join(' ').trim();
-  if (!sessionName) {
-    throw new Error('Missing session name');
-  }
+    const sessionParts: string[] = [];
+    let model: string | undefined;
+    let cwd: string | undefined;
 
-  if (sessionParts.length > 1) {
+    for (let i = 0; i < tokens.length; i++) {
+      const token = tokens[i]!;
+      if (token === '--model') {
+        const { value, nextIndex } = parseFlagValue(tokens, i, '--model');
+        model = value;
+        i = nextIndex;
+        continue;
+      }
+      if (token === '--cwd') {
+        const { value, nextIndex } = parseFlagValue(tokens, i, '--cwd');
+        cwd = value;
+        i = nextIndex;
+        continue;
+      }
+      if (token.startsWith('--')) {
+        throw new Error(
+          'Unknown flag. Usage: /new <session-name> [--model <model>] [--cwd <alias-or-path>]',
+        );
+      }
+      sessionParts.push(token);
+    }
+
+    const sessionName = sessionParts.join(' ').trim();
+    if (!sessionName) {
+      throw new Error('Missing session name');
+    }
+
+    if (sessionParts.length > 1) {
+      return {
+        ok: false,
+        error: 'Session name cannot contain spaces. Did you forget to quote a flag value?',
+      };
+    }
+
     return {
-      sessionName,
-      error: 'Session name cannot contain spaces. Did you forget to quote a flag value?',
+      ok: true,
+      value: {
+        sessionName,
+        ...(model !== undefined && { model }),
+        ...(cwd !== undefined && { cwd }),
+      },
     };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
-
-  return {
-    sessionName,
-    ...(model !== undefined && { model }),
-    ...(cwd !== undefined && { cwd }),
-  };
 }

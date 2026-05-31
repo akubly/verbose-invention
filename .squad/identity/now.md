@@ -1,127 +1,114 @@
 ---
-updated_at: 2026-05-30T12:30:00Z
-focus_area: Phase 9 shipped — orientation message + slash pass-through + cwd registry. 720 tests green (+150). Ready for Aaron dogfood re-verification.
+updated_at: 2026-05-30T14:08:11Z
+focus_area: Phase 9 persona review complete (2 cycles, 7+4 personas). Branch user/aaron/phase9 (4 commits ahead). 783 tests passing. Ready for PR/merge. Phase 10 backlog noted.
 active_issues:
   - "Phase 10 follow-up: cross-platform path detection in /new --cwd (Unix startsWith('/') deferred)"
-  - "#8 (CRITICAL): mirror.input SDK API drift — FIXED in Phase 8.5"
-  - "#9 (HIGH): Telegram message echo — resolved with #8 fix"
-branch_state: main — Scribe files staged for commit. Phase 9 artifacts + orchestration logs + decisions.md + history.md updated ready.
+  - "Phase 10 follow-up: live /status with assistant.summary.updated bridge event"
+  - "Phase 10 follow-up: auto-capture of cwds (currently manual-only)"
+  - "Phase 10 follow-up: env hardening + parser polish (minor items)"
+branch_state: user/aaron/phase9 (4 commits: dc76dce → d2e52a6 → 1d9955b → 07358fe). Scribe files (.squad/) staged. Phase 9 persona review cycles 1+2 complete. Ready for Aaron.
 ---
 
-# Session Handoff — 2026-05-30T12:30:00Z (Phase 9 Shipped — Ready for Dogfood)
+# Phase 9 Persona Review Complete — 2026-05-30 (4 Commits, 783 Tests)
 
-## What Just Happened (Phase 9 Sprint — Complete ✅)
+## What Just Happened (Phase 9 Persona Review — Complete ✅)
 
-**3-item sprint executed, all tasks shipped 2026-05-30.**
+**Comprehensive 2-cycle persona review executed 2026-05-30. All findings addressed. 783 tests passing.**
 
-### Aaron's 3 Dogfood Feedback Items (Phase 8.5 Re-Verification) — ALL RESOLVED
+### Cycle 1: 7 Personas in Parallel
 
-| Item | Feedback | Delivery | Owner | Tests | Status |
-|------|----------|----------|-------|-------|--------|
-| **1** | Orientation message + /status | Protocol excerpt caching + message formatter + command handler | Kat | Updated (drift) | ✅ PASS |
-| **2** | Slash pass-through | isBotCommand() guard + BOT_COMMANDS set + relay via mirror.input | Carter | 80 new | ✅ PASS |
-| **3** | CWD registry + /new --cwd | Config schema + helpers + /cwd commands + flag parser | Kat + Carter | 83 new | ✅ PASS |
+| Reviewer | Model | Blocking | Important | Minor | Status |
+|----------|-------|----------|-----------|-------|--------|
+| Correctness | Opus | 0 | 3 | 3 | ✅ |
+| Skeptic | gpt-5.3-codex | 1* | 4 | 2 | ✅ |
+| Craft | Sonnet | 2 | 8 | 7 | ✅ |
+| Compliance | Haiku | 0 | 2 | 3 | ✅ |
+| Security | Opus | 0 | 2 | 5 | ✅ |
+| Architect | gpt-5.3-codex | 0 | 3 | 0 | ✅ |
+| Platform | Sonnet | 1** | 2 | 4 | ✅ |
 
-### Execution Summary
+*Downgraded by Aaron; **Resolved by Aaron's decision
 
-| Agent | Role | Task | Status | Output |
-|-------|------|------|--------|--------|
-| Noble Six | Architect | Phase 9 triage + feasibility | ✅ Complete | 3 items confirmed feasible; BOT_COMMANDS centralization recommended |
-| Kat | Bot Dev | Item 1: Orientation message (protocol, afkMode, handlers) + Item 3 T5: Config schema + helpers | ✅ Complete | Protocol extended, orientation gate, /status command, knownCwds.ts with 8 helpers |
-| Carter | Bridge Dev | Item 2: isBotCommand guard + pass-through + Item 3 T6/T7: /cwd commands + /new --cwd flag | ✅ Complete | BOT_COMMANDS set (6 commands), slash guard refactor, /cwd list|add|remove, position-independent flag parser |
-| Jun | Test Engineer | Item 2 tests (106 assertions) + Item 3 tests (83 assertions) | ✅ Complete | 80 Item 2 tests (isBotCommand + slashGuard) + 83 Item 3 tests (helpers + /cwd + /new --cwd) |
+**Consolidated Cycle 1:** 3 BLOCKING + 14 IMPORTANT + 20 MINOR
 
-### Test Suite Growth
+**Cycle 1 Fix Wave (1d9955b):** Carter (I1+I2+I3+I4+I6+I8+I9+B1+B3+minors), Kat (I10+I11), Jun (F-8 helpers + 7 RED anticipatory tests). Result: 725 → 771 tests (+46 net).
 
-**Phase 8.5 → Phase 9:** 570 → 720 passed tests (+150 net)
+### Cycle 2: 4 Personas (Leaner Re-Review)
 
-| Test Category | Phase 8.5 | Phase 9 | Added |
-|---|---|---|---|
-| Item 1 (Orientation) | N/A | Updated | 0 new (protocol drift test updated) |
-| Item 2 (Slash pass-through) | N/A | 80 tests | +80 |
-| Item 3 (CWD registry) | N/A | 83 tests | +83 |
-| **Total** | **570** | **720** | **+150** |
-| Skipped | 4 | 4 | — |
-| Todo | 0 | 1 | +1 |
-| Failed | 0 | 0 | 0 |
+| Reviewer | Model | Blocking | Important | Minor | Delta |
+|----------|-------|----------|-----------|-------|-------|
+| Correctness | Opus | 0 | 1 | 0 | NEW drain hang advisory |
+| Skeptic | gpt-5.3-codex | 1* | 0 | 1 | SAME drain hang + escape gap |
+| Craft | Sonnet | 0 | 1 | 5 | NEW handlers stub + JSDoc |
+| Security | Opus | 0 | 1 | 1 | NEW AWS keys gap + ProgramData |
 
-### Deliverables (Phase 9)
+*Advisory per skill rule; treated as actionable by consensus
 
-**Code:**
-- ✅ `src/bridge/protocol.ts` — `lastAssistantExcerpt?: string` to `AfkRequestMessage`
-- ✅ `extension.mjs` — `lastAssistantMessage` cache, excerpt forwarding
-- ✅ `src/bot/afkMode.ts` — Orientation gate, /status handler, excerpt formatting
-- ✅ `src/bot/commands.ts` (new) — BOT_COMMANDS set, isBotCommand() guard (6 commands)
-- ✅ `src/bot/handlers.ts` — /status registration, slash guard refactor, /cwd commands (list|add|remove), /new --cwd flag parser
-- ✅ `src/config/config.ts` — `knownCwds` field on `ReachConfig`
-- ✅ `src/config/knownCwds.ts` (new) — 8 helpers + async path validation
+**Consolidated Cycle 2:** 1 real bug (drain hang) + 1 security gap (AWS keys) + 2 important + 5 minor
 
-**Tests:**
-- ✅ `tests/bot/isBotCommand.test.ts` (66 tests + 1 todo)
-- ✅ `tests/bot/afkMode.slashGuard.test.ts` (15 tests)
-- ✅ `tests/bot/handlers.slashGuard.test.ts` (25 tests)
-- ✅ `tests/config/knownCwds.test.ts` (60 tests)
-- ✅ `tests/bot/cwdCommand.test.ts` (12 tests)
-- ✅ `tests/bot/newCwdFlag.test.ts` (11 tests)
+**Cycle 2 Fix Wave (07358fe):** Carter (C2-B1 drain race, C2-I1 AWS keys patterns, escape consistency, multi-word session name, ProgramData, JSDoc), Jun (C2-I2 handlers.test.ts stub migration). Result: 771 → 783 tests (+12 net).
 
-**Decisions & Logs:**
-- ✅ `.squad/decisions.md` — Merged 8 agent decision files (inbox cleared)
-- ✅ `.squad/orchestration-log/` — 7 entries (3 triage + 3 items + 1 session)
-- ✅ `.squad/log/2026-05-30-phase9-sprint-complete.md` — Session summary
-- ✅ `.squad/agents/{noble-six,carter,kat,jun}/history.md` — Updated with Phase 9 completion
+### Test Suite Growth (Entire Phase 9 Progression)
 
-### Aaron's Locked Decisions (This Session)
+| Phase | Tests | Delta | Notes |
+|-------|-------|-------|-------|
+| Phase 8.5 baseline | 570 | — | End of Phase 8.5 |
+| Phase 9 start (anticipatory) | 725 | +155 | Jun wrote 7 RED tests + 150 other anticipatory |
+| After Cycle 1 fix wave | 771 | +46 | Carter + Kat + Jun implementations |
+| After Cycle 2 fix wave | 783 | +12 | Carter + Jun cleanup |
+| **Total Phase 9 gain** | **783** | **+213 (+37%)** | — |
 
-All 8 design questions answered + implemented:
-- **Q1-1-revised:** Orientation excerpt truncation = 500 chars default ✅
-- **Q1-2:** Add /status command = Yes ✅
-- **Q2-1:** BOT_COMMANDS location = src/bot/commands.ts ✅
-- **Q2-2:** /clear pass-through = Pure relay (terminal parity) ✅
-- **Q3-1:** CWD alias validation = allow_any (no .git/ check) ✅
-- **Q3-2:** Auto-capture cwds = manual_only_phase9 (no background capture) ✅
-- **Q3-3:** Alias syntax = plain (no @ prefix) ✅
-- **Q3-4:** /cwd command scope = general_topic_only ✅
+### Key Cycle 1 Findings & Fixes
 
-### Known Phase 10 Follow-Up
+**I1+I2 — Streaming Serialization Queue** (Carter)  
+Per-session queue in extension.mjs (Noble Six Option A). Drain-aware writeFrame + per-request writeQueue. Prevents concurrent stream cross-wiring and enforces backpressure compliance.
 
-**High Priority:**
-- **Cross-platform path detection** — Carter's `/new --cwd` path check Windows-only (`^[a-zA-Z]:\\` or `\\\\`); Unix (`startsWith('/')`) deferred
-  - Impact: On non-Windows, absolute paths route through alias lookup
-  - Fix: Add `|| cwdArg.startsWith('/')` to disambiguation regex
-  - Owner: TBD
+**I3+I4 — Quote-Aware Flag Parser** (Carter)  
+parseNewFlags tokenizer in src/bot/newFlagParser.ts. Single/double quote support. Backslash literal (Windows UNC safety).
 
-## What's Next (Aaron's Dogfood Re-Verification)
+**I6 — Shared Command Registry** (Carter)  
+BOT_COMMAND_NAMES in src/bot/commands.ts. Startup drift check prevents hard-coded registrations from diverging.
 
-**Phase 9 Acceptance Criteria:**
+**I8+I9 — /cwd Extraction** (Carter)  
+handleCwdCommand in src/bot/cwdCommand.ts. Structured logging. Surfaces validatePath().warning to user.
 
-```bash
-npm run build                   # Suite: 720 passed
-/afk                           # Enter AFK mode
-# See orientation message (sessionId, cwd, model, mode, last assistant message excerpt)
-/status                        # Check session status
-/cwd list                      # See known cwds (should be empty)
-/cwd add myrepo /path/to/repo  # Register alias
-/new test2 --cwd myrepo        # Start session with known cwd
-# Verify all 3 items working
-# Dogfood ~45–90 minutes of normal usage
-```
+**I10 — Sensitive-Directory Warning** (Kat)  
+validatePath extended return type with optional warning field. Windows-only sensitive-prefix detection (WINDIR, Program Files, other users). Caller surfaces warning before adding entry (warn-not-block per Aaron).
 
-**Post-verification:**
-1. If all 3 items working → Phase 9 ACCEPTED
-2. Any regressions → Scribe collects issues into new decisions inbox
-3. PR merge decision: Phase 9 work (720 tests green, 8 decisions locked)
+**I11 — Secret Redaction Module** (Kat)  
+src/bot/redactSecrets.ts: Daemon-side regex engine (3 patterns: keyword-adjacent, high-entropy base64, URL-embedded). Over-redaction bias. Called before Telegram delivery.
 
-## Scribe Completion Checklist (Phase 9)
+**F-8 — Helpers Extraction** (Jun)  
+makeStubRegistry consolidated (4 sources → tests/helpers/registryMocks.ts). makeMockBot consolidated (3 sources → tests/helpers/botMocks.ts). makeMockCtx moved to shared helpers.
 
-- ✅ Task 0: Pre-check decisions.md (47,492 bytes < 51,200 threshold) + inbox (7 files)
-- ✅ Task 1: Archive check (no archive needed; threshold not reached)
-- ✅ Task 2: Merge inbox → decisions.md (7 files), delete inbox files
-- ✅ Task 3: Write orchestration logs (7 agent runs, Phase 9)
-- ✅ Task 4: Write session log (phase9-sprint-complete.md)
-- ✅ Task 5: Cross-agent history updates (Noble Six + Carter + Kat + Jun)
-- ✅ Task 6: History summarization check (all < 15,360 bytes; no archive needed)
-- ✅ Task 7: Update now.md (this file)
-- ⏳ Task 8: Git commit Scribe files (next)
-- ⏳ Task 9: Health report (final)
+### Key Cycle 2 Findings & Fixes
+
+**C2-B1 — writeFrame Drain Race** (Carter)  
+Resolve-not-reject on socket close. Error responsibility shifted to next frame check. Matches Node.js core stream pattern. Regression test added.
+
+**C2-I1 — AWS Secret Key Leakage** (Carter & Security)  
+Missing `/` and `+` in HIGH_ENTROPY_PATTERN charset was silently leaking base64-encoded AWS keys. Added charset + extended ENV_ASSIGNMENT_PATTERN for ACCESS_KEY(?:_ID)?. Docstring "40+" → "39+".
+
+**C2 — Escape Consistency** (Carter)  
+Removed `\\` → `\` and `\"` → `"` escape sequences from double-quoted tokenizer. Backslash now always literal (symmetric with single quotes, Windows-safe).
+
+**C2-I2 — handlers.test.ts Stub Migration** (Jun)  
+Cycle 1 F-8 helpers extraction missed handlers.test.ts local stub (masked by unsafe cast). Migrated to shared makeStubRegistry. Updated shared helper's remove default to .mockResolvedValue(true).
+
+### Aaron's Locked Decisions
+
+**Cycle 1:**
+- All 3 blockers + 14 important + minors → fix (I14 /status live-refresh deferred to Phase 10)
+- I10 sensitive paths → warn not block
+- I11 secret redaction → regex patterns daemon-side
+- I3+I4 → rewrite parser quote-aware
+- I6 → shared registry refactor
+- I8+I9 → extract + structured logging
+- I7 → rewrite back-banner test to import
+
+**Cycle 2:**
+- fix_three_plus_minors → fix everything cycle 2 surfaced
+
+## What's Next (Phase 10 Backlog)
 
 

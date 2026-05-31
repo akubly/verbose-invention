@@ -15,6 +15,8 @@
 
 Suite: 720 passed / 4 skipped / 1 todo. +150 net tests (Phase 8.5 → Phase 9). All green.
 
+**Phase 9 Persona Review (2026-05-30):** F-8 helpers extraction completed (makeStubRegistry, makeMockBot consolidated). Anticipatory RED regression tests added (7 tests). Cycle 1 fix wave: 725→771 tests. Cycle 2 fix wave (C2-I2 stub migration): 771→783 tests. Branch user/aaron/phase9, all green, ready for merge.
+
 **Phase 8.5 COMPLETE.** Install story tests shipped (copyExtension 14, uninstall 6, index 13 = 33 new). Suite 570 passed / 4 skipped.
 
 **Phase 8 COMPLETE.** Integration harness + config env tests (A8, N2, N3 validation). Phase 7 ADR-11 contract tests (T1–T8). Test infrastructure stabilized.

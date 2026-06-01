@@ -103,7 +103,7 @@ export async function handleCwdCommand(ctx: Context, options: CwdCommandOptions)
       const used = c.lastUsedAt ? `last used ${relativeTime(c.lastUsedAt)}` : 'never used';
       return `• ${c.alias} — ${c.path}  (${used})`;
     });
-    await ctx.reply(`📂 Known cwds:\n${lines.join('\n')}\n\nStart one with: /new <alias>`);
+    await ctx.reply(`📂 Known cwds:\n${lines.join('\n')}\n\nStart one with: /new <session-name> --cwd <alias>`);
     return;
   }
 

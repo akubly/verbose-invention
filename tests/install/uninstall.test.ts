@@ -172,4 +172,19 @@ describe('runUninstall()', () => {
     expect(mockRmSync).not.toHaveBeenCalled();
     expect(mockExit).not.toHaveBeenCalled();
   });
+
+  // ── UN7: Resilient — removeExtension fails but service still runs ─────────
+
+  it('UN7 resilient: removeExtension fails → service uninstall still called, exits 1', () => {
+    // Make rmSync throw so removeExtension returns { ok: false }.
+    mockRmSync.mockImplementation(() => { throw new Error('EPERM: permission denied'); });
+
+    // runUninstall should call process.exit(1) at the end (which our mock throws).
+    expect(() => runUninstall({ wipe: false })).toThrow('process.exit(1)');
+
+    // Despite removeExtension failing, service uninstall still ran.
+    expect(mockServiceUninstall).toHaveBeenCalledOnce();
+    expect(mockExit).toHaveBeenCalledWith(1);
+    expect(mockConsoleError).toHaveBeenCalledWith(expect.stringContaining('EPERM'));
+  });
 });

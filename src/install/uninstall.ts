@@ -15,44 +15,52 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { fileURLToPath } from 'url';
 import { uninstall } from '../service/install.js';
+import { isDirectRun } from './isDirectRun.js';
 
 export interface UninstallOptions {
   /** When true, also deletes %LOCALAPPDATA%\reach\ (config + session data). */
   wipe: boolean;
 }
 
+interface StepResult {
+  label: string;
+  ok: boolean;
+  reason?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Uninstall steps
 // ---------------------------------------------------------------------------
 
-function removeExtension(): void {
+function removeExtension(): StepResult {
   const appData = process.env['APPDATA'];
   if (!appData) {
     console.log('[reach] APPDATA not set — skipping extension removal.');
-    return;
+    return { label: 'Remove extension', ok: true };
   }
   const extensionDir = path.join(appData, 'GitHub Copilot', 'User', 'extensions', 'reach');
   if (fs.existsSync(extensionDir)) {
     try {
       fs.rmSync(extensionDir, { recursive: true, force: true });
       console.log(`[reach] Extension removed: ${extensionDir}`);
+      return { label: 'Remove extension', ok: true };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[reach] ERROR: Could not remove extension directory: ${message}`);
-      process.exit(1);
+      return { label: 'Remove extension', ok: false, reason: message };
     }
   } else {
     console.log('[reach] Extension directory not found — nothing to remove.');
+    return { label: 'Remove extension', ok: true };
   }
 }
 
-function wipeLocalData(): void {
+function wipeLocalData(): StepResult {
   const localAppData = process.env['LOCALAPPDATA'];
   if (!localAppData) {
     console.log('[reach] LOCALAPPDATA not set — skipping local state wipe.');
-    return;
+    return { label: 'Wipe local data', ok: true };
   }
   const localDir = path.join(localAppData, 'reach');
   if (fs.existsSync(localDir)) {
@@ -61,10 +69,9 @@ function wipeLocalData(): void {
       const entries = new Set(fs.readdirSync(localDir));
       const hasMarker = markerFiles.some((marker) => entries.has(marker));
       if (!hasMarker) {
-        console.error(
-          `[reach] Refusing to wipe ${localDir}: doesn't look like a Reach state directory.`,
-        );
-        return;
+        const reason = `Refusing to wipe ${localDir}: doesn't look like a Reach state directory.`;
+        console.error(`[reach] ${reason}`);
+        return { label: 'Wipe local data', ok: false, reason };
       }
     } catch {
       // If we cannot inspect the directory entries, continue with best-effort wipe.
@@ -72,13 +79,15 @@ function wipeLocalData(): void {
     try {
       fs.rmSync(localDir, { recursive: true, force: true });
       console.log(`[reach] Local state wiped: ${localDir}`);
+      return { label: 'Wipe local data', ok: true };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      // Non-fatal — log a warning and continue to service uninstall
       console.error(`[reach] WARNING: Could not remove local state: ${message}`);
+      return { label: 'Wipe local data', ok: false, reason: message };
     }
   } else {
     console.log('[reach] Local state directory not found — nothing to wipe.');
+    return { label: 'Wipe local data', ok: true };
   }
 }
 
@@ -95,11 +104,13 @@ export function runUninstall(opts: UninstallOptions): void {
   // Do all sync filesystem cleanup before handing off to the async service
   // uninstaller (which calls process.exit internally via node-windows events).
 
+  const results: StepResult[] = [];
+
   // Remove extension directory (handles plain dir or dev-mode junction)
-  removeExtension();
+  results.push(removeExtension());
 
   if (opts.wipe) {
-    wipeLocalData();
+    results.push(wipeLocalData());
   } else {
     const localAppData = process.env['LOCALAPPDATA'];
     if (localAppData) {
@@ -116,13 +127,22 @@ export function runUninstall(opts: UninstallOptions): void {
   // Service uninstall — handles its own exit via node-windows events
   console.log('[reach] Uninstalling Windows service…');
   uninstall();
+
+  // If the service uninstaller returned (e.g., in tests or on some platforms),
+  // report the step summary and exit non-zero if any earlier step failed.
+  const failed = results.filter((r) => !r.ok);
+  if (failed.length > 0) {
+    const succeeded = results.length - failed.length;
+    console.error(`[reach] ${failed.length} step(s) failed, ${succeeded} succeeded.`);
+    for (const r of failed) {
+      console.error(`[reach]   ✗ ${r.label}: ${r.reason ?? 'unknown error'}`);
+    }
+    process.exit(1);
+  }
 }
 
 // Only run when executed directly, not when imported
-const isDirectRun =
-  process.argv[1] === fileURLToPath(import.meta.url);
-
-if (isDirectRun) {
+if (isDirectRun(import.meta.url)) {
   const wipe = process.argv.includes('--wipe');
   runUninstall({ wipe });
 }

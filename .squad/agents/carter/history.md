@@ -9,9 +9,9 @@
 
 ## Current Status
 
-**Phase 9 COMPLETE.** Cycle 1 fix wave shipped (1d9955b): I1+I2 streaming queue, I3+I4 quote-aware parser, I6 shared registry, I8+I9 /cwd extraction, B1+B3 minors. Cycle 2 cleanup shipped (07358fe): C2-B1 drain race fix, C2-I1 AWS key redaction patterns. Cycle 3 structural cleanup in flight (A4+A5). Branch user/aaron/phase9, 783 tests passing.
+**Phase 9 COMPLETE. PR #10 Cycle 2 fix wave in progress.** Cycle 1 fix wave shipped (1d9955b): I1+I2 streaming queue, I3+I4 quote-aware parser, I6 shared registry, I8+I9 /cwd extraction, B1+B3 minors. Cycle 2 cleanup shipped (07358fe): C2-B1 drain race fix, C2-I1 AWS key redaction patterns. Cycle 3 structural cleanup in flight (A4+A5). PR #10 Cycle 2 five-thread fix wave landed (2026-05-31).
 
-**Test baseline:** 783 passed / 4 skipped / 1 todo. tsc clean, lint zero warnings.
+**Test baseline:** 791 passed / 4 skipped / 1 todo. tsc clean, lint zero warnings.
 
 ---
 
@@ -85,6 +85,13 @@ TestBridge to fire the real handler with args.
 - **Extension stream correctness needs two gates:** Serialization (streamQueue) prevents cross-wiring; drain-aware writes (writeFrame + writeQueue) handles backpressure. Neither alone is sufficient.
 - **Test file specs are contracts:** Escape-handling test comments documented the actual behavior. Always check test files for behavioral contracts before "improving" implementations.
 - **Dangling flag detection:** After extracting known flags, check for `/(^|\s)--flagname($|\s)/` to catch values that weren't provided (both `--model` alone and at end-of-string).
+
+**PR #10 Cycle 2 Patterns:**
+
+- **process.exit in step functions breaks idempotency:** Each step in an install/uninstall orchestrator should return a result type (`{ ok, reason }`) instead of calling `process.exit`. The orchestrator collects all results and exits only at the end. Service uninstallers that call `process.exit` internally are an exception — that's an architectural constraint at the service boundary.
+- **Extract shared isDirectRun helper:** Three files had the same `process.argv[1] === fileURLToPath(import.meta.url)` bug. Shared helper in `src/install/isDirectRun.ts` + `path.resolve()` on argv[1] fixes relative-path npm script case uniformly.
+- **readdirSync not mocked in uninstall tests:** `uninstall.test.ts` mocks only `existsSync`/`rmSync` — `readdirSync` falls through to real fs and throws on mock paths. The existing catch block in `wipeLocalData` handles this; tests relied on it implicitly. Don't add readdirSync to the mock without understanding why the test still passes.
+- **Windows isDirectRun case-sensitivity:** Both `fileURLToPath(import.meta.url)` and `path.resolve(process.argv[1])` use the same Node.js filesystem view. No case-fold needed in practice. If a flake appears, add `.toLowerCase()` guard inside the helper only on `process.platform === 'win32'`.
 
 ---
 

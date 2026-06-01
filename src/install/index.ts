@@ -23,6 +23,7 @@ import * as readline from 'readline';
 import { fileURLToPath } from 'url';
 import { copyExtension } from './copyExtension.js';
 import { install } from '../service/install.js';
+import { isDirectRun } from './isDirectRun.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -213,9 +214,7 @@ export async function runInit(): Promise<void> {
 }
 
 // Only run when executed directly, not when imported
-const isDirectRun =
-  process.argv[1] === fileURLToPath(import.meta.url);
-if (isDirectRun) {
+if (isDirectRun(import.meta.url)) {
   runInit().catch((err: unknown) => {
     console.error('[reach] Fatal error:', err instanceof Error ? err.message : String(err));
     process.exit(1);

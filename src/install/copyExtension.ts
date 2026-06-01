@@ -18,6 +18,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
+import { isDirectRun } from './isDirectRun.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -116,8 +117,6 @@ export function copyExtension(): void {
 }
 
 // Only run when executed directly, not when imported
-const isDirectRun =
-  process.argv[1] === fileURLToPath(import.meta.url);
-if (isDirectRun) {
+if (isDirectRun(import.meta.url)) {
   copyExtension();
 }

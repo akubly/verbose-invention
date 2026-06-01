@@ -1,16 +1,17 @@
 /**
  * Tests for src/install/uninstall.ts
  *
- * Contract under test (per .copilot/reach-install-handoff.md §Uninstall Design):
+ * Contract under test (post PR #10 Cycle 3 storage unification):
  *   1. Stops and uninstalls the Windows service
  *   2. Deletes %APPDATA%\GitHub Copilot\User\extensions\reach\ (extension dir)
- *   3. Does NOT touch %LOCALAPPDATA%\reach\ by default (config/session data preserved)
- *   4. runUninstall({ wipe: true }) ALSO deletes %LOCALAPPDATA%\reach\
- *   5. Without --wipe: prints manual PowerShell command to wipe state
+ *   3. Does NOT touch ~/.reach/ by default (config/session data preserved)
+ *   4. runUninstall({ wipe: true }) ALSO deletes ~/.reach/ (via getReachDataDir())
+ *   5. Without --wipe: prints manual Remove-Item command referencing ~/.reach
  *   6. Idempotent: succeeds even when dirs do not exist
+ *   7. wipe only touches the resolved data dir — nothing outside it
  *
- * ⚠️  ALL TESTS ARE RED until Carter implements runUninstall() in src/install/uninstall.ts.
- *     The current file is a stub that throws "Not implemented".
+ * getReachDataDir() is pinned via process.env.REACH_DATA_DIR in beforeEach
+ * so tests are deterministic regardless of the test machine's home dir.
  */
 
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
@@ -49,10 +50,12 @@ import { runUninstall } from '../../src/install/uninstall.js';
 
 // ─── Stable path constants ────────────────────────────────────────────────────
 
-const MOCK_APPDATA       = 'C:\\Users\\Aaron Smith\\AppData\\Roaming';
-const MOCK_LOCALAPPDATA  = 'C:\\Users\\Aaron Smith\\AppData\\Local';
-const REACH_EXT_DIR      = path.join(MOCK_APPDATA, 'GitHub Copilot', 'User', 'extensions', 'reach');
-const REACH_DATA_DIR     = path.join(MOCK_LOCALAPPDATA, 'reach');
+const MOCK_APPDATA      = 'C:\\Users\\Aaron Smith\\AppData\\Roaming';
+// Use REACH_DATA_DIR env override so getReachDataDir() returns a deterministic path.
+const MOCK_REACH_STATE  = 'C:\\Users\\Aaron Smith\\.reach';
+const REACH_EXT_DIR     = path.join(MOCK_APPDATA, 'GitHub Copilot', 'User', 'extensions', 'reach');
+// REACH_STATE_DIR is what getReachDataDir() resolves to (via REACH_DATA_DIR env override).
+const REACH_STATE_DIR   = MOCK_REACH_STATE;
 
 // ─── Spies ────────────────────────────────────────────────────────────────────
 
@@ -60,8 +63,8 @@ let mockExit:         ReturnType<typeof vi.spyOn<typeof process, 'exit'>>;
 let mockConsoleLog:   ReturnType<typeof vi.spyOn<typeof console, 'log'>>;
 let mockConsoleError: ReturnType<typeof vi.spyOn<typeof console, 'error'>>;
 
-let savedAppData:      string | undefined;
-let savedLocalAppData: string | undefined;
+let savedAppData:        string | undefined;
+let savedReachDataDir:   string | undefined;
 
 // ─── Suite ───────────────────────────────────────────────────────────────────
 
@@ -75,10 +78,11 @@ describe('runUninstall()', () => {
   });
 
   beforeEach(() => {
-    savedAppData      = process.env['APPDATA'];
-    savedLocalAppData = process.env['LOCALAPPDATA'];
-    process.env['APPDATA']      = MOCK_APPDATA;
-    process.env['LOCALAPPDATA'] = MOCK_LOCALAPPDATA;
+    savedAppData       = process.env['APPDATA'];
+    savedReachDataDir  = process.env['REACH_DATA_DIR'];
+    process.env['APPDATA']        = MOCK_APPDATA;
+    // Pin getReachDataDir() to our known test path via the env override.
+    process.env['REACH_DATA_DIR'] = MOCK_REACH_STATE;
 
     vi.clearAllMocks();
     mockExit.mockImplementation((code?: number) => { throw new Error(`process.exit(${code})`); });
@@ -89,16 +93,16 @@ describe('runUninstall()', () => {
     // Default: both dirs exist (most common "uninstall from clean state" scenario).
     mockExistsSync.mockImplementation((filePath: unknown) => {
       const p = String(filePath);
-      return p === REACH_EXT_DIR || p === REACH_DATA_DIR;
+      return p === REACH_EXT_DIR || p === REACH_STATE_DIR;
     });
     mockRmSync.mockImplementation(() => undefined);
   });
 
   afterEach(() => {
-    if (savedAppData === undefined)      delete process.env['APPDATA'];
-    else                                 process.env['APPDATA'] = savedAppData;
-    if (savedLocalAppData === undefined) delete process.env['LOCALAPPDATA'];
-    else                                 process.env['LOCALAPPDATA'] = savedLocalAppData;
+    if (savedAppData === undefined)       delete process.env['APPDATA'];
+    else                                  process.env['APPDATA'] = savedAppData;
+    if (savedReachDataDir === undefined)  delete process.env['REACH_DATA_DIR'];
+    else                                  process.env['REACH_DATA_DIR'] = savedReachDataDir;
   });
 
   afterAll(() => {
@@ -118,11 +122,11 @@ describe('runUninstall()', () => {
     expect(mockExit).not.toHaveBeenCalled();
   });
 
-  it('UN2 default: does NOT remove LOCALAPPDATA/reach (data preserved)', async () => {
+  it('UN2 default: does NOT remove state dir (data preserved)', async () => {
     await runUninstall({ wipe: false });
 
     const rmCalls = mockRmSync.mock.calls.map(([p]) => String(p));
-    expect(rmCalls.every((p) => p !== REACH_DATA_DIR)).toBe(true);
+    expect(rmCalls.every((p) => p !== REACH_STATE_DIR)).toBe(true);
   });
 
   it('UN3 default: prints manual PowerShell wipe command', async () => {
@@ -132,12 +136,12 @@ describe('runUninstall()', () => {
       .map(([msg]) => String(msg))
       .join('\n');
     expect(logOutput).toMatch(/Remove-Item/);
-    expect(logOutput).toMatch(/LOCALAPPDATA/);
+    expect(logOutput).toMatch(/\.reach/);
   });
 
   // ── UN4: wipe=true — also removes data dir ────────────────────────────────
 
-  it('UN4 wipe=true: also removes LOCALAPPDATA/reach', async () => {
+  it('UN4 wipe=true: also removes ~/.reach state dir', async () => {
     await runUninstall({ wipe: true });
 
     expect(mockRmSync).toHaveBeenCalledWith(
@@ -145,7 +149,7 @@ describe('runUninstall()', () => {
       expect.objectContaining({ recursive: true }),
     );
     expect(mockRmSync).toHaveBeenCalledWith(
-      REACH_DATA_DIR,
+      REACH_STATE_DIR,
       expect.objectContaining({ recursive: true }),
     );
   });
@@ -155,7 +159,7 @@ describe('runUninstall()', () => {
   it('UN5 idempotent: extension dir absent → no rmSync call for ext dir, no error', async () => {
     mockExistsSync.mockImplementation((filePath: unknown) => {
       const p = String(filePath);
-      return p === REACH_DATA_DIR;  // only data dir exists
+      return p === REACH_STATE_DIR;  // only state dir exists
     });
 
     // Should not throw even if ext dir is absent.
@@ -211,5 +215,17 @@ describe('runUninstall()', () => {
 
     expect(mockServiceUninstall).toHaveBeenCalledOnce();
     expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  // ── UN10: wipe targets getReachDataDir() exclusively ─────────────────────
+
+  it('UN10 wipe=true: rmSync only touches extension dir and state dir — nothing else', async () => {
+    await runUninstall({ wipe: true });
+
+    const rmTargets = mockRmSync.mock.calls.map(([p]) => String(p));
+    // Every rmSync call must be one of our known paths — nothing extraneous.
+    for (const target of rmTargets) {
+      expect([REACH_EXT_DIR, REACH_STATE_DIR]).toContain(target);
+    }
   });
 });

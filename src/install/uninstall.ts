@@ -5,7 +5,7 @@
  *
  * Usage:
  *   node dist/install/uninstall.js           # uninstall service + remove extension
- *   node dist/install/uninstall.js --wipe    # also delete %LOCALAPPDATA%\reach\
+ *   node dist/install/uninstall.js --wipe    # also delete ~/.reach/
  *   npm run uninstall
  *   npm run uninstall -- --wipe
  *
@@ -17,9 +17,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { uninstallService } from '../service/install.js';
 import { isDirectRun } from './isDirectRun.js';
+import { getReachDataDir } from '../config/config.js';
 
 export interface UninstallOptions {
-  /** When true, also deletes %LOCALAPPDATA%\reach\ (config + session data). */
+  /** When true, also deletes ~/.reach/ (config + session data). */
   wipe: boolean;
 }
 
@@ -57,19 +58,14 @@ function removeExtension(): StepResult {
 }
 
 function wipeLocalData(): StepResult {
-  const localAppData = process.env['LOCALAPPDATA'];
-  if (!localAppData) {
-    console.log('[reach] LOCALAPPDATA not set — skipping local state wipe.');
-    return { label: 'Wipe local data', ok: true };
-  }
-  const localDir = path.join(localAppData, 'reach');
-  if (fs.existsSync(localDir)) {
+  const reachDir = getReachDataDir();
+  if (fs.existsSync(reachDir)) {
     const markerFiles = ['config.json', 'bridge-auth.json'];
     try {
-      const entries = new Set(fs.readdirSync(localDir));
+      const entries = new Set(fs.readdirSync(reachDir));
       const hasMarker = markerFiles.some((marker) => entries.has(marker));
       if (!hasMarker) {
-        const reason = `Refusing to wipe ${localDir}: doesn't look like a Reach state directory.`;
+        const reason = `Refusing to wipe ${reachDir}: doesn't look like a Reach state directory.`;
         console.error(`[reach] ${reason}`);
         return { label: 'Wipe local data', ok: false, reason };
       }
@@ -77,8 +73,8 @@ function wipeLocalData(): StepResult {
       // If we cannot inspect the directory entries, continue with best-effort wipe.
     }
     try {
-      fs.rmSync(localDir, { recursive: true, force: true });
-      console.log(`[reach] Local state wiped: ${localDir}`);
+      fs.rmSync(reachDir, { recursive: true, force: true });
+      console.log(`[reach] Local state wiped: ${reachDir}`);
       return { label: 'Wipe local data', ok: true };
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -112,14 +108,11 @@ export async function runUninstall(opts: UninstallOptions): Promise<void> {
   if (opts.wipe) {
     results.push(wipeLocalData());
   } else {
-    const localAppData = process.env['LOCALAPPDATA'];
-    if (localAppData) {
-      const localDir = path.join(localAppData, 'reach');
-      console.log(`[reach] Local state preserved: ${localDir}`);
-      console.log('[reach] To wipe it manually:');
-      console.log('[reach]   Remove-Item -Recurse -Force $env:LOCALAPPDATA\\reach');
-      console.log('[reach] Or re-run:  npm run uninstall -- --wipe');
-    }
+    const reachDir = getReachDataDir();
+    console.log(`[reach] Local state preserved: ${reachDir}`);
+    console.log('[reach] To wipe it manually:');
+    console.log('[reach]   Remove-Item -Recurse -Force ~/.reach');
+    console.log('[reach] Or re-run:  npm run uninstall -- --wipe');
   }
 
   console.log('[reach]');

@@ -24,24 +24,42 @@ describe('Config (Pairing Config)', () => {
   });
 
   describe('getReachDataDir()', () => {
-    it('returns a platform-aware directory path', () => {
+    const savedEnv = process.env.REACH_DATA_DIR;
+
+    afterEach(() => {
+      if (savedEnv === undefined) delete process.env.REACH_DATA_DIR;
+      else process.env.REACH_DATA_DIR = savedEnv;
+    });
+
+    it('returns ~/.reach by default', () => {
+      delete process.env.REACH_DATA_DIR;
       const dataDir = getReachDataDir();
+      expect(dataDir).toBe(path.join(os.homedir(), '.reach'));
+    });
 
-      // Should return a non-empty string
-      expect(dataDir).toBeTruthy();
-      expect(typeof dataDir).toBe('string');
+    it('honors REACH_DATA_DIR absolute override', () => {
+      process.env.REACH_DATA_DIR = '/custom/reach/dir';
+      const dataDir = getReachDataDir();
+      expect(dataDir).toBe(path.resolve('/custom/reach/dir'));
+    });
 
-      // Should end with 'reach' directory
-      expect(dataDir).toContain('reach');
-      expect(path.basename(dataDir)).toBe('reach');
+    it('ignores REACH_DATA_DIR when set to empty string', () => {
+      process.env.REACH_DATA_DIR = '';
+      const dataDir = getReachDataDir();
+      expect(dataDir).toBe(path.join(os.homedir(), '.reach'));
+    });
 
-      // On Windows, allow APPDATA overrides but keep structural guarantees.
-      // On Unix, should include .config
-      if (process.platform === 'win32') {
-        expect(path.isAbsolute(dataDir)).toBe(true);
-      } else {
-        expect(dataDir).toContain('.config');
-      }
+    it('ignores REACH_DATA_DIR when set to whitespace only', () => {
+      process.env.REACH_DATA_DIR = '   ';
+      const dataDir = getReachDataDir();
+      expect(dataDir).toBe(path.join(os.homedir(), '.reach'));
+    });
+
+    it('resolves relative REACH_DATA_DIR to absolute via path.resolve', () => {
+      process.env.REACH_DATA_DIR = 'relative/path';
+      const dataDir = getReachDataDir();
+      expect(path.isAbsolute(dataDir)).toBe(true);
+      expect(dataDir).toBe(path.resolve('relative/path'));
     });
   });
 
@@ -102,19 +120,20 @@ describe('Config (Pairing Config)', () => {
   });
 
   describe('getConfigPath()', () => {
-    it('returns a platform-aware path', () => {
+    it('returns <dataDir>/config.json', () => {
       const configPath = getConfigPath();
+      expect(configPath).toBe(path.join(getReachDataDir(), 'config.json'));
+    });
 
-      // Should return a non-empty string
-      expect(configPath).toBeTruthy();
-      expect(typeof configPath).toBe('string');
-
-      // On Windows, should include APPDATA or similar
-      // On Unix, should include .config or home dir
-      if (process.platform === 'win32') {
-        expect(configPath).toContain('reach');
-      } else {
-        expect(configPath).toContain('reach');
+    it('getConfigPath() uses REACH_DATA_DIR override when set', () => {
+      const saved = process.env.REACH_DATA_DIR;
+      try {
+        process.env.REACH_DATA_DIR = path.join(os.tmpdir(), 'reach-test-override');
+        const configPath = getConfigPath();
+        expect(configPath).toBe(path.join(path.resolve(process.env.REACH_DATA_DIR), 'config.json'));
+      } finally {
+        if (saved === undefined) delete process.env.REACH_DATA_DIR;
+        else process.env.REACH_DATA_DIR = saved;
       }
     });
   });

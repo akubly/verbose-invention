@@ -197,7 +197,7 @@ describe('T3 — generatePipeAuth() handles Windows rename EPERM/EEXIST', () => 
    */
   it('succeeds on first write (creates the auth file)', async () => {
     const tempDir = await fsStatic.mkdtemp(pathStatic.join(osStatic.tmpdir(), 'reach-t3a-'));
-    vi.stubEnv('LOCALAPPDATA', tempDir);
+    vi.stubEnv('REACH_DATA_DIR', tempDir);
 
     try {
       const config = await generatePipeAuth();
@@ -215,7 +215,7 @@ describe('T3 — generatePipeAuth() handles Windows rename EPERM/EEXIST', () => 
     // On Windows this exercises the EPERM fallback (rename to existing file fails;
     // code unlinks destination then renames).  On Linux/macOS rename atomically overwrites.
     const tempDir = await fsStatic.mkdtemp(pathStatic.join(osStatic.tmpdir(), 'reach-t3b-'));
-    vi.stubEnv('LOCALAPPDATA', tempDir);
+    vi.stubEnv('REACH_DATA_DIR', tempDir);
 
     try {
       await generatePipeAuth();               // first write
@@ -238,7 +238,7 @@ describe('T4 — auth file is removed when bridge startup fails', () => {
 
   it('cleanupPipeAuth() removes the auth file written by generatePipeAuth()', async () => {
     const tempDir = await fsStatic.mkdtemp(pathStatic.join(osStatic.tmpdir(), 'reach-t4-'));
-    vi.stubEnv('LOCALAPPDATA', tempDir);
+    vi.stubEnv('REACH_DATA_DIR', tempDir);
 
     try {
       await generatePipeAuth();
@@ -259,7 +259,7 @@ describe('T4 — auth file is removed when bridge startup fails', () => {
 
   it('cleanupPipeAuth() is a no-op when file is already gone (ENOENT — idempotent)', async () => {
     const tempDir = await fsStatic.mkdtemp(pathStatic.join(osStatic.tmpdir(), 'reach-t4b-'));
-    vi.stubEnv('LOCALAPPDATA', tempDir);
+    vi.stubEnv('REACH_DATA_DIR', tempDir);
 
     try {
       // No file written — should not throw.
@@ -277,7 +277,7 @@ describe('T7 — ExtensionBridge.stop() awaits auth file removal', () => {
 
   it('auth file is gone after stop() resolves (no server started)', async () => {
     const tempDir = await fsStatic.mkdtemp(pathStatic.join(osStatic.tmpdir(), 'reach-t7-'));
-    vi.stubEnv('LOCALAPPDATA', tempDir);
+    vi.stubEnv('REACH_DATA_DIR', tempDir);
 
     try {
       const config = await generatePipeAuth();
@@ -298,7 +298,7 @@ describe('T7 — ExtensionBridge.stop() awaits auth file removal', () => {
 
   it('stop() is safe when auth file is already absent (no double-delete error)', async () => {
     const tempDir = await fsStatic.mkdtemp(pathStatic.join(osStatic.tmpdir(), 'reach-t7b-'));
-    vi.stubEnv('LOCALAPPDATA', tempDir);
+    vi.stubEnv('REACH_DATA_DIR', tempDir);
 
     try {
       const config = await generatePipeAuth();

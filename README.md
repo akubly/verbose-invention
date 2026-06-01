@@ -55,6 +55,10 @@ The `npm run init` command orchestrates the full setup: configuration wizard →
 
 The config wizard will write required variables to `.env` on first run. You can edit `.env` anytime to adjust settings.
 
+**Data directory location:**
+
+Reach stores daemon state (configuration, session registry, bridge auth) under `~/.reach/` by default. Set `REACH_DATA_DIR` to override this location (for corporate environments with redirected home directories, or when you want state on a different drive).
+
 ### Windows Service Details
 
 Reach runs as a Windows Service under your user account.
@@ -62,9 +66,9 @@ Reach runs as a Windows Service under your user account.
 - **Service name:** Reach
 - **Auto-restart:** Enabled (restarts on crash)
 - **Event logging:** Logs to Windows Event Viewer
-- **State preservation:** Configuration and session registry are stored in `%LOCALAPPDATA%\reach\`
+- **State preservation:** Reach stores all daemon state under `~/.reach/` (resolves to `C:\Users\<you>\.reach\` on Windows). This directory contains `config.json` (settings, known cwds), `registry.json` (session history), and `bridge-auth.json` (regenerated each daemon start).
 
-At startup, the daemon creates a randomized named pipe and writes auth credentials to `%LOCALAPPDATA%\reach\bridge-auth.json` (user-only ACL).
+At startup, the daemon creates a randomized named pipe and writes auth credentials to `~/.reach/bridge-auth.json` (user-only ACL).
 
 ## Using Reach
 
@@ -169,7 +173,7 @@ npm run init
 npm run uninstall
 ```
 
-Removes the Windows Service and extension. Your configuration and session registry remain in `%LOCALAPPDATA%\reach\` so you can reinstall later without reconfiguring.
+Removes the Windows Service and extension. Your configuration and session registry remain in `~/.reach/` so you can reinstall later without reconfiguring.
 
 **Full reset:**
 
@@ -177,7 +181,7 @@ Removes the Windows Service and extension. Your configuration and session regist
 npm run uninstall -- --wipe
 ```
 
-Also deletes `%LOCALAPPDATA%\reach\`, removing all configuration and session history.
+`npm run uninstall -- --wipe` also removes `~/.reach/`, deleting all configuration, session history, and bridge auth. Without `--wipe`, only the extension and Windows service are removed; daemon state survives.
 
 ## Platform Support
 
@@ -193,6 +197,7 @@ Also deletes `%LOCALAPPDATA%\reach\`, removing all configuration and session his
 | `REACH_MODEL` | No | Default Copilot model for new sessions | `claude-sonnet-4` |
 | `IDLE_TIMEOUT_MS` | No | In-memory session eviction timeout (ms) | `300000` (5 min) |
 | `REACH_PERMISSION_POLICY` | No | Tool approval policy: `approveAll` (daemon acts without approval — AFK-safe), `denyAll` (refuses tool use), or `interactiveDestructive` (prompts for destructive tools). When `approveAll` is active, Telegram mirror input is blocked for safety. | `approveAll` |
+| `REACH_DATA_DIR` | No | Override the default state directory (normally `~/.reach/`). Useful for corporate machines with redirected home directories. | — |
 
 ## Development
 

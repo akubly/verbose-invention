@@ -18,8 +18,12 @@ import { generatePipeAuth, cleanupPipeAuth } from './bridge/pipeAuth.js';
 import type { CopilotSessionFactory } from './copilot/factory.js';
 import { parseEnv } from './config/env.js';
 import { runPairingMode } from './bot/pairing.js';
+import { migrateLegacyDataDir } from './config/migrate.js';
 
 export async function main(): Promise<void> {
+  // Migrate legacy state dirs on first startup after storage unification.
+  migrateLegacyDataDir();
+
   const cfg = await parseEnv();
   if (cfg.isPairingMode) {
     await runPairingMode(cfg);

@@ -2,9 +2,9 @@
  * pipeAuth.ts — Per-run pipe authentication (ADR-10).
  *
  * Generates a randomized pipe name and single-use token at daemon startup,
- * written atomically to %LOCALAPPDATA%\reach\bridge-auth.json. The CLI
- * extension reads this file to discover the pipe name and include the token
- * in every `hello` message.
+ * written atomically to ~/.reach/bridge-auth.json. The CLI extension reads
+ * this file to discover the pipe name and include the token in every `hello`
+ * message.
  *
  * Defense layers (ADR-10):
  *   Option A (primary): random pipe name + per-run token in user-scoped file.
@@ -18,6 +18,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { getReachDataDir } from '../config/config.js';
 
 export interface PipeAuthConfig {
   /** e.g. "reach-bridge-a1b2c3d4e5f6a7b8" */
@@ -34,11 +35,9 @@ interface PipeAuthFile {
   createdAt: string;
 }
 
-/** Returns the platform-aware path to the auth file. */
+/** Returns the path to the auth file (always under getReachDataDir()). */
 export function getAuthFilePath(): string {
-  const localAppData =
-    process.env['LOCALAPPDATA'] ?? path.join(os.homedir(), 'AppData', 'Local');
-  return path.join(localAppData, 'reach', 'bridge-auth.json');
+  return path.join(getReachDataDir(), 'bridge-auth.json');
 }
 
 /**
@@ -89,8 +88,7 @@ export async function generatePipeAuth(): Promise<PipeAuthConfig> {
     throw err;
   }
 
-  // Option B (partial): restrict to owner-only ACL on Windows.
-  // %LOCALAPPDATA% itself is user-scoped, so this is belt-and-suspenders.
+  // Owner-only ACL on Windows: belt-and-suspenders since ~/.reach/ is already user-scoped.
   // Non-fatal if icacls fails (e.g. running in a container without icacls).
   if (os.platform() === 'win32') {
     try {

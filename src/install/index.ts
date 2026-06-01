@@ -24,6 +24,7 @@ import { fileURLToPath } from 'url';
 import { copyExtension } from './copyExtension.js';
 import { install } from '../service/install.js';
 import { isDirectRun } from './isDirectRun.js';
+import { migrateLegacyDataDir } from '../config/migrate.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -213,6 +214,9 @@ export async function runInit(): Promise<void> {
   console.log('[reach]  Reach — Install Setup');
   console.log('[reach] ════════════════════════════════════════════════════');
   console.log('[reach]');
+
+  // Migrate legacy %APPDATA%\reach\ / %LOCALAPPDATA%\reach\ → ~/.reach/ (no-op if already done)
+  migrateLegacyDataDir();
 
   const projectRoot = getProjectRoot();
   const envPath = path.join(projectRoot, '.env');

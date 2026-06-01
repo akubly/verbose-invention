@@ -179,3 +179,42 @@ Key learning: wizard validation should be at least as strict as the runtime pars
 - eslint: green (0 warnings)
 - vitest run: 797 passed / 4 skipped / 1 todo (was 791; +6 new tests)
 
+---
+
+## PR #10 Cycle 3 Second Wave — Storage Unification (2026-05-31)
+
+**Spec:** Noble Six's `.copilot/reach-state-storage-design.md` Option D.  
+**Aaron's locked decision:** unify all Reach state under `~/.reach/` with `REACH_DATA_DIR` env override.
+
+### Changes
+
+**`src/config/config.ts` — `getReachDataDir()` rewritten:**
+Removed platform switch (`win32` APPDATA vs Unix `.config`). New implementation: `REACH_DATA_DIR` env override (trimmed, empty-string-safe, `path.resolve()`'d) → `path.join(os.homedir(), '.reach')`. Cross-platform from day one. `getConfigPath()` continues to route through `getReachDataDir()` unchanged.
+
+**`src/config/migrate.ts` — new migration helper (Approach A):**
+`migrateLegacyDataDir()` is explicit — called from `runInit()` and `main()`. One-shot: module-level flag prevents double-run per process. If `~/.reach/` exists: no-op. Else if `%APPDATA%\reach\` or `%LOCALAPPDATA%\reach\` exist: copy contents, verify all files present, then remove legacy dir. Never deletes legacy until copy is verified. Log lines confirm each migration.
+
+**`src/bridge/pipeAuth.ts` — `getAuthFilePath()` simplified:**
+Removed `LOCALAPPDATA` logic entirely. Imports `getReachDataDir()` and returns `getReachDataDir() + '/bridge-auth.json'`. `os` import retained (still used for ACL's `os.userInfo()`). Docstring updated to reference `~/.reach/`.
+
+**`src/install/uninstall.ts` — `wipeLocalData()` simplified:**
+`LOCALAPPDATA` env var dependency removed. `wipeLocalData()` now calls `getReachDataDir()` directly. No-wipe hint updated to show `Remove-Item -Recurse -Force ~/.reach`. `UninstallOptions.wipe` docstring updated.
+
+**`src/install/index.ts` + `src/main.ts` — migration call sites:**
+`migrateLegacyDataDir()` called at start of both `runInit()` and `main()`.
+
+**`tests/bridge/cloud-review-1.test.ts` — `vi.stubEnv` patched:**
+T3/T4/T7 used `vi.stubEnv('LOCALAPPDATA', tempDir)` to redirect `getAuthFilePath()`. Now uses `vi.stubEnv('REACH_DATA_DIR', tempDir)` — same effect, correct surface.
+
+### Key Patterns Learned
+
+- **Real-filesystem tests that use `vi.stubEnv` to redirect paths must stub the env var that the production code actually reads**, not a legacy env var. When `getAuthFilePath()` was updated from `LOCALAPPDATA` to `REACH_DATA_DIR`, the stubs in cloud-review-1.test.ts broke silently (writes went to `~/.reach/` instead of the tempdir, pipeName comparison failed with a stale cached value). Grep for `vi.stubEnv` whenever changing which env var a path resolver reads.
+- **`vi.resetModules()` + dynamic import pattern for module-level flags in tests.** The `migrateLegacyDataDir` flag (`migrationAttempted`) is module-level; resetting it between tests requires re-importing the module fresh. Use `vi.resetModules()` in a helper, then `await import('../../src/config/migrate.js')`, and call the freshly-imported function. Each test gets a clean flag.
+- **`REACH_DATA_DIR` env override doubles as a test harness.** Setting it in `beforeEach` to a known path eliminates the need to mock `os.homedir()` in uninstall and migration tests. Cleaner than spy on `os.homedir` which requires module-level mock setup.
+
+### Validation
+
+- tsc --noEmit: green
+- eslint src --max-warnings 0: green
+- vitest run: 809 passed / 4 skipped / 1 todo (was 797; +12 new tests across config.test.ts, migrate.test.ts, uninstall.test.ts)
+

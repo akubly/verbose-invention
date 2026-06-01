@@ -157,13 +157,40 @@ async function runConfigWizard(envPath: string): Promise<void> {
     console.log('[reach]');
   }
 
-  // TELEGRAM_ALLOWED_USER_IDS — prompt with explicit skip
+  // TELEGRAM_ALLOWED_USER_IDS — prompt with validation and explicit skip
   if (!allowedIds) {
     console.log('[reach] TELEGRAM_ALLOWED_USER_IDS gates who can send the daemon commands.');
     console.log('[reach] Find your ID: message @userinfobot in Telegram — it replies with your numeric ID.');
-    const ids = await promptLine('[reach] Your Telegram user ID (or leave blank to skip): ');
-    if (ids) {
-      writeEnvKey(envPath, 'TELEGRAM_ALLOWED_USER_IDS', ids);
+
+    let validated: string | null = null;
+    const MAX_ATTEMPTS = 3;
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const raw = await promptLine('[reach] Your Telegram user ID (or leave blank to skip): ');
+
+      if (!raw) {
+        // Blank → fall through to skip-with-confirmation immediately
+        break;
+      }
+
+      const tokens = raw.split(',').map((t) => t.trim());
+      const badToken = tokens.find((t) => t.length === 0 || !/^[1-9][0-9]*$/.test(t));
+
+      if (badToken === undefined) {
+        // Valid — normalize (trim spaces, canonical comma separation) and accept
+        validated = tokens.join(',');
+        break;
+      }
+
+      // Invalid input — report and reprompt (or fall through to skip on last attempt)
+      console.error(
+        `[reach] ❌ Invalid format. Expected comma-separated Telegram user IDs (positive integers). ` +
+        `Got: '${badToken}'. Try again, or press Ctrl+C to skip.`,
+      );
+    }
+
+    if (validated !== null) {
+      writeEnvKey(envPath, 'TELEGRAM_ALLOWED_USER_IDS', validated);
       console.log(`[reach] Written to ${envPath}`);
     } else {
       const skip = await promptConfirm('[reach] Skip and configure later? [y/N]: ');

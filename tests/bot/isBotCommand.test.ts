@@ -8,7 +8,9 @@
  *   export const BOT_COMMANDS: ReadonlySet<string>   — the canonical bot command set
  *   export function isBotCommand(text: string): boolean
  *     Returns true iff text starts with '/' AND the extracted command word is in BOT_COMMANDS.
- *     Extraction regex: /^\/([a-z_]+)/ (case-sensitive, stops at first non-[a-z_] char).
+ *     Extraction regex: /^\/([a-zA-Z_][a-zA-Z0-9_]*)/ — case-insensitive (lookup via .toLowerCase()),
+ *     digit-aware (digits allowed after first char, stops at first non-[a-zA-Z0-9_] char).
+ *     NOTE: Prior comment described pre-cycle-1 behavior (/^\/([a-z_]+)/, case-sensitive) — no longer accurate.
  *
  * Import path assumption: src/bot/commands.ts (most likely for a new centralized module).
  * If Carter exports from handlers.ts instead, update the import below.

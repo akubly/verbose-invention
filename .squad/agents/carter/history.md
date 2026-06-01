@@ -146,3 +146,36 @@ Key pattern: when public API mixes `throw` and `return { error? }`, consolidate 
 ## Phase 9 Cycle 3 Complete (2026-05-31)
 
 A4 + A5 refactors (single command registry, discriminated ParseResult union) shipped in commit 41a584e. Architect's findings addressed. Branch user/aaron/phase9 now 9 commits ahead. Suite stable at 783 tests. Ready for PR. No further review cycles required.
+
+---
+
+## PR #10 Cycle 3 Fix Wave (2026-05-31)
+
+**Trigger:** Four Copilot review threads on PR #10. T2 was a BLOCKING regression.
+
+### T2 - Service Uninstall Composability
+
+Extracted `uninstallService(): Promise<void>` from `src/service/install.ts`. Wraps node-windows event-emitter in a Promise with settled boolean guard (prevents double-fire), 60-second timeout rejection, and clearTimeout cleanup. `runUninstall()` promoted to async; service step is a tracked StepResult. Old `uninstall()` kept as a backward-compat CLI shim.
+
+Key learning: node-windows event-emitter patterns need the same settled/timeout/cleanup treatment as the extension.mjs SDK streaming fix. Pattern is reusable across all node-windows wrappers.
+
+### T6 - noble six/ to noble-six/ Consolidation
+
+Physical move via git rm + copy. Merged two history.md files: used the noble six/ version (comprehensive, Phases 6-9) as base, inserted the Phase 9 Sprint breakdown block from noble-six/ (unique KB and Decision Consolidation sections). Streaming-fix section was duplicated - kept one copy. Charter inbox path updated. team.md roster updated.
+
+### T7 - isBotCommand test header comment
+
+Single-line update: replaced stale pre-cycle-1 contract text with accurate post-fix description.
+
+### T8 - TELEGRAM_ALLOWED_USER_IDS wizard validation
+
+Added 3-attempt retry loop before skip-with-confirmation fallback. Validation regex `/^[1-9][0-9]*$/` is a strict subset of parseEnv's check (rejects leading zeros that Number() would silently coerce). Normalization: `tokens.join(',')` before write.
+
+Key learning: wizard validation should be at least as strict as the runtime parser - document any intentional tightening (leading zeros) so future maintainers don't loosen it.
+
+### Validation
+
+- tsc --noEmit: green
+- eslint: green (0 warnings)
+- vitest run: 797 passed / 4 skipped / 1 todo (was 791; +6 new tests)
+

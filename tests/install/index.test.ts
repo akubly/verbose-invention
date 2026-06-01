@@ -344,4 +344,60 @@ describe('runInit() — orchestrator + config wizard', () => {
       expect(String(writePath)).toBe(ENV_PATH);
     }
   });
+
+  // ── IX14–IX17: ALLOWED_USER_IDS validation ────────────────────────────────
+
+  it('IX14 validation: valid comma-separated IDs written as-is', async () => {
+    delete process.env['TELEGRAM_ALLOWED_USER_IDS'];
+    rlAnswerQueue.push('123,456');
+
+    await runInit();
+
+    const writtenContent = mockWriteFileSync.mock.calls
+      .map(([, content]) => String(content)).join('');
+    expect(writtenContent).toContain('TELEGRAM_ALLOWED_USER_IDS=123,456');
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  it('IX15 validation: invalid input reprompts, valid retry is written', async () => {
+    delete process.env['TELEGRAM_ALLOWED_USER_IDS'];
+    rlAnswerQueue.push('abc');   // invalid → reprompt
+    rlAnswerQueue.push('99999'); // valid → written
+
+    await runInit();
+
+    const writtenContent = mockWriteFileSync.mock.calls
+      .map(([, content]) => String(content)).join('');
+    expect(writtenContent).toContain('TELEGRAM_ALLOWED_USER_IDS=99999');
+    expect(mockConsoleError).toHaveBeenCalledWith(expect.stringContaining('abc'));
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  it('IX16 validation: whitespace-padded IDs normalized before write', async () => {
+    delete process.env['TELEGRAM_ALLOWED_USER_IDS'];
+    rlAnswerQueue.push('123, 456');  // spaces around second token
+
+    await runInit();
+
+    const writtenContent = mockWriteFileSync.mock.calls
+      .map(([, content]) => String(content)).join('');
+    expect(writtenContent).toContain('TELEGRAM_ALLOWED_USER_IDS=123,456');
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  it('IX17 validation: empty token (123,,456) rejected → reprompt → skip → y', async () => {
+    delete process.env['TELEGRAM_ALLOWED_USER_IDS'];
+    rlAnswerQueue.push('123,,456'); // empty token → invalid → reprompt
+    rlAnswerQueue.push('');          // blank → skip confirmation
+    rlAnswerQueue.push('y');         // confirm skip
+
+    await runInit();
+
+    // No IDs should be written
+    const writtenContent = mockWriteFileSync.mock.calls
+      .map(([, content]) => String(content)).join('');
+    expect(writtenContent).not.toContain('TELEGRAM_ALLOWED_USER_IDS');
+    expect(mockConsoleError).toHaveBeenCalledWith(expect.stringContaining("''"));
+    expect(mockExit).not.toHaveBeenCalled();
+  });
 });

@@ -15,7 +15,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { uninstall } from '../service/install.js';
+import { uninstallService } from '../service/install.js';
 import { isDirectRun } from './isDirectRun.js';
 
 export interface UninstallOptions {
@@ -95,7 +95,7 @@ function wipeLocalData(): StepResult {
 // Orchestrator
 // ---------------------------------------------------------------------------
 
-export function runUninstall(opts: UninstallOptions): void {
+export async function runUninstall(opts: UninstallOptions): Promise<void> {
   console.log('[reach] ════════════════════════════════════════════════════');
   console.log('[reach]  Reach — Uninstall');
   console.log('[reach] ════════════════════════════════════════════════════');
@@ -124,12 +124,17 @@ export function runUninstall(opts: UninstallOptions): void {
 
   console.log('[reach]');
 
-  // Service uninstall — handles its own exit via node-windows events
+  // Service uninstall — composable; errors are accumulated into step results
   console.log('[reach] Uninstalling Windows service…');
-  uninstall();
+  try {
+    await uninstallService();
+    results.push({ label: 'Uninstall Windows service', ok: true });
+  } catch (err: unknown) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(`[reach] ERROR: Service uninstall failed: ${reason}`);
+    results.push({ label: 'Uninstall Windows service', ok: false, reason });
+  }
 
-  // If the service uninstaller returned (e.g., in tests or on some platforms),
-  // report the step summary and exit non-zero if any earlier step failed.
   const failed = results.filter((r) => !r.ok);
   if (failed.length > 0) {
     const succeeded = results.length - failed.length;
@@ -144,5 +149,7 @@ export function runUninstall(opts: UninstallOptions): void {
 // Only run when executed directly, not when imported
 if (isDirectRun(import.meta.url)) {
   const wipe = process.argv.includes('--wipe');
-  runUninstall({ wipe });
+  runUninstall({ wipe })
+    .then(() => { process.exit(0); })
+    .catch(() => { process.exit(1); });
 }

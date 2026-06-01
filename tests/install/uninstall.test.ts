@@ -18,10 +18,11 @@ import * as path from 'path';
 
 // ─── Mock service installer (don't invoke node-windows) ──────────────────────
 
-const mockServiceUninstall = vi.fn<[], void>(() => undefined);
+const mockServiceUninstall = vi.fn<[], Promise<void>>(() => Promise.resolve());
 
 vi.mock('../../src/service/install.js', () => ({
-  uninstall:           () => mockServiceUninstall(),
+  uninstallService:    () => mockServiceUninstall(),
+  uninstall:           vi.fn(() => undefined),
   install:             vi.fn(() => Promise.resolve()),
   createService:       vi.fn(),
   resolveCurrentUser:  vi.fn(() => ({ username: 'TestUser', domain: 'TESTDOMAIN' })),
@@ -83,7 +84,7 @@ describe('runUninstall()', () => {
     mockExit.mockImplementation((code?: number) => { throw new Error(`process.exit(${code})`); });
     mockConsoleLog.mockImplementation(() => {});
     mockConsoleError.mockImplementation(() => {});
-    mockServiceUninstall.mockImplementation(() => undefined);
+    mockServiceUninstall.mockResolvedValue(undefined);
 
     // Default: both dirs exist (most common "uninstall from clean state" scenario).
     mockExistsSync.mockImplementation((filePath: unknown) => {
@@ -106,8 +107,8 @@ describe('runUninstall()', () => {
 
   // ── UN1: Default (wipe=false) — service + extension, preserve data ────────
 
-  it('UN1 default: calls service uninstall and removes extension dir', () => {
-    runUninstall({ wipe: false });
+  it('UN1 default: calls service uninstall and removes extension dir', async () => {
+    await runUninstall({ wipe: false });
 
     expect(mockServiceUninstall).toHaveBeenCalledOnce();
     expect(mockRmSync).toHaveBeenCalledWith(
@@ -117,15 +118,15 @@ describe('runUninstall()', () => {
     expect(mockExit).not.toHaveBeenCalled();
   });
 
-  it('UN2 default: does NOT remove LOCALAPPDATA/reach (data preserved)', () => {
-    runUninstall({ wipe: false });
+  it('UN2 default: does NOT remove LOCALAPPDATA/reach (data preserved)', async () => {
+    await runUninstall({ wipe: false });
 
     const rmCalls = mockRmSync.mock.calls.map(([p]) => String(p));
     expect(rmCalls.every((p) => p !== REACH_DATA_DIR)).toBe(true);
   });
 
-  it('UN3 default: prints manual PowerShell wipe command', () => {
-    runUninstall({ wipe: false });
+  it('UN3 default: prints manual PowerShell wipe command', async () => {
+    await runUninstall({ wipe: false });
 
     const logOutput = (mockConsoleLog as ReturnType<typeof vi.fn>).mock.calls
       .map(([msg]) => String(msg))
@@ -136,8 +137,8 @@ describe('runUninstall()', () => {
 
   // ── UN4: wipe=true — also removes data dir ────────────────────────────────
 
-  it('UN4 wipe=true: also removes LOCALAPPDATA/reach', () => {
-    runUninstall({ wipe: true });
+  it('UN4 wipe=true: also removes LOCALAPPDATA/reach', async () => {
+    await runUninstall({ wipe: true });
 
     expect(mockRmSync).toHaveBeenCalledWith(
       REACH_EXT_DIR,
@@ -151,40 +152,64 @@ describe('runUninstall()', () => {
 
   // ── UN5: Idempotent — extension dir absent ────────────────────────────────
 
-  it('UN5 idempotent: extension dir absent → no rmSync call for ext dir, no error', () => {
+  it('UN5 idempotent: extension dir absent → no rmSync call for ext dir, no error', async () => {
     mockExistsSync.mockImplementation((filePath: unknown) => {
       const p = String(filePath);
       return p === REACH_DATA_DIR;  // only data dir exists
     });
 
     // Should not throw even if ext dir is absent.
-    expect(() => runUninstall({ wipe: false })).not.toThrow();
+    await expect(runUninstall({ wipe: false })).resolves.toBeUndefined();
     const rmCalls = mockRmSync.mock.calls.map(([p]) => String(p));
     expect(rmCalls).not.toContain(REACH_EXT_DIR);
   });
 
   // ── UN6: Idempotent — neither dir exists ─────────────────────────────────
 
-  it('UN6 idempotent: neither dir exists → succeeds without any rmSync calls', () => {
+  it('UN6 idempotent: neither dir exists → succeeds without any rmSync calls', async () => {
     mockExistsSync.mockReturnValue(false);
 
-    expect(() => runUninstall({ wipe: true })).not.toThrow();
+    await expect(runUninstall({ wipe: true })).resolves.toBeUndefined();
     expect(mockRmSync).not.toHaveBeenCalled();
     expect(mockExit).not.toHaveBeenCalled();
   });
 
   // ── UN7: Resilient — removeExtension fails but service still runs ─────────
 
-  it('UN7 resilient: removeExtension fails → service uninstall still called, exits 1', () => {
+  it('UN7 resilient: removeExtension fails → service uninstall still called, exits 1', async () => {
     // Make rmSync throw so removeExtension returns { ok: false }.
     mockRmSync.mockImplementation(() => { throw new Error('EPERM: permission denied'); });
 
     // runUninstall should call process.exit(1) at the end (which our mock throws).
-    expect(() => runUninstall({ wipe: false })).toThrow('process.exit(1)');
+    await expect(runUninstall({ wipe: false })).rejects.toThrow('process.exit(1)');
 
     // Despite removeExtension failing, service uninstall still ran.
     expect(mockServiceUninstall).toHaveBeenCalledOnce();
     expect(mockExit).toHaveBeenCalledWith(1);
     expect(mockConsoleError).toHaveBeenCalledWith(expect.stringContaining('EPERM'));
+  });
+
+  // ── UN8: Composable — service rejects → step summary exits 1 ─────────────
+
+  it('UN8 composable: uninstallService rejects → step summary exits 1', async () => {
+    mockServiceUninstall.mockRejectedValue(new Error('node-windows: access denied'));
+
+    await expect(runUninstall({ wipe: false })).rejects.toThrow('process.exit(1)');
+
+    expect(mockExit).toHaveBeenCalledWith(1);
+    // Extension step still ran before service step
+    expect(mockRmSync).toHaveBeenCalledWith(REACH_EXT_DIR, expect.objectContaining({ recursive: true }));
+    expect(mockConsoleError).toHaveBeenCalledWith(expect.stringContaining('node-windows: access denied'));
+  });
+
+  // ── UN9: Composable — service resolves, all ok → no process.exit ─────────
+
+  it('UN9 composable: uninstallService resolves and all steps ok → no process.exit', async () => {
+    mockServiceUninstall.mockResolvedValue(undefined);
+
+    await runUninstall({ wipe: false });
+
+    expect(mockServiceUninstall).toHaveBeenCalledOnce();
+    expect(mockExit).not.toHaveBeenCalled();
   });
 });

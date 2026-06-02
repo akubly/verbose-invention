@@ -97,8 +97,9 @@ export async function runUninstall(opts: UninstallOptions): Promise<void> {
   console.log('[reach] ════════════════════════════════════════════════════');
   console.log('[reach]');
 
-  // Do all sync filesystem cleanup before handing off to the async service
-  // uninstaller (which calls process.exit internally via node-windows events).
+  // Sync filesystem cleanup runs first; uninstallService() returns a Promise
+  // and does NOT call process.exit(). The orchestrator accumulates step results
+  // and exits at the end with the appropriate code.
 
   const results: StepResult[] = [];
 
@@ -111,7 +112,7 @@ export async function runUninstall(opts: UninstallOptions): Promise<void> {
     const reachDir = getReachDataDir();
     console.log(`[reach] Local state preserved: ${reachDir}`);
     console.log('[reach] To wipe it manually:');
-    console.log('[reach]   Remove-Item -Recurse -Force ~/.reach');
+    console.log(`[reach]   Remove-Item -Recurse -Force "${reachDir}"`);
     console.log('[reach] Or re-run:  npm run uninstall -- --wipe');
   }
 

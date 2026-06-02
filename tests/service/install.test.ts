@@ -71,7 +71,7 @@ let savedIsTTY: boolean | undefined;
 
 // ─── Import the REAL module under test ───────────────────────────────────────
 
-import { install, uninstall, createService, main, promptPassword } from '../../src/service/install.js';
+import { install, uninstall, uninstallService, createService, main, promptPassword } from '../../src/service/install.js';
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -388,6 +388,45 @@ describe('Service installer', () => {
       expect(mockSvcUninstall).toHaveBeenCalledOnce();
       expect(constructedConfig).toBeDefined();
       expect(constructedConfig!.name).toBe('Reach');
+    });
+  });
+
+  // ── uninstallService() ────────────────────────────────────────────────────
+
+  describe('uninstallService()', () => {
+    afterEach(() => {
+      // Reset throw implementations so they don't leak into subsequent tests
+      // (outer beforeEach only calls clearAllMocks, which preserves implementations).
+      mockSvcUninstall.mockReset();
+    });
+
+    it('SU1 sync throw: rejects with the thrown error', async () => {
+      const boom = new Error('node-windows: unsupported platform');
+      mockSvcUninstall.mockImplementation(() => { throw boom; });
+
+      await expect(uninstallService()).rejects.toThrow('node-windows: unsupported platform');
+    });
+
+    it('SU2 sync throw: clears the 60s timeout on rejection', async () => {
+      const clearTimeoutSpy = vi.spyOn(global, 'clearTimeout');
+      mockSvcUninstall.mockImplementation(() => { throw new Error('sync fail'); });
+
+      await expect(uninstallService()).rejects.toThrow('sync fail');
+      expect(clearTimeoutSpy).toHaveBeenCalled();
+      clearTimeoutSpy.mockRestore();
+    });
+
+    it('SU3 sync throw: settled guard prevents double-resolution if async event also fires', async () => {
+      const syncErr = new Error('sync fail');
+      mockSvcUninstall.mockImplementation(() => { throw syncErr; });
+
+      const p = uninstallService();
+      // Fire the error handler as node-windows might do asynchronously
+      const errorHandler = eventHandlers.get('error');
+      errorHandler?.(new Error('async error that should be ignored'));
+
+      // Only the sync error wins; no second rejection
+      await expect(p).rejects.toThrow('sync fail');
     });
   });
 

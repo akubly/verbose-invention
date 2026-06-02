@@ -377,7 +377,14 @@ export function uninstallService(): Promise<void> {
     });
 
     console.log('[reach] Uninstalling Reach Windows Service...');
-    svc.uninstall();
+    try {
+      svc.uninstall();
+    } catch (err) {
+      if (!settled) {
+        settled = true;
+        finish(err instanceof Error ? err : new Error(String(err)));
+      }
+    }
   });
 }
 

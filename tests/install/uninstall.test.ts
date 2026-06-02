@@ -129,14 +129,15 @@ describe('runUninstall()', () => {
     expect(rmCalls.every((p) => p !== REACH_STATE_DIR)).toBe(true);
   });
 
-  it('UN3 default: prints manual PowerShell wipe command', async () => {
+  it('UN3 default: wipe hint uses the resolved data dir path, not hardcoded ~/.reach', async () => {
     await runUninstall({ wipe: false });
 
     const logOutput = (mockConsoleLog as ReturnType<typeof vi.fn>).mock.calls
       .map(([msg]) => String(msg))
       .join('\n');
     expect(logOutput).toMatch(/Remove-Item/);
-    expect(logOutput).toMatch(/\.reach/);
+    expect(logOutput).toContain(REACH_STATE_DIR);  // actual resolved path used
+    expect(logOutput).not.toContain('~/.reach');   // hardcoded placeholder NOT used
   });
 
   // ── UN4: wipe=true — also removes data dir ────────────────────────────────
@@ -227,5 +228,20 @@ describe('runUninstall()', () => {
     for (const target of rmTargets) {
       expect([REACH_EXT_DIR, REACH_STATE_DIR]).toContain(target);
     }
+  });
+
+  // ── UN11: env-override path used in wipe hint ─────────────────────────────
+
+  it('UN11 env-override: wipe hint uses REACH_DATA_DIR override, not ~/.reach', async () => {
+    const customDir = 'D:\\custom\\reach-data';
+    process.env['REACH_DATA_DIR'] = customDir;
+
+    await runUninstall({ wipe: false });
+
+    const logOutput = (mockConsoleLog as ReturnType<typeof vi.fn>).mock.calls
+      .map(([msg]) => String(msg))
+      .join('\n');
+    expect(logOutput).toContain(customDir);
+    expect(logOutput).not.toContain('~/.reach');
   });
 });

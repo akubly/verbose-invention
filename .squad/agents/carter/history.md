@@ -218,3 +218,31 @@ T3/T4/T7 used `vi.stubEnv('LOCALAPPDATA', tempDir)` to redirect `getAuthFilePath
 - eslint src --max-warnings 0: green
 - vitest run: 809 passed / 4 skipped / 1 todo (was 797; +12 new tests across config.test.ts, migrate.test.ts, uninstall.test.ts)
 
+
+---
+
+## PR #10 Cycle 4 Fix Wave (2026-06-01)
+
+**Threads:** 3 (Thread 1: uninstallService sync-throw timer leak; Thread 2: hardcoded ~/.reach in no-wipe hint; Thread 3: stale comment). All in `src/service/install.ts` and `src/install/uninstall.ts`.
+
+### Thread 1 — uninstallService sync-throw timer leak
+
+Added try/catch around `svc.uninstall()` in `uninstallService()`. Catch block: `if (!settled) { settled = true; finish(err); }`. The existing `finish()` helper already called `clearTimeout(timer)` before rejecting — no refactoring needed. The `settled` guard ensures no double-resolution if an async event fires after the sync throw.
+
+Added 3 new tests (SU1-SU3) in `tests/service/install.test.ts`. Key learning: SU tests set `mockSvcUninstall.mockImplementation(() => { throw ... })`. The outer `beforeEach` uses `vi.clearAllMocks()` which clears call counts but NOT mock implementations. This caused the throw impl to leak into the `main()` describe tests, triggering an unhandled rejection when the un-awaited `main()` call hit the throwing `uninstallService()`. Fixed by adding `afterEach(() => { mockSvcUninstall.mockReset(); })` inside the SU describe block.
+
+Pattern: when tests in a shared mock context use `mockImplementation` to override behavior, always reset in afterEach if the outer beforeEach only calls `clearAllMocks` (not `resetAllMocks`).
+
+### Thread 2 — hardcoded ~/.reach in no-wipe hint
+
+`reachDir` was already resolved on line 111. Only the `Remove-Item` command line (line 114) was hardcoded. Updated to ` Remove-Item -Recurse -Force "${reachDir}" `. Other `~/.reach` occurrences in src are JSDoc/comments describing the default — left unchanged.
+
+### Thread 3 — stale comment
+
+Updated `src/install/uninstall.ts:100-102` to accurately describe that `uninstallService()` returns a Promise, does NOT call `process.exit()`, and the orchestrator decides the exit code.
+
+### Validation
+
+- tsc --noEmit: green
+- eslint src --max-warnings 0: green  
+- vitest run: 813 passed / 4 skipped / 1 todo (was 809; +4 new tests: SU1-SU3 in service/install.test.ts + UN11 in install/uninstall.test.ts)

@@ -91,7 +91,35 @@ TestBridge to fire the real handler with args.
 - **process.exit in step functions breaks idempotency:** Each step in an install/uninstall orchestrator should return a result type (`{ ok, reason }`) instead of calling `process.exit`. The orchestrator collects all results and exits only at the end. Service uninstallers that call `process.exit` internally are an exception — that's an architectural constraint at the service boundary.
 - **Extract shared isDirectRun helper:** Three files had the same `process.argv[1] === fileURLToPath(import.meta.url)` bug. Shared helper in `src/install/isDirectRun.ts` + `path.resolve()` on argv[1] fixes relative-path npm script case uniformly.
 - **readdirSync not mocked in uninstall tests:** `uninstall.test.ts` mocks only `existsSync`/`rmSync` — `readdirSync` falls through to real fs and throws on mock paths. The existing catch block in `wipeLocalData` handles this; tests relied on it implicitly. Don't add readdirSync to the mock without understanding why the test still passes.
+---
+
+## PR #10 Cycle 3 — Patterns (continued)
+
+- **readdirSync not mocked in uninstall tests:** `uninstall.test.ts` mocks only `existsSync`/`rmSync` — `readdirSync` falls through to real fs and throws on mock paths. The existing catch block in `wipeLocalData` handles this; tests relied on it implicitly. Don't add readdirSync to the mock without understanding why the test still passes.
 - **Windows isDirectRun case-sensitivity:** Both `fileURLToPath(import.meta.url)` and `path.resolve(process.argv[1])` use the same Node.js filesystem view. No case-fold needed in practice. If a flake appears, add `.toLowerCase()` guard inside the helper only on `process.platform === 'win32'`.
+
+---
+
+## PR #10 Cycle 5 — Fail-closed wipe + error logging
+
+### Thread 1 — `src/install/uninstall.ts` `wipeLocalData()` fail-closed
+
+The empty `catch` in the marker-file inspection block was removed. If `readdirSync` throws for any reason (EPERM, ENOENT on a misconfigured `REACH_DATA_DIR`, etc.), `wipeLocalData` now returns `{ ok: false, reason: "Refusing to wipe ...: cannot inspect directory (...)" }`. The orchestrator collects the step result and exits non-zero with the message visible to the user. `rmSync` is never reached.
+
+**Key test lesson:** Adding fail-closed behavior to `readdirSync` required adding a `readdirSync` mock to the test's fs mock block. The old empty catch silently covered all wipe=true tests that exercised real paths — those tests would have broken once the catch became a hard fail. Always check whether adding error handling to a try-catch changes how existing tests flow through the formerly-swallowed path.
+
+### Thread 2 — `src/service/install.ts` error logging
+
+Both the `uninstall()` CLI shim (fire-and-forget) and the `main()` uninstall branch now log `[reach] Service uninstall failed: <msg>` before `process.exit(1)`.
+
+**`mockImplementationOnce` pattern for fire-and-forget testing:** When testing a `void`-returning shim whose internal promise chain calls `process.exit`, use `mockImplementationOnce` (not `mockImplementation`) for the non-throwing override. `mockImplementation` is permanent until the next call to it and leaks past `vi.clearAllMocks()` into subsequent tests — I burned a red-phase run discovering this. `mockImplementationOnce` restores the prior implementation automatically after one call, keeping isolation clean.
+
+### Silent-catch audit (install/service domain)
+
+Only one other silent-catch found in the install/service domain: `src/config/migrate.ts:113` — empty legacy dir cosmetic cleanup after a successful migration copy. Provably non-fatal (dir is empty, migration has already succeeded). Left as-is.
+
+**Test baseline after cycle 5:** 816 passed / 4 skipped / 1 todo (+3 new tests: UN12 in `uninstall.test.ts`, SH1 + M-U1 in `install.test.ts`).
+
 
 ---
 

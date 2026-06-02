@@ -69,8 +69,11 @@ function wipeLocalData(): StepResult {
         console.error(`[reach] ${reason}`);
         return { label: 'Wipe local data', ok: false, reason };
       }
-    } catch {
-      // If we cannot inspect the directory entries, continue with best-effort wipe.
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      const reason = `Refusing to wipe ${reachDir}: cannot inspect directory (${message}). Verify the path exists and you have read permissions.`;
+      console.error(`[reach] ${reason}`);
+      return { label: 'Wipe local data', ok: false, reason };
     }
     try {
       fs.rmSync(reachDir, { recursive: true, force: true });

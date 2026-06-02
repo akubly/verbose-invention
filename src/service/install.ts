@@ -392,7 +392,11 @@ export function uninstallService(): Promise<void> {
 export function uninstall(): void {
   uninstallService()
     .then(() => { process.exit(0); })
-    .catch(() => { process.exit(1); });
+    .catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[reach] Service uninstall failed: ${msg}`);
+      process.exit(1);
+    });
 }
 
 export async function main(): Promise<void> {
@@ -409,7 +413,9 @@ export async function main(): Promise<void> {
   } else if (command === 'uninstall') {
     try {
       await uninstallService();
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[reach] Service uninstall failed: ${msg}`);
       process.exit(1);
     }
     process.exit(0);

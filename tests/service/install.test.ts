@@ -389,6 +389,22 @@ describe('Service installer', () => {
       expect(constructedConfig).toBeDefined();
       expect(constructedConfig!.name).toBe('Reach');
     });
+
+    it('SH1 logs error and exits 1 when uninstallService rejects', async () => {
+      mockSvcUninstall.mockImplementation(() => { throw new Error('connection timed out'); });
+      // One-shot non-throwing exit so the .catch() callback completes without
+      // creating an unhandled rejection in the fire-and-forget promise chain.
+      mockExit.mockImplementationOnce(() => { return undefined as never; });
+
+      uninstall();
+      // Flush the microtask queue so the .catch() callback executes.
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+      expect(mockConsoleError).toHaveBeenCalledWith(
+        expect.stringContaining('Service uninstall failed: connection timed out'),
+      );
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
   });
 
   // ── uninstallService() ────────────────────────────────────────────────────
@@ -548,6 +564,18 @@ describe('Service installer', () => {
       main();
 
       expect(mockSvcUninstall).toHaveBeenCalledOnce();
+    });
+
+    it('M-U1 uninstall: logs error and exits 1 when uninstallService rejects', async () => {
+      process.argv = ['node', 'install.js', 'uninstall'];
+      mockSvcUninstall.mockImplementation(() => { throw new Error('access denied'); });
+
+      await expect(main()).rejects.toThrow('process.exit(1)');
+
+      expect(mockConsoleError).toHaveBeenCalledWith(
+        expect.stringContaining('Service uninstall failed: access denied'),
+      );
+      expect(mockExit).toHaveBeenCalledWith(1);
     });
   });
 });

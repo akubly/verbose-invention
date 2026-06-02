@@ -32,15 +32,17 @@ vi.mock('../../src/service/install.js', () => ({
 
 // ─── Mock fs ─────────────────────────────────────────────────────────────────
 
-const mockExistsSync = vi.fn<[unknown], boolean>(() => false);
-const mockRmSync     = vi.fn<[unknown, unknown?], void>(() => undefined);
+const mockExistsSync    = vi.fn<[unknown], boolean>(() => false);
+const mockRmSync        = vi.fn<[unknown, unknown?], void>(() => undefined);
+const mockReaddirSync   = vi.fn<[unknown], string[]>(() => ['config.json', 'bridge-auth.json']);
 
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
   return {
     ...actual,
-    existsSync: (...args: unknown[]) => mockExistsSync(...args),
-    rmSync:     (...args: unknown[]) => mockRmSync(...args),
+    existsSync:   (...args: unknown[]) => mockExistsSync(...args),
+    rmSync:       (...args: unknown[]) => mockRmSync(...args),
+    readdirSync:  (...args: unknown[]) => mockReaddirSync(...args),
   };
 });
 
@@ -96,6 +98,7 @@ describe('runUninstall()', () => {
       return p === REACH_EXT_DIR || p === REACH_STATE_DIR;
     });
     mockRmSync.mockImplementation(() => undefined);
+    mockReaddirSync.mockReturnValue(['config.json', 'bridge-auth.json']);
   });
 
   afterEach(() => {
@@ -243,5 +246,23 @@ describe('runUninstall()', () => {
       .join('\n');
     expect(logOutput).toContain(customDir);
     expect(logOutput).not.toContain('~/.reach');
+  });
+
+  // ── UN12: Fail-closed — readdirSync throws → refuse wipe, no rmSync ───────
+
+  it('UN12 fail-closed: readdirSync EPERM → ok:false, rmSync never called', async () => {
+    const eperm = Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
+    mockReaddirSync.mockImplementation(() => { throw eperm; });
+
+    await expect(runUninstall({ wipe: true })).rejects.toThrow('process.exit(1)');
+
+    // Must have logged the refusal
+    expect(mockConsoleError).toHaveBeenCalledWith(
+      expect.stringContaining('cannot inspect directory'),
+    );
+    // The whole point of the fix: rmSync must NOT be called for the state dir
+    const rmTargets = mockRmSync.mock.calls.map(([p]) => String(p));
+    expect(rmTargets).not.toContain(REACH_STATE_DIR);
+    expect(mockExit).toHaveBeenCalledWith(1);
   });
 });

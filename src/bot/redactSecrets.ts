@@ -19,14 +19,17 @@
 
 /**
  * Matches common secret keywords followed by an optional separator and a
- * 16+-character value. Groups: (keyword)(separator)(value).
+ * 16+-character value. Groups: (keyword)(separator)(value)(closeQuote).
+ * The closeQuote group captures the optional trailing quote so it can be
+ * re-emitted after [REDACTED], preventing broken JSON/YAML output like
+ * `token="[REDACTED]` (missing close quote).
  */
 const KEYWORD_PATTERN =
-  /\b(token|key|secret|password|authorization|bearer|api[_-]?key|access[_-]?token)\b(\s*[:=]?\s*['"]?)([A-Za-z0-9_\-.+/=]{16,})['"]?/gi;
+  /\b(token|key|secret|password|authorization|bearer|api[_-]?key|access[_-]?token)\b(\s*[:=]?\s*['"]?)([A-Za-z0-9_\-.+/=]{16,})(["']?)/gi;
 
 /** Matches env-style secret assignments (e.g. TELEGRAM_BOT_TOKEN=..., GITHUB_TOKEN=..., AWS_ACCESS_KEY_ID=..., AWS_SECRET_ACCESS_KEY=...). */
 const ENV_ASSIGNMENT_PATTERN =
-  /\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API[_-]?KEY|ACCESS[_-]?TOKEN|ACCESS_KEY(?:_ID)?))\b(\s*=\s*['"]?)([^\s'"]{8,})['"]?/g;
+  /\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API[_-]?KEY|ACCESS[_-]?TOKEN|ACCESS_KEY(?:_ID)?))\b(\s*=\s*['"]?)([^\s'"]{8,})(["']?)/g;
 
 /**
  * Matches bare high-entropy strings (39+ base64/base62 characters including `/` and `+`).
@@ -47,16 +50,18 @@ const URL_CREDS_PATTERN = /(https?:\/\/)[^:@\s]+:[^@\s]+@/g;
  * Exported so Jun can write unit tests against the pattern list.
  */
 export function redactSecrets(text: string): string {
-  // Pass 1 — keyword-adjacent: preserve keyword + separator, replace value only.
+  // Pass 1 — keyword-adjacent: preserve keyword + separator + close quote, replace value only.
   let result = text.replace(
     KEYWORD_PATTERN,
-    (_match, keyword: string, sep: string) => `${keyword}${sep}[REDACTED]`,
+    (_match, keyword: string, sep: string, _value: string, closeQuote: string) =>
+      `${keyword}${sep}[REDACTED]${closeQuote}`,
   );
 
   // Pass 2 — env-style assignments.
   result = result.replace(
     ENV_ASSIGNMENT_PATTERN,
-    (_match, key: string, sep: string) => `${key}${sep}[REDACTED]`,
+    (_match, key: string, sep: string, _value: string, closeQuote: string) =>
+      `${key}${sep}[REDACTED]${closeQuote}`,
   );
 
   // Pass 3 — high-entropy bare strings not already redacted by pass 1/2.

@@ -17,14 +17,18 @@ const MODULE_URL  = import.meta.url;
 const MODULE_FILE = fileURLToPath(MODULE_URL);
 
 describe('isDirectRun()', () => {
-  let savedArgv1: string;
+  let savedArgv1: string | undefined;
 
   beforeEach(() => {
-    savedArgv1 = process.argv[1] ?? '';
+    savedArgv1 = process.argv[1];
   });
 
   afterEach(() => {
-    process.argv[1] = savedArgv1;
+    if (savedArgv1 === undefined) {
+      process.argv.splice(1, 1);
+    } else {
+      process.argv[1] = savedArgv1;
+    }
   });
 
   // ── IDR1: Absolute path that matches ─────────────────────────────────────
@@ -53,6 +57,13 @@ describe('isDirectRun()', () => {
 
   it('IDR4 empty argv[1]: returns false when argv[1] is empty', () => {
     process.argv[1] = '';
+    expect(isDirectRun(MODULE_URL)).toBe(false);
+  });
+
+  // ── IDR5: Missing argv[1] (length 1) ─────────────────────────────────────
+
+  it('IDR5 missing argv[1]: returns false when argv has only one element', () => {
+    process.argv.splice(1);
     expect(isDirectRun(MODULE_URL)).toBe(false);
   });
 });

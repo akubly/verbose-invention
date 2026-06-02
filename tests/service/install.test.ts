@@ -432,6 +432,39 @@ describe('Service installer', () => {
       clearTimeoutSpy.mockRestore();
     });
 
+    it('SU4 timeout: rejects with message that does NOT contain [reach] prefix', async () => {
+      // Use fake timers so we can advance time without waiting 60 seconds.
+      vi.useFakeTimers();
+      // svc.uninstall() completes synchronously but the 'uninstall' event never fires.
+      mockSvcUninstall.mockImplementation(() => { /* no event fired */ });
+
+      const p = uninstallService();
+      vi.advanceTimersByTime(60_001);
+      const err = await p.catch((e: Error) => e);
+
+      vi.useRealTimers();
+
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).not.toContain('[reach]');
+      expect(err.message).toContain('timed out');
+    });
+
+    it('SU5 timeout: call-site logger adds exactly one [reach] prefix', async () => {
+      vi.useFakeTimers();
+      mockSvcUninstall.mockImplementation(() => { /* no event fired */ });
+
+      const p = uninstallService();
+      vi.advanceTimersByTime(60_001);
+      const err = await p.catch((e: Error) => e);
+
+      vi.useRealTimers();
+
+      // Simulate what uninstall() / main() do when they catch the error
+      const logLine = `[reach] Service uninstall failed: ${err.message}`;
+      const matches = (logLine.match(/\[reach\]/g) ?? []).length;
+      expect(matches).toBe(1);
+    });
+
     it('SU3 sync throw: settled guard prevents double-resolution if async event also fires', async () => {
       const syncErr = new Error('sync fail');
       mockSvcUninstall.mockImplementation(() => { throw syncErr; });

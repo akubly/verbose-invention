@@ -120,6 +120,36 @@ Only one other silent-catch found in the install/service domain: `src/config/mig
 
 **Test baseline after cycle 5:** 816 passed / 4 skipped / 1 todo (+3 new tests: UN12 in `uninstall.test.ts`, SH1 + M-U1 in `install.test.ts`).
 
+---
+
+## PR #10 Cycle 6 — Quote preservation, orientation race, log prefix, test leak
+
+### Cluster 1 (T3/T4/T5/T6) — `src/bot/redactSecrets.ts` quote-preservation bug
+
+Both KEYWORD_PATTERN and ENV_ASSIGNMENT_PATTERN had a non-capturing `['"]?` after the value. The replacement only re-emitted groups 1–2, silently discarding the closing quote. JSON like `token="abc"` became `token="[REDACTED]` (broken close-quote). Fix: made the trailing `['"]?` a named capture group `(["']?)` and appended it in both replacement callbacks.
+
+**Regex rationale:** Used independent `(["']?)` (not a backref to the opening quote group) to preserve the conservative bias rule — false negatives (missed secrets) are worse than false positives. A mismatched-quote input like `token="secret'` still gets redacted; the trailing char is re-emitted as-is.
+
+**Test:** 5 new cases in `tests/bot/redactSecrets.test.ts` (C6-1 through C6-5): double/single/no-quote keyword, double-quote ENV assignment, mismatched-quote.
+
+### T1 — `src/bot/afkMode.ts` orientation send race
+
+`sendOrientationMessage` set `binding.orientationSent = true` after `await safeSendMessage(...)`. If two `activate()` callers both passed the `!binding.orientationSent` guard before either entered the method, both would send. Fix (Option A): move the flag assignment to BEFORE the await. `safeSendMessage` already swallows errors so no rollback needed — a persistent failure shouldn't cause spam.
+
+**Test:** `tests/bot/afkMode.orientationRace.test.ts` — OR1 demonstrates the flag-first guard; OR2 verifies flag stays true when the send throws.
+
+### T2 — `src/service/install.ts` double `[reach]` prefix
+
+The timeout error `new Error('[reach] Service uninstall timed out ...')` was caught by callers that prepend `[reach] Service uninstall failed: ${msg}`, producing `[reach] Service uninstall failed: [reach] ...`. Stripped the prefix from the internal Error message. Audit found this was the only `new Error('[reach]...')` in the file — all other `[reach]` usages are in `console.*` calls (correct placement).
+
+**Test:** SU4 asserts `err.message` has no `[reach]`; SU5 asserts call-site format has exactly one `[reach]`.
+
+### T7 — `tests/install/isDirectRun.test.ts` argv[1] restore leak
+
+`beforeEach` saved `process.argv[1] ?? ''`, so when argv[1] was originally absent (length 1 array), `afterEach` restored it as `''` — "empty" and "absent" argv[1] are not equivalent. Fixed: save as `string | undefined`, restore by deleting the element when originally absent. Added IDR5 test for the `length === 1` branch.
+
+**Test baseline after cycle 6:** 826 passed / 4 skipped / 1 todo (+10 new: C6-1–C6-5 redactSecrets, OR1–OR2 orientationRace, SU4–SU5 install, IDR5 isDirectRun).
+
 
 ---
 

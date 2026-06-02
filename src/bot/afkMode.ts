@@ -561,10 +561,12 @@ export class AfkModeController {
 
   /** Send orientation message to the topic and mark the binding as oriented. */
   private async sendOrientationMessage(binding: TopicBinding): Promise<void> {
-    await this.safeSendMessage(this.formatOrientationMessage(binding), binding.topicId);
-    // Intentional mutation: binding is a live object tracked in sessionTopics; the
-    // flag prevents re-sending the orientation message within the same AFK cycle.
+    // Set the flag BEFORE awaiting so that a second concurrent call that
+    // passes the !binding.orientationSent check before this resolves will
+    // see the flag and skip sending. We keep orientationSent=true even on
+    // send failure — a persistent error should not cause spam on retry.
     binding.orientationSent = true;
+    await this.safeSendMessage(this.formatOrientationMessage(binding), binding.topicId);
   }
 
   /**

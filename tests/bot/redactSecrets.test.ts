@@ -129,7 +129,41 @@ describe('redactSecrets — whole-excerpt path', () => {
   });
 });
 
-// ─── C2-I1 — AWS key patterns ─────────────────────────────────────────────────
+// ─── C6 — Quote preservation (T3–T6) ─────────────────────────────────────────
+
+describe('redactSecrets — quote preservation (C6)', () => {
+  it('C6-1 double-quoted keyword value: closing quote preserved', () => {
+    const input  = 'token="abc123longvalue1234567890"';
+    const result = redactSecrets(input);
+    expect(result).toBe('token="[REDACTED]"');
+  });
+
+  it('C6-2 single-quoted keyword value: closing quote preserved', () => {
+    const input  = "token='abc123longvalue1234567890'";
+    const result = redactSecrets(input);
+    expect(result).toBe("token='[REDACTED]'");
+  });
+
+  it('C6-3 unquoted keyword value: no spurious quote added', () => {
+    const input  = 'token=abc123longvalue1234567890';
+    const result = redactSecrets(input);
+    expect(result).toBe('token=[REDACTED]');
+  });
+
+  it('C6-4 double-quoted ENV assignment: closing quote preserved', () => {
+    const input  = 'GITHUB_TOKEN="ghp_abcdefghijklmnopqrstuvwxyz12345678"';
+    const result = redactSecrets(input);
+    expect(result).toBe('GITHUB_TOKEN="[REDACTED]"');
+  });
+
+  it('C6-5 mismatched quote (open double, close single): value still redacted, whatever close char was found is re-emitted', () => {
+    // The regex makes a best-effort capture of the trailing quote character.
+    // The important invariant is that the value is gone.
+    const input  = 'token="abc123longvalue1234567890\'';
+    const result = redactSecrets(input);
+    expect(result).not.toContain('abc123longvalue1234567890');
+  });
+});
 
 describe('redactSecrets — AWS key patterns (C2-I1)', () => {
   it('redacts value in AWS_ACCESS_KEY_ID=<value>', () => {

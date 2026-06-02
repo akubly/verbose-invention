@@ -343,7 +343,7 @@ export function uninstallService(): Promise<void> {
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new Error('[reach] Service uninstall timed out after 60 s — uninstall event never fired'));
+      reject(new Error(`Service uninstall timed out after ${UNINSTALL_TIMEOUT_MS / 1000} s — uninstall event never fired`));
     }, UNINSTALL_TIMEOUT_MS);
 
     const finish = (err?: Error) => {

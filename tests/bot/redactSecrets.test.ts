@@ -165,6 +165,27 @@ describe('redactSecrets — quote preservation (C6)', () => {
   });
 });
 
+
+// ─── C8 — Extended charset: JWT and base64-with-padding ──────────────────────
+
+describe('redactSecrets — JWT and base64-padded strings (C8)', () => {
+  it('C8-1 JWT-shaped token (three dot-separated base64url segments, 39+ chars) is redacted', () => {
+    // Realistic JWT header.payload.signature — total length well over 39 chars.
+    const jwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+    const result = redactSecrets(jwt);
+    expect(result).not.toContain(jwt);
+    expect(result).toContain('[REDACTED]');
+  });
+
+  it('C8-2 base64 string with = padding (40+ chars) is redacted', () => {
+    // 42-char base64 value with == padding.
+    const b64 = 'c29tZTQwK2NoYXJ2YWx1ZXdpdGhwYWRkaW5nZXh0cmE==';
+    const result = redactSecrets(b64);
+    expect(result).not.toContain(b64);
+    expect(result).toContain('[REDACTED]');
+  });
+});
+
 describe('redactSecrets — AWS key patterns (C2-I1)', () => {
   it('redacts value in AWS_ACCESS_KEY_ID=<value>', () => {
     const input  = 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE';

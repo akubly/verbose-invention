@@ -156,3 +156,64 @@ describe('AfkModeController — lastKnownExcerpts stale-value clearing', () => {
     expect(statusText).not.toContain('💬');
   });
 });
+
+// ── C8 — Defensive excerpt truncation ────────────────────────────────────────
+
+/** Build a prose string of exactly `len` chars using short space-separated words so
+ *  redactSecrets won't redact it (no run of 39+ consecutive non-space chars). */
+function proseOfLength(len: number): string {
+  const chunk = 'word '; // 5 chars, all segments length 4 — safe from HIGH_ENTROPY_PATTERN
+  const repeated = chunk.repeat(Math.ceil(len / chunk.length));
+  return repeated.slice(0, len);
+}
+
+describe('AfkModeController — excerpt truncation at ingestion (C8)', () => {
+  it('afk.request with 600-char excerpt → displayed value is truncated, ellipsis present', async () => {
+    const bridge = new TestBridge();
+    const bot = makeMockBot();
+    const controller = makeActiveController(bridge, bot);
+
+    const longExcerpt = proseOfLength(600);
+    bridge.emitAfkRequest(SESSION_ID, longExcerpt);
+    await flush();
+
+    await controller.handleStatusCommand(makeStatusCtx() as never);
+    const [[, statusText]] = bot.api.sendMessage.mock.calls as [[number, string, unknown]];
+    // The raw 600-char string must not appear (was truncated before storage).
+    expect(statusText).not.toContain(longExcerpt);
+    // The excerpt block should still be shown (truncated).
+    expect(statusText).toContain('💬');
+    // Confirm the ellipsis suffix is present.
+    expect(statusText).toContain('…');
+  });
+
+  it('afk.request with exactly 500-char excerpt → stored unchanged (no truncation at boundary)', async () => {
+    const bridge = new TestBridge();
+    const bot = makeMockBot();
+    const controller = makeActiveController(bridge, bot);
+
+    const exactExcerpt = proseOfLength(500);
+    bridge.emitAfkRequest(SESSION_ID, exactExcerpt);
+    await flush();
+
+    await controller.handleStatusCommand(makeStatusCtx() as never);
+    const [[, statusText]] = bot.api.sendMessage.mock.calls as [[number, string, unknown]];
+    expect(statusText).toContain(exactExcerpt);
+    expect(statusText).not.toContain('…');
+  });
+
+  it('afk.request with 499-char excerpt → stored unchanged', async () => {
+    const bridge = new TestBridge();
+    const bot = makeMockBot();
+    const controller = makeActiveController(bridge, bot);
+
+    const shortExcerpt = proseOfLength(499);
+    bridge.emitAfkRequest(SESSION_ID, shortExcerpt);
+    await flush();
+
+    await controller.handleStatusCommand(makeStatusCtx() as never);
+    const [[, statusText]] = bot.api.sendMessage.mock.calls as [[number, string, unknown]];
+    expect(statusText).toContain(shortExcerpt);
+    expect(statusText).not.toContain('…');
+  });
+});

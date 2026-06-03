@@ -32,11 +32,14 @@ const ENV_ASSIGNMENT_PATTERN =
   /\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API[_-]?KEY|ACCESS[_-]?TOKEN|ACCESS_KEY(?:_ID)?))\b(\s*=\s*['"]?)([^\s'"]{8,})(["']?)/g;
 
 /**
- * Matches bare high-entropy strings (39+ base64/base62 characters including `/` and `+`).
+ * Matches bare high-entropy strings (39+ base64/base62 characters including `/`, `+`,
+ * `.` and `=`). The extended charset catches JWT-shaped tokens (three dot-separated
+ * base64url segments) and base64 strings with `=` padding that would otherwise slip
+ * through without a keyword prefix.
  * Negative lookbehind `(?<!<)` skips values already inside angle-bracket
  * delimiters (e.g. XML/HTML elements or code-block markers).
  */
-const HIGH_ENTROPY_PATTERN = /(?<!<)[A-Za-z0-9_\-/+]{39,}/g;
+const HIGH_ENTROPY_PATTERN = /(?<!<)[A-Za-z0-9_\-/+.=]{39,}/g;
 
 /**
  * Matches URLs with embedded credentials (https://user:pass@host/…).

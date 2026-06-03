@@ -6,6 +6,9 @@ import { AfkStreamRouter } from './afkStreamRouter.js';
 import { isBotCommand } from './commands.js';
 import { redactSecrets } from './redactSecrets.js';
 
+/** Maximum stored length for lastAssistantExcerpt; matches the wire-protocol truncation documented in AfkRequestMessage. */
+const MAX_EXCERPT_LENGTH = 500;
+
 export interface TopicBinding extends BridgeSessionInfo {
   topicId: number;
   topicUrl: string;
@@ -122,7 +125,10 @@ export class AfkModeController {
       // keeping a stale value from a prior activation would show outdated context in /status.
       // Empty string is treated the same as absent because redaction can produce ''.
       if (lastAssistantExcerpt !== undefined && lastAssistantExcerpt !== '') {
-        this.lastKnownExcerpts.set(sessionId, lastAssistantExcerpt);
+        const bounded = lastAssistantExcerpt.length > MAX_EXCERPT_LENGTH
+          ? lastAssistantExcerpt.slice(0, MAX_EXCERPT_LENGTH) + '…'
+          : lastAssistantExcerpt;
+        this.lastKnownExcerpts.set(sessionId, bounded);
       } else {
         this.lastKnownExcerpts.delete(sessionId);
       }

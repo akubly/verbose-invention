@@ -9,9 +9,9 @@
 
 ## Current Status
 
-**Phase 9 COMPLETE. PR #10 Cycle 2 fix wave in progress.** Cycle 1 fix wave shipped (1d9955b): I1+I2 streaming queue, I3+I4 quote-aware parser, I6 shared registry, I8+I9 /cwd extraction, B1+B3 minors. Cycle 2 cleanup shipped (07358fe): C2-B1 drain race fix, C2-I1 AWS key redaction patterns. Cycle 3 structural cleanup in flight (A4+A5). PR #10 Cycle 2 five-thread fix wave landed (2026-05-31).
+**Phase 9 COMPLETE. PR #10 Cycle 8 shipped.** Cycle 1 fix wave shipped (1d9955b): I1+I2 streaming queue, I3+I4 quote-aware parser, I6 shared registry, I8+I9 /cwd extraction, B1+B3 minors. Cycle 2 cleanup shipped (07358fe): C2-B1 drain race fix, C2-I1 AWS key redaction patterns. Cycle 3 structural cleanup in flight (A4+A5). PR #10 Cycle 2 five-thread fix wave landed (2026-05-31). Cycle 8: charset gap fix + defensive excerpt truncation.
 
-**Test baseline:** 791 passed / 4 skipped / 1 todo. tsc clean, lint zero warnings.
+**Test baseline:** 833 passed / 4 skipped / 1 todo. tsc clean, lint zero warnings.
 
 ---
 
@@ -150,10 +150,66 @@ The timeout error `new Error('[reach] Service uninstall timed out ...')` was cau
 
 **Test baseline after cycle 6:** 826 passed / 4 skipped / 1 todo (+10 new: C6-1–C6-5 redactSecrets, OR1–OR2 orientationRace, SU4–SU5 install, IDR5 isDirectRun).
 
+---
+
+## PR #10 Cycle 7 — win32 platform gate + dotenv in install entry points
+
+### T1 — `src/config/migrate.ts` win32 gate
+
+`migrateLegacyDataDir()` only migrates Windows legacy paths (`%APPDATA%\reach`,
+`%LOCALAPPDATA%\reach`). Copilot review suggested adding `~/.config/reach` migration
+for non-Windows, but this was based on a false premise — pre-Cycle 3 code used
+`process.env.APPDATA` (Windows only) and there has never been a Unix Reach install.
+Fix: explicit `if (process.platform !== 'win32') return;` at top of function, with
+a comment warning future contributors not to add Unix migration paths since no legacy
+state ever existed there.
+
+**Platform gate position:** Before `migrationAttempted` flag — non-Windows returns
+before setting the flag. Semantically correct since the flag is only meaningful for
+Windows execution. No double-call issues on any platform.
+
+### T2 — `src/install/uninstall.ts` and `src/install/index.ts`: dotenv loading
+
+Both install entry points now have `import 'dotenv/config'` as their first import.
+Without it, `getReachDataDir()` ignores `REACH_DATA_DIR` set only in `.env`, causing
+`--wipe` and `migrateLegacyDataDir()` to target `~/.reach` instead of the user's
+custom data dir.
+
+**Audit result for sibling entry points:**
+- `index.ts` (npm run init): FIXED — calls `migrateLegacyDataDir()` → `getReachDataDir()`
+- `uninstall.ts` (npm run uninstall): FIXED — calls `getReachDataDir()` in wipeLocalData
+- `copyExtension.ts` (npm run install:extension): CLEAN — only uses `APPDATA` (system var) and `NODE_ENV` (CLI var), never calls `getReachDataDir()`
+
+**Test pattern for entry-point dotenv mocks:** When adding `import 'dotenv/config'` to
+a module, also add `vi.mock('dotenv/config', () => ({}))` to its test file. Without this,
+dotenv runs at test startup and attempts to read the real `.env` from cwd. This won't
+break tests on a machine with a clean `.env` (dotenv doesn't override existing process.env),
+but it's noisy and order-dependent. Always add the mock.
+
+**Test baseline after cycle 7:** 828 passed / 4 skipped / 1 todo (+2 new: MIG7 migrate, UN13 uninstall).
 
 ---
 
-## Phase 8.5 — Install Story
+## PR #10 Cycle 8 — redactSecrets charset gap + defensive excerpt truncation
+
+### T1 — `src/bot/redactSecrets.ts` HIGH_ENTROPY_PATTERN charset
+
+Added `.` and `=` to HIGH_ENTROPY_PATTERN charset: `[A-Za-z0-9_\-/+.=]{39,}`.
+
+- **Why:** JWT-shaped tokens (three `.`-separated base64url segments) and standard base64 strings with `=`/`==` padding were not matched by the bare-entropy pattern, creating false negatives.
+- **False-positive analysis:** Long prose URLs are not at risk — `https:` breaks at `:` which is not in the charset. Path segments with `/` are in the charset but realistic paths stay under 39 chars. The only realistic new false positive class would be a URL with a 39+ char unbroken path component — pathological and consistent with the module's conservative bias.
+- **Tests added:** C8-1 (JWT header.payload.sig redacted), C8-2 (base64 with `==` padding redacted).
+
+### T2 — `src/bot/afkMode.ts` defensive excerpt truncation
+
+Added `MAX_EXCERPT_LENGTH = 500` module constant at top of `afkMode.ts`. Applied truncation in the `afk.request` handler before `lastKnownExcerpts.set()`. Excerpts > 500 chars are sliced to 500 chars + `…`.
+
+- **Constant location:** `afkMode.ts` module constant (not imported from `protocol.ts`). Protocol file only has a JSDoc comment on the field — no numeric constant exists there. Adding a behavioral constant to a type-only file would mix concerns.
+- **Tests added:** C8 truncation block in `afkMode.staleExcerpt.test.ts` — 600/500/499 char cases. Used `'word '.repeat(n)` strings (space-separated) to avoid HIGH_ENTROPY_PATTERN redacting the test values before display assertions.
+
+**Test baseline after cycle 8:** 833 passed / 4 skipped / 1 todo (+5 new: C8-1, C8-2 redactSecrets, C8 × 3 staleExcerpt).
+
+
 
 **Task 1:** copyExtension.ts + install:extension script  
 **Task 2:** Full orchestrator (runInit, config wizard, junction mode, uninstaller)  

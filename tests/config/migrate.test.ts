@@ -173,6 +173,25 @@ describe('migrateLegacyDataDir()', () => {
     consoleSpy.mockRestore();
   });
 
+  // ── MIG7: Platform gate — non-Windows returns early without any fs calls ─
+
+  it('MIG7: no-op on non-Windows — existsSync never called', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    try {
+      const migrate = await freshMigrate();
+      migrate();
+      // The platform gate fires before any fs access — not even the new-root
+      // existence check should execute.
+      expect(mockExistsSync).not.toHaveBeenCalled();
+      expect(mockMkdirSync).not.toHaveBeenCalled();
+      expect(mockCopyFileSync).not.toHaveBeenCalled();
+      expect(mockRmSync).not.toHaveBeenCalled();
+    } finally {
+      if (descriptor) Object.defineProperty(process, 'platform', descriptor);
+    }
+  });
+
   // ── MIG6: Module-level flag prevents double-migration ────────────────────
 
   it('MIG6: calling migrate twice does not attempt migration a second time', async () => {

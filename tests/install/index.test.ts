@@ -24,6 +24,11 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
 import * as path from 'path';
 
+// Prevent dotenv from reading a real .env during tests.
+// index.ts imports 'dotenv/config' as its first statement; this mock
+// satisfies that import without touching the filesystem.
+vi.mock('dotenv/config', () => ({}));
+
 // ─── Hoisted state shared between vi.mock factories ───────────────────────────
 // vi.mock factories are hoisted before variable declarations, so shared state
 // must be established with vi.hoisted() first.

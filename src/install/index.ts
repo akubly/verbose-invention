@@ -16,6 +16,7 @@
  * To install non-interactively, populate .env before running.
  */
 
+import 'dotenv/config';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';

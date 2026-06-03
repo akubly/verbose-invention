@@ -69,6 +69,15 @@ function verifyFiles(dir: string, expected: string[]): boolean {
  * The legacy dirs are removed only after all files are verified copied.
  */
 export function migrateLegacyDataDir(): void {
+  // Pre-Phase 8.5 Reach was Windows-only — no legacy state exists on
+  // other platforms, so this migration is a no-op everywhere else.
+  // When Phase 10 adds cross-platform support, there will be no legacy
+  // Unix paths to migrate FROM (this codebase has never persisted state
+  // outside Windows).
+  if (process.platform !== 'win32') {
+    return;
+  }
+
   if (migrationAttempted) return;
   migrationAttempted = true;
 

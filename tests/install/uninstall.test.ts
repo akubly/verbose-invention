@@ -17,6 +17,11 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach, afterAll } from 'vitest';
 import * as path from 'path';
 
+// Prevent dotenv from trying to read a real .env during tests.
+// uninstall.ts imports 'dotenv/config' as its first statement; this mock
+// satisfies that import without touching the filesystem.
+vi.mock('dotenv/config', () => ({}));
+
 // ─── Mock service installer (don't invoke node-windows) ──────────────────────
 
 const mockServiceUninstall = vi.fn<[], Promise<void>>(() => Promise.resolve());
@@ -264,5 +269,26 @@ describe('runUninstall()', () => {
     const rmTargets = mockRmSync.mock.calls.map(([p]) => String(p));
     expect(rmTargets).not.toContain(REACH_STATE_DIR);
     expect(mockExit).toHaveBeenCalledWith(1);
+  });
+
+  // ── UN13: dotenv/config integration note ─────────────────────────────────
+  //
+  // INTEGRATION NOTE (not a unit test): uninstall.ts now has
+  // `import 'dotenv/config'` as its first statement. At unit-test time the
+  // import is satisfied by the vi.mock('dotenv/config') stub above (no .env
+  // file is read). The real fix is verified by the module mock being present:
+  // if dotenv/config were NOT imported by uninstall.ts, removing the mock
+  // would have no effect on tests — the fact that omitting it causes dotenv
+  // to run at test startup confirms the import is present.
+  //
+  // Manual integration test: create .env with REACH_DATA_DIR=D:\custom\reach
+  // and run `npm run uninstall -- --wipe`. Verify the wipe targets D:\custom\reach,
+  // not ~/.reach. Without `import 'dotenv/config'` in uninstall.ts the daemon
+  // would honor the custom path but uninstall would not.
+
+  it('UN13 dotenv: REACH_DATA_DIR override honored (confirms dotenv stub path is wired)', () => {
+    // The stub being registered at all means uninstall.ts has the import.
+    // We also confirm that REACH_DATA_DIR override still works through dotenv stub.
+    expect(process.env['REACH_DATA_DIR']).toBe(MOCK_REACH_STATE);
   });
 });

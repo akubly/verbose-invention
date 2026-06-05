@@ -126,7 +126,7 @@ export class AfkModeController {
       // Empty string is treated the same as absent because redaction can produce ''.
       if (lastAssistantExcerpt !== undefined && lastAssistantExcerpt !== '') {
         const bounded = lastAssistantExcerpt.length > MAX_EXCERPT_LENGTH
-          ? lastAssistantExcerpt.slice(0, MAX_EXCERPT_LENGTH) + '…'
+          ? lastAssistantExcerpt.slice(0, MAX_EXCERPT_LENGTH - 1) + '…'
           : lastAssistantExcerpt;
         this.lastKnownExcerpts.set(sessionId, bounded);
       } else {

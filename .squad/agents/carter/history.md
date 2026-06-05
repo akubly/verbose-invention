@@ -9,9 +9,9 @@
 
 ## Current Status
 
-**Phase 9 COMPLETE. PR #10 Cycle 8 shipped.** Cycle 1 fix wave shipped (1d9955b): I1+I2 streaming queue, I3+I4 quote-aware parser, I6 shared registry, I8+I9 /cwd extraction, B1+B3 minors. Cycle 2 cleanup shipped (07358fe): C2-B1 drain race fix, C2-I1 AWS key redaction patterns. Cycle 3 structural cleanup in flight (A4+A5). PR #10 Cycle 2 five-thread fix wave landed (2026-05-31). Cycle 8: charset gap fix + defensive excerpt truncation.
+**PR #10 Cycle 9 shipped (2026-06-05):** T1 — partial legacy migration retry (Option B: removed early-return on newRoot-exists, per-dir check now handles re-runs after partial failure, MIG8 test added). T2 — excerpt truncation off-by-one corrected (`slice(0, MAX_EXCERPT_LENGTH - 1) + '…'` = 500 chars, length-assertion added to C8 test).
 
-**Test baseline:** 833 passed / 4 skipped / 1 todo. tsc clean, lint zero warnings.
+**Test baseline:** 834 passed / 4 skipped / 1 todo. tsc clean, lint zero warnings.
 
 ---
 

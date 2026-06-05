@@ -185,6 +185,10 @@ describe('AfkModeController — excerpt truncation at ingestion (C8)', () => {
     expect(statusText).toContain('💬');
     // Confirm the ellipsis suffix is present.
     expect(statusText).toContain('…');
+    // Extract stored excerpt from status line: `> <excerpt>` and verify length ≤ 500.
+    const excerptLine = statusText.split('\n').find((l) => l.startsWith('> '));
+    const storedExcerpt = excerptLine ? excerptLine.slice(2) : '';
+    expect(storedExcerpt.length).toBeLessThanOrEqual(500);
   });
 
   it('afk.request with exactly 500-char excerpt → stored unchanged (no truncation at boundary)', async () => {

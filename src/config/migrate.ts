@@ -59,11 +59,12 @@ function verifyFiles(dir: string, expected: string[]): boolean {
  * Safe to call multiple times — after the first attempt per process the
  * function returns immediately.
  *
- * Migration triggers if ALL of the following are true:
- *   - ~/.reach/ does NOT yet exist
- *   - %APPDATA%\reach\ or %LOCALAPPDATA%\reach\ exist
+ * Migration triggers when at least one legacy dir still exists.
+ * ~/.reach/ may already exist (e.g. from a previous partial migration that
+ * failed mid-way) — in that case each legacy dir is checked individually:
+ * only dirs that still exist on disk are (re-)migrated.  This ensures a
+ * partial first-run does not strand un-migrated dirs forever.
  *
- * If ~/.reach/ already exists, no-op (even if legacy dirs are present).
  * bridge-auth.json is transient and regenerated on every daemon start, so
  * it need not be preserved — but we copy it anyway for completeness.
  * The legacy dirs are removed only after all files are verified copied.
@@ -82,9 +83,6 @@ export function migrateLegacyDataDir(): void {
   migrationAttempted = true;
 
   const newRoot = getReachDataDir();
-
-  // No migration needed if the new root already exists.
-  if (fs.existsSync(newRoot)) return;
 
   const appData = process.env['APPDATA'] ?? path.join(os.homedir(), 'AppData', 'Roaming');
   const localAppData = process.env['LOCALAPPDATA'] ?? path.join(os.homedir(), 'AppData', 'Local');

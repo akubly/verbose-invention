@@ -203,4 +203,40 @@ describe('migrateLegacyDataDir()', () => {
     expect(mockMkdirSync).toHaveBeenCalledTimes(0);
     expect(mockCopyFileSync).toHaveBeenCalledTimes(0);
   });
+
+  // ── MIG8: Partial-migration retry — newRoot exists but one legacy dir missed ─
+
+  it('MIG8: re-run migrates remaining legacy dirs when newRoot already exists from partial first run', async () => {
+    // Scenario: first run created newRoot and migrated legacyAppData (its
+    // legacy dir was removed), but legacyLocalAppData failed and was kept.
+    // On second process run, newRoot exists, legacyLocalAppData still exists.
+    mockExistsSync.mockImplementation((p: unknown) => {
+      const s = String(p);
+      // newRoot exists (created by first run)
+      // legacyLocalAppData still exists (first run failed for it)
+      // bridge-auth.json already verified in newRoot after copy
+      return (
+        s === NEW_ROOT ||
+        s === LEGACY_LOCAL_DIR ||
+        s === path.join(NEW_ROOT, 'bridge-auth.json')
+      );
+    });
+    mockReaddirSync.mockImplementation((p: unknown) => {
+      if (String(p) === LEGACY_LOCAL_DIR) return ['bridge-auth.json'] as unknown as string[];
+      return [] as unknown as string[];
+    });
+    const migrate = await freshMigrate();
+    migrate();
+    // Should have attempted to create newRoot (no-op because recursive:true)
+    expect(mockMkdirSync).toHaveBeenCalledWith(NEW_ROOT, { recursive: true });
+    // Should have copied the missed file
+    expect(mockCopyFileSync).toHaveBeenCalledWith(
+      path.join(LEGACY_LOCAL_DIR, 'bridge-auth.json'),
+      path.join(NEW_ROOT, 'bridge-auth.json'),
+    );
+    // Should have removed the legacy dir after successful verification
+    expect(mockRmSync).toHaveBeenCalledWith(LEGACY_LOCAL_DIR, { recursive: true, force: true });
+    // Should NOT have touched legacyAppData (it was already gone from disk)
+    expect(mockRmSync).not.toHaveBeenCalledWith(LEGACY_APPDATA_DIR, expect.anything());
+  });
 });

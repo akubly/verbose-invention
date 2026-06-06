@@ -97,80 +97,216 @@ export class Relay {
     };
     scheduleIdle();
 
-    const placeholderRef = await this.channel.sendMessage(channelCtx, '…');
+    const { supportsStreaming, supportsMessageEdit } = this.channel.capabilities;
 
-    let accumulated = '';
-    let lastEditAt = 0;
+    if (supportsStreaming && supportsMessageEdit) {
+      // ── Case A: live streaming with throttled edits ────────────────────────
+      // Both flags true (e.g. Telegram). Behavior is byte-identical to the
+      // original code: send "…" placeholder, stream-edit every 800ms, final edit.
+      const placeholderRef = await this.channel.sendMessage(channelCtx, '…');
 
-    try {
-      for await (const chunk of session.send(userText)) {
-        accumulated += chunk;
-        if (accumulated.length > MAX_ACCUMULATED_BYTES) {
-          accumulated = accumulated.slice(0, MAX_ACCUMULATED_BYTES) + '\n\n_(response truncated at 100KB)_';
-          break;
-        }
-        const now = Date.now();
-        if (now - lastEditAt >= STREAM_EDIT_THROTTLE_MS) {
-          try {
-            await this.channel.editMessage(channelCtx, placeholderRef, accumulated);
-          } catch {
-            // best-effort throttle edit — ignore failures during streaming
-          }
-          lastEditAt = now;
-        }
-      }
-
-      // Final edit: full response with Markdown and optional extra chunks
-      const modelStr = String(entry.model ?? this.globalModel);
-      const footer = `📎 ${entry.sessionName} · ${modelStr}`;
-      const body = accumulated || '_(empty response)_';
-      const chunks = this.channel.splitMessage(body, footer);
-
-      const firstOk = await this.safeEditFormatted(channelCtx, placeholderRef, chunks[0] ?? '', entry.sessionName);
-
-      if (!firstOk) {
-        console.error(
-          `[relay] First-chunk edit failed — aborting follow-up chunks for thread ${threadId}; updating placeholder`,
-        );
-        try {
-          await this.channel.editMessage(channelCtx, placeholderRef, '_(failed to render reply — see logs)_');
-        } catch {
-          // best-effort: ignore failure to update placeholder
-        }
-        return;
-      }
-
-      const totalChunks = chunks.length;
-      let failedChunks = 0;
-      for (let i = 1; i < chunks.length; i++) {
-        await new Promise<void>((resolve) => setTimeout(resolve, CHUNK_SEND_DELAY_MS));
-        const ok = await this.safeSendFormatted(channelCtx, chunks[i] ?? '', entry.sessionName, i + 1, totalChunks);
-        if (!ok) failedChunks++;
-      }
-      if (failedChunks > 0) {
-        console.warn(`[relay] ${failedChunks} of ${totalChunks} chunks failed — response may be truncated for thread ${threadId}`);
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[relay] Stream error on thread ${threadId}:`, err);
-
-      const isTimeout = err instanceof StreamTimeoutError;
-      if (!isTimeout && this.factory.resetForRestart) {
-        this.idleMonitor.cancelAll();
-        for (const { session: s } of this.activeSessions.values()) s.dispose?.();
-        this.activeSessions.clear();
-        this.factory.resetForRestart();
-        console.log(`[relay] SDK error detected — factory marked for restart; cleared cached sessions`);
-      } else {
-        const evicted = this.activeSessions.get(threadId);
-        evicted?.session.dispose?.();
-        this.activeSessions.delete(threadId);
-      }
+      let accumulated = '';
+      let lastEditAt = 0;
 
       try {
-        await this.channel.editMessage(channelCtx, placeholderRef, `❌ Error: ${msg}`);
-      } catch {
-        // best-effort: ignore failure to update placeholder with error
+        for await (const chunk of session.send(userText)) {
+          accumulated += chunk;
+          if (accumulated.length > MAX_ACCUMULATED_BYTES) {
+            accumulated = accumulated.slice(0, MAX_ACCUMULATED_BYTES) + '\n\n_(response truncated at 100KB)_';
+            break;
+          }
+          const now = Date.now();
+          if (now - lastEditAt >= STREAM_EDIT_THROTTLE_MS) {
+            try {
+              await this.channel.editMessage(channelCtx, placeholderRef, accumulated);
+            } catch {
+              // best-effort throttle edit — ignore failures during streaming
+            }
+            lastEditAt = now;
+          }
+        }
+
+        // Final edit: full response with Markdown and optional extra chunks
+        const modelStr = String(entry.model ?? this.globalModel);
+        const footer = `📎 ${entry.sessionName} · ${modelStr}`;
+        const body = accumulated || '_(empty response)_';
+        const chunks = this.channel.splitMessage(body, footer);
+
+        const firstOk = await this.safeEditFormatted(channelCtx, placeholderRef, chunks[0] ?? '', entry.sessionName);
+
+        if (!firstOk) {
+          console.error(
+            `[relay] First-chunk edit failed — aborting follow-up chunks for thread ${threadId}; updating placeholder`,
+          );
+          try {
+            await this.channel.editMessage(channelCtx, placeholderRef, '_(failed to render reply — see logs)_');
+          } catch {
+            // best-effort: ignore failure to update placeholder
+          }
+          return;
+        }
+
+        const totalChunks = chunks.length;
+        let failedChunks = 0;
+        for (let i = 1; i < chunks.length; i++) {
+          await new Promise<void>((resolve) => setTimeout(resolve, CHUNK_SEND_DELAY_MS));
+          const ok = await this.safeSendFormatted(channelCtx, chunks[i] ?? '', entry.sessionName, i + 1, totalChunks);
+          if (!ok) failedChunks++;
+        }
+        if (failedChunks > 0) {
+          console.warn(`[relay] ${failedChunks} of ${totalChunks} chunks failed — response may be truncated for thread ${threadId}`);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[relay] Stream error on thread ${threadId}:`, err);
+
+        const isTimeout = err instanceof StreamTimeoutError;
+        if (!isTimeout && this.factory.resetForRestart) {
+          this.idleMonitor.cancelAll();
+          for (const { session: s } of this.activeSessions.values()) s.dispose?.();
+          this.activeSessions.clear();
+          this.factory.resetForRestart();
+          console.log(`[relay] SDK error detected — factory marked for restart; cleared cached sessions`);
+        } else {
+          const evicted = this.activeSessions.get(threadId);
+          evicted?.session.dispose?.();
+          this.activeSessions.delete(threadId);
+        }
+
+        try {
+          await this.channel.editMessage(channelCtx, placeholderRef, `❌ Error: ${msg}`);
+        } catch {
+          // best-effort: ignore failure to update placeholder with error
+        }
+      }
+    } else if (!supportsMessageEdit) {
+      // ── Case B: no edit support — accumulate silently, send one final message ─
+      // supportsMessageEdit=false: core MUST NOT call editMessage(). No placeholder.
+      // Stream is consumed; one sendMessage with the complete response when done.
+      let accumulated = '';
+
+      try {
+        for await (const chunk of session.send(userText)) {
+          accumulated += chunk;
+          if (accumulated.length > MAX_ACCUMULATED_BYTES) {
+            accumulated = accumulated.slice(0, MAX_ACCUMULATED_BYTES) + '\n\n_(response truncated at 100KB)_';
+            break;
+          }
+        }
+
+        const modelStr = String(entry.model ?? this.globalModel);
+        const footer = `📎 ${entry.sessionName} · ${modelStr}`;
+        const body = accumulated || '_(empty response)_';
+        const chunks = this.channel.splitMessage(body, footer);
+
+        const firstOk = await this.safeSendFormatted(channelCtx, chunks[0] ?? '', entry.sessionName);
+        if (!firstOk) {
+          console.error(`[relay] First-chunk send failed — aborting follow-up chunks for thread ${threadId}`);
+          return;
+        }
+
+        const totalChunks = chunks.length;
+        let failedChunks = 0;
+        for (let i = 1; i < chunks.length; i++) {
+          await new Promise<void>((resolve) => setTimeout(resolve, CHUNK_SEND_DELAY_MS));
+          const ok = await this.safeSendFormatted(channelCtx, chunks[i] ?? '', entry.sessionName, i + 1, totalChunks);
+          if (!ok) failedChunks++;
+        }
+        if (failedChunks > 0) {
+          console.warn(`[relay] ${failedChunks} of ${totalChunks} chunks failed — response may be truncated for thread ${threadId}`);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[relay] Stream error on thread ${threadId}:`, err);
+
+        const isTimeout = err instanceof StreamTimeoutError;
+        if (!isTimeout && this.factory.resetForRestart) {
+          this.idleMonitor.cancelAll();
+          for (const { session: s } of this.activeSessions.values()) s.dispose?.();
+          this.activeSessions.clear();
+          this.factory.resetForRestart();
+          console.log(`[relay] SDK error detected — factory marked for restart; cleared cached sessions`);
+        } else {
+          const evicted = this.activeSessions.get(threadId);
+          evicted?.session.dispose?.();
+          this.activeSessions.delete(threadId);
+        }
+
+        try {
+          // No placeholder to edit — send error as a new message
+          await this.channel.sendMessage(channelCtx, `❌ Error: ${msg}`);
+        } catch {
+          // best-effort: ignore failure to send error message
+        }
+      }
+    } else {
+      // ── Case C: supportsStreaming=false, supportsMessageEdit=true ──────────────
+      // Send "thinking…" placeholder, consume the full stream without intermediate
+      // edits, then replace the placeholder with the complete response in one edit.
+      const placeholderRef = await this.channel.sendMessage(channelCtx, 'thinking…');
+
+      let accumulated = '';
+
+      try {
+        for await (const chunk of session.send(userText)) {
+          accumulated += chunk;
+          if (accumulated.length > MAX_ACCUMULATED_BYTES) {
+            accumulated = accumulated.slice(0, MAX_ACCUMULATED_BYTES) + '\n\n_(response truncated at 100KB)_';
+            break;
+          }
+          // No intermediate stream edits — supportsStreaming is false
+        }
+
+        const modelStr = String(entry.model ?? this.globalModel);
+        const footer = `📎 ${entry.sessionName} · ${modelStr}`;
+        const body = accumulated || '_(empty response)_';
+        const chunks = this.channel.splitMessage(body, footer);
+
+        const firstOk = await this.safeEditFormatted(channelCtx, placeholderRef, chunks[0] ?? '', entry.sessionName);
+        if (!firstOk) {
+          console.error(
+            `[relay] First-chunk edit failed — aborting follow-up chunks for thread ${threadId}; updating placeholder`,
+          );
+          try {
+            await this.channel.editMessage(channelCtx, placeholderRef, '_(failed to render reply — see logs)_');
+          } catch {
+            // best-effort: ignore failure to update placeholder
+          }
+          return;
+        }
+
+        const totalChunks = chunks.length;
+        let failedChunks = 0;
+        for (let i = 1; i < chunks.length; i++) {
+          await new Promise<void>((resolve) => setTimeout(resolve, CHUNK_SEND_DELAY_MS));
+          const ok = await this.safeSendFormatted(channelCtx, chunks[i] ?? '', entry.sessionName, i + 1, totalChunks);
+          if (!ok) failedChunks++;
+        }
+        if (failedChunks > 0) {
+          console.warn(`[relay] ${failedChunks} of ${totalChunks} chunks failed — response may be truncated for thread ${threadId}`);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[relay] Stream error on thread ${threadId}:`, err);
+
+        const isTimeout = err instanceof StreamTimeoutError;
+        if (!isTimeout && this.factory.resetForRestart) {
+          this.idleMonitor.cancelAll();
+          for (const { session: s } of this.activeSessions.values()) s.dispose?.();
+          this.activeSessions.clear();
+          this.factory.resetForRestart();
+          console.log(`[relay] SDK error detected — factory marked for restart; cleared cached sessions`);
+        } else {
+          const evicted = this.activeSessions.get(threadId);
+          evicted?.session.dispose?.();
+          this.activeSessions.delete(threadId);
+        }
+
+        try {
+          await this.channel.editMessage(channelCtx, placeholderRef, `❌ Error: ${msg}`);
+        } catch {
+          // best-effort: ignore failure to update placeholder with error
+        }
       }
     }
   }

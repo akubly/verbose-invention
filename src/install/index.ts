@@ -99,6 +99,34 @@ async function promptLine(message: string): Promise<string> {
   });
 }
 
+/**
+ * Prompts for a secret value with terminal echo suppressed (blank masking — no asterisks).
+ * Follows the same _writeToOutput pattern as promptPassword() in src/service/install.ts.
+ * The wizard already gates on process.stdin.isTTY before calling this, so non-TTY
+ * paths never reach here.
+ */
+async function promptSecret(message: string): Promise<string> {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    // Suppress echoing: write the prompt text through on the first _writeToOutput call,
+    // then swallow all subsequent calls (the echoed keystrokes).
+    let promptWritten = false;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (rl as any)._writeToOutput = (str: string) => {
+      if (!promptWritten) {
+        process.stdout.write(str);
+        promptWritten = true;
+      }
+      // Swallow subsequent writes (echoed keystrokes) — blank masking.
+    };
+    rl.question(message, (answer) => {
+      rl.close();
+      process.stdout.write('\n');
+      resolve(answer.trim());
+    });
+  });
+}
+
 async function promptConfirm(message: string): Promise<boolean> {
   const answer = await promptLine(message);
   return answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes';
@@ -143,7 +171,7 @@ async function runConfigWizard(envPath: string): Promise<void> {
   // TELEGRAM_BOT_TOKEN — required, prompt if missing
   if (!botToken) {
     console.log('[reach] TELEGRAM_BOT_TOKEN is required to start the daemon.');
-    const token = await promptLine('[reach] Bot token: ');
+    const token = await promptSecret('[reach] Bot token: ');
     if (!token) {
       console.error('[reach] ERROR: Bot token cannot be empty.');
       process.exit(1);

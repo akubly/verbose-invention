@@ -33,9 +33,10 @@ vi.mock('dotenv/config', () => ({}));
 // vi.mock factories are hoisted before variable declarations, so shared state
 // must be established with vi.hoisted() first.
 
-const { rlAnswerQueue, mockCreateInterface } = vi.hoisted(() => ({
+const { rlAnswerQueue, mockCreateInterface, capturedWriteFns } = vi.hoisted(() => ({
   rlAnswerQueue:        [] as string[],
   mockCreateInterface:  vi.fn(),
+  capturedWriteFns:     [] as Array<((s: string) => void) | undefined>,
 }));
 
 // ─── Mock readline ────────────────────────────────────────────────────────────
@@ -43,12 +44,20 @@ const { rlAnswerQueue, mockCreateInterface } = vi.hoisted(() => ({
 vi.mock('readline', () => ({
   createInterface: (...args: unknown[]) => {
     mockCreateInterface(...args);
-    return {
+    const rl: {
+      question: ReturnType<typeof vi.fn>;
+      close:    ReturnType<typeof vi.fn>;
+      _writeToOutput?: (s: string) => void;
+    } = {
       question: vi.fn((_prompt: string, cb: (answer: string) => void) => {
+        // Capture the _writeToOutput state at question-call time so tests can
+        // verify whether echo was suppressed for this particular prompt.
+        capturedWriteFns.push(rl._writeToOutput);
         cb(rlAnswerQueue.shift() ?? '');
       }),
       close: vi.fn(),
     };
+    return rl;
   },
 }));
 
@@ -146,8 +155,9 @@ describe('runInit() — orchestrator + config wizard', () => {
     mockReadFileSync.mockReturnValue('');
     mockWriteFileSync.mockImplementation(() => undefined);
 
-    // Reset readline queue.
+    // Reset readline queue and captured write-fn tracking.
     rlAnswerQueue.length = 0;
+    capturedWriteFns.length = 0;
     mockCreateInterface.mockClear();
   });
 
@@ -404,5 +414,53 @@ describe('runInit() — orchestrator + config wizard', () => {
     expect(writtenContent).not.toContain('TELEGRAM_ALLOWED_USER_IDS');
     expect(mockConsoleError).toHaveBeenCalledWith(expect.stringContaining("''"));
     expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  // ── IX18: Masked token captured correctly ─────────────────────────────────
+
+  it('IX18 secret prompt: bot token capture unaffected by echo suppression', async () => {
+    delete process.env['TELEGRAM_BOT_TOKEN'];
+    rlAnswerQueue.push('masked-capture-token');
+
+    await runInit();
+
+    // Token was correctly captured and written despite masking.
+    const writtenContent = mockWriteFileSync.mock.calls
+      .map(([, content]) => String(content)).join('');
+    expect(writtenContent).toContain('TELEGRAM_BOT_TOKEN=masked-capture-token');
+    expect(mockExit).not.toHaveBeenCalled();
+
+    // _writeToOutput was overridden (suppressed) during the token prompt.
+    // capturedWriteFns[0] is the value of rl._writeToOutput at question()-call time.
+    expect(typeof capturedWriteFns[0]).toBe('function');
+  });
+
+  // ── IX19: Echo restored for subsequent non-secret prompt ──────────────────
+
+  it('IX19 echo restored: non-secret prompt after token uses normal echo (no _writeToOutput override)', async () => {
+    // Both secret (bot token) and non-secret (allowed IDs) prompts active.
+    delete process.env['TELEGRAM_BOT_TOKEN'];
+    delete process.env['TELEGRAM_ALLOWED_USER_IDS'];
+    rlAnswerQueue.push('secret-bot-token');  // promptSecret — echo suppressed
+    rlAnswerQueue.push('111222');            // promptLine   — normal echo
+
+    await runInit();
+
+    // Both values captured correctly.
+    const writtenContent = mockWriteFileSync.mock.calls
+      .map(([, content]) => String(content)).join('');
+    expect(writtenContent).toContain('TELEGRAM_BOT_TOKEN=secret-bot-token');
+    expect(writtenContent).toContain('TELEGRAM_ALLOWED_USER_IDS=111222');
+    expect(mockExit).not.toHaveBeenCalled();
+
+    // First prompt (bot token via promptSecret): _writeToOutput was a suppressor.
+    expect(typeof capturedWriteFns[0]).toBe('function');
+    // Subsequent prompt (allowed IDs via promptLine): _writeToOutput was NOT overridden.
+    // Each promptLine/promptSecret creates its own rl instance, so there is no
+    // leakage — the second rl never had _writeToOutput set.
+    // NOTE: output-stream content cannot be asserted in this mock harness because
+    // the mock rl has no real TTY output stream; the _writeToOutput override only
+    // affects the real readline echo path, not the mock's question() callback.
+    expect(capturedWriteFns[1]).toBeUndefined();
   });
 });

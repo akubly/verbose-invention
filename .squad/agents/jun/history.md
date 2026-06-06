@@ -6,6 +6,42 @@
 
 ---
 
+## Phase 1-7 + 1-8 (2026-06-06) — ChannelPort Behavioral Conformance Kit + Regression
+
+### What shipped
+
+**4 new files, 88 new tests, 937 total (up from 849):**
+
+- `tests/channel/conformance/FakeChannel.ts` — Configurable in-memory ChannelPort with all capability flags independently toggleable. Supports injectInboundText/injectCommand for inbound simulation. Text-prompt fallback path wired to AbortSignal.
+- `tests/channel/conformance/runner.ts` — `runChannelPortConformance(makePort, opts)` parameterized suite + `runCapabilityFallbackMatrix()` standalone matrix. Any future adapter plugs in via `makePort`.
+- `tests/channel/conformance/fakeChannel.conformance.test.ts` — Conformance kit self-validation (FakeChannel as the DUT) + full fallback matrix: 44 tests.
+- `tests/channel/conformance/telegram.conformance.test.ts` — Generic kit run against TelegramChannel with mocked grammY (no network) + anti-lie capability assertions + Kat's 3 gotchas pinned: 44 tests.
+
+### Capability-fallback matrix — all PASSED (no findings)
+
+| Capability | OFF behavior asserted | ON behavior asserted |
+|---|---|---|
+| supportsMessageEdit | editMessage returns false, no record | editMessage returns true, edit recorded |
+| supportsStreaming | single placeholder→final edit, no intermediates | (covered by relay.test.ts) |
+| supportsInteractivePrompts | text-fallback waits for inbound / resolves '' on abort | immediate resolution with option value |
+| supportsThreadCreation | createThread throws (contract enforced) | returns ChannelContext with new threadId |
+
+### Kat's gotchas pinned
+
+1. **Empty threadId ⇒ omit message_thread_id** — asserted via `sendMessageMock.mock.calls[0][2]?.message_thread_id === undefined` for `threadId=''`.
+2. **isBotCommand filter lives in onMessage handler** — asserted that TelegramChannel itself passes /list through to the registered handler; the filter is a caller responsibility.
+3. **Synthetic ctx for /status and /cwd** — asserted that `ctx.reply()` on a synthetic ctx routes to `channel.sendMessage(channelCtx, text)`; General Topic produces `message=undefined`.
+
+### Learnings
+
+1. **Conformance kits should be parameterized, not duplicated** — `runChannelPortConformance` takes a `makePort` factory; all adapter-specific behavior lives in a separate `describe` block. This is the correct pattern for N-transport coverage.
+2. **FakeChannel is the primary capability-matrix driver** — real adapters are tested for declared-matches-actual; the combinatorial matrix (each flag ON/OFF) belongs to FakeChannel. Avoids needing N real transports to prove fallback behavior.
+3. **skipLifecycle flag needed for real adapters** — TelegramChannel.start() calls bot.start() (long-running poll); lifecycle semantics are tested in a separate dedicated block, not via the generic kit.
+4. **Kat's synthetic ctx pattern is sound** — `makeSyntheticCtx` in handlers.ts correctly produces a grammY Context-like object whose `reply()` delegates to `channel.sendMessage`. The conformance test pins this at the behavior level.
+5. **No contract violations found** — TelegramChannel's declared capabilities all match actual behavior. The abstraction is honest.
+
+---
+
 ## Identity & Role
 
 - **Agent:** Jun (Test Engineer, Sonnet 4.6)

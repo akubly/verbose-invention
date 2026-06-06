@@ -61,7 +61,7 @@ function removeExtension(): StepResult {
 function wipeLocalData(): StepResult {
   const reachDir = getReachDataDir();
   if (fs.existsSync(reachDir)) {
-    const markerFiles = ['config.json', 'bridge-auth.json'];
+    const markerFiles = ['config.json', 'bridge-auth.json', 'registry.json'];
     try {
       const entries = new Set(fs.readdirSync(reachDir));
       const hasMarker = markerFiles.some((marker) => entries.has(marker));

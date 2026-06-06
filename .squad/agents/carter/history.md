@@ -9,6 +9,8 @@
 
 ## Current Status
 
+**PR #10 Cycle 12 shipped (2026-06-05):** T1 — added `registry.json` to `wipeLocalData()` marker list in `src/install/uninstall.ts`; full audit of `<dataDir>/` state files confirmed it was the only missing marker. UN14+UN15 tests added (registry-only dir allows wipe; unrelated-file dir refuses). T2 — replaced `sessionParts.length > 1` with unified `/\s/.test(sessionName)` in `parseNewFlags()`; quoted names like `"my session"` now reject with same error as unquoted multi-word. 5 new tests added. Tests: 838→843 (+5). tsc clean, lint zero warnings. Decision rationale in `.squad/decisions/inbox/carter-pr10-cycle12.md`.
+
 **PR #10 Cycle 11 shipped (2026-06-05):** T1 — guarded `relativeTime()` in `src/bot/cwdCommand.ts` against NaN (invalid ISO string → `'unknown'`) and future timestamps (clock skew → clamp diffMs to 0 → `'just now'`). Added 4 tests: invalid timestamp, future timestamp, exactly-now boundary, 2d-ago regression. Tests: 834→838 (+4). tsc clean, lint zero warnings. Decision rationale in `.squad/decisions/inbox/carter-pr10-cycle11.md`.
 
 **PR #10 Cycle 10 shipped (2026-06-05):** T1 — replaced argv[1]-only save/restore in `isDirectRun.test.ts` with full-array `slice()` snapshot + reference restore. IDR5 uses `splice(1)` which mutates array length; the cycle-6 pattern didn't undo that. Full-array restore is strictly correct and no more complex.

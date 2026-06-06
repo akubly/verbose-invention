@@ -271,6 +271,35 @@ describe('runUninstall()', () => {
     expect(mockExit).toHaveBeenCalledWith(1);
   });
 
+  // ── UN14: registry.json-only dir → wipe ALLOWED ──────────────────────────
+
+  it('UN14 marker: data dir containing only registry.json passes Reach-state check', async () => {
+    mockReaddirSync.mockReturnValue(['registry.json']);
+
+    await runUninstall({ wipe: true });
+
+    expect(mockRmSync).toHaveBeenCalledWith(
+      REACH_STATE_DIR,
+      expect.objectContaining({ recursive: true }),
+    );
+    expect(mockExit).not.toHaveBeenCalled();
+  });
+
+  // ── UN15: no markers → wipe REFUSED (safety preserved) ───────────────────
+
+  it('UN15 marker: data dir with no Reach markers refuses wipe', async () => {
+    mockReaddirSync.mockReturnValue(['unrelated.txt']);
+
+    await expect(runUninstall({ wipe: true })).rejects.toThrow('process.exit(1)');
+
+    expect(mockConsoleError).toHaveBeenCalledWith(
+      expect.stringContaining("doesn't look like a Reach state directory"),
+    );
+    const rmTargets = mockRmSync.mock.calls.map(([p]) => String(p));
+    expect(rmTargets).not.toContain(REACH_STATE_DIR);
+    expect(mockExit).toHaveBeenCalledWith(1);
+  });
+
   // ── UN13: dotenv/config integration note ─────────────────────────────────
   //
   // INTEGRATION NOTE (not a unit test): uninstall.ts now has

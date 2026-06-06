@@ -174,6 +174,49 @@ describe('parseNewFlags — backslash is literal in double-quoted values (C2 reg
   });
 });
 
+// ─── Cycle 12: quoted multi-word session name rejected ────────────────────────
+
+describe('parseNewFlags — quoted multi-word session name rejected (cycle 12)', () => {
+  it('quoted session name with internal space → ok: false with spaces error', () => {
+    const result = parseNewFlags('"my session"');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/spaces/i);
+  });
+
+  it('quoted multi-word error message matches unquoted multi-word error', () => {
+    const quoted = parseNewFlags('"my session"');
+    const unquoted = parseNewFlags('my session');
+    expect(quoted.ok).toBe(false);
+    expect(unquoted.ok).toBe(false);
+    if (quoted.ok || unquoted.ok) return;
+    expect(quoted.error).toBe(unquoted.error);
+  });
+
+  it('single-word session name → ok: true (regression guard)', () => {
+    const result = parseNewFlags('mysession');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.sessionName).toBe('mysession');
+  });
+
+  it('unquoted multi-word → ok: false (existing behavior preserved)', () => {
+    const result = parseNewFlags('my session');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/spaces/i);
+  });
+
+  it('quoted name with leading/trailing whitespace → trimmed to valid name', () => {
+    // sessionName = sessionParts.join(' ').trim() strips outer whitespace from
+    // a quoted token like " mysession" → 'mysession' → ok: true.
+    const result = parseNewFlags('" mysession"');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.sessionName).toBe('mysession');
+  });
+});
+
 // ─── C2 regression: multi-word session name returns error, not silent join ────
 
 describe('parseNewFlags — multi-word session name returns error (C2 regression)', () => {

@@ -153,7 +153,7 @@ export function parseNewFlags(match: string): ParseResult<ParsedNewFlagsValue> {
       throw new Error('Missing session name');
     }
 
-    if (sessionParts.length > 1) {
+    if (/\s/.test(sessionName)) {
       return {
         ok: false,
         error: 'Session name cannot contain spaces. Did you forget to quote a flag value?',

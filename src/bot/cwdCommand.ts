@@ -38,9 +38,13 @@ export interface CwdCommandOptions {
   };
 }
 
-// Human-readable age: 'just now' | 'Xm ago' | 'Xh ago' | 'Xd ago'
+// Human-readable age: 'just now' | 'Xm ago' | 'Xh ago' | 'Xd ago' | 'unknown'
 function relativeTime(iso: string): string {
-  const diffMs = Date.now() - new Date(iso).getTime();
+  const parsed = new Date(iso).getTime();
+  // Guard: unparseable / corrupted timestamp — return 'unknown' rather than 'NaNd ago'
+  if (Number.isNaN(parsed)) return 'unknown';
+  // Guard: future timestamp (clock skew) — clamp to 0 so it reads as 'just now'
+  const diffMs = Math.max(0, Date.now() - parsed);
   const mins = Math.floor(diffMs / 60_000);
   if (mins < 1) return 'just now';
   if (mins < 60) return `${mins}m ago`;

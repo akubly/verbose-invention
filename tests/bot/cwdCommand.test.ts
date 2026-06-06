@@ -388,6 +388,96 @@ describe('/cwd command group (T6 — awaiting Carter)', () => {
     expect(replyText).toMatch(/general|topic|❌/i);
   });
 
+  // ── relativeTime guards (PR #10 cycle 11) ────────────────────────────────────
+
+  it('relativeTime: invalid timestamp string → reply contains "unknown", never "NaN"', async () => {
+    const entries = [{ alias: 'bad', path: CWD_PATH, addedAt: NOW, lastUsedAt: 'not-a-date' }];
+    mockListKnownCwds.mockReturnValue(entries);
+    mockLoadConfig.mockResolvedValue({ knownCwds: entries });
+
+    const { bot, commandHandlers } = makeMockBot();
+    registerHandlers({
+      bot: bot as any,
+      registry: makeStubRegistry(),
+      factory: makeMockFactory(),
+      globalModel: 'test-model',
+      configPath: TEST_CONFIG_PATH,
+    } as any);
+
+    const ctx = makeCwdCtx('list');
+    await commandHandlers.get('cwd')!(ctx);
+
+    const replyText: string = ctx.reply.mock.calls[0][0];
+    expect(replyText).not.toMatch(/NaN/);
+    expect(replyText).toContain('unknown');
+  });
+
+  it('relativeTime: future timestamp (clock skew +60s) → reply contains "just now", not negative', async () => {
+    const futureIso = new Date(new Date(NOW).getTime() + 60_000).toISOString();
+    const entries = [{ alias: 'future', path: CWD_PATH, addedAt: NOW, lastUsedAt: futureIso }];
+    mockListKnownCwds.mockReturnValue(entries);
+    mockLoadConfig.mockResolvedValue({ knownCwds: entries });
+
+    const { bot, commandHandlers } = makeMockBot();
+    registerHandlers({
+      bot: bot as any,
+      registry: makeStubRegistry(),
+      factory: makeMockFactory(),
+      globalModel: 'test-model',
+      configPath: TEST_CONFIG_PATH,
+    } as any);
+
+    const ctx = makeCwdCtx('list');
+    await commandHandlers.get('cwd')!(ctx);
+
+    const replyText: string = ctx.reply.mock.calls[0][0];
+    expect(replyText).not.toMatch(/-\d/);
+    expect(replyText).toContain('just now');
+  });
+
+  it('relativeTime: exactly now → "just now"', async () => {
+    const entries = [{ alias: 'fresh', path: CWD_PATH, addedAt: NOW, lastUsedAt: NOW }];
+    mockListKnownCwds.mockReturnValue(entries);
+    mockLoadConfig.mockResolvedValue({ knownCwds: entries });
+
+    const { bot, commandHandlers } = makeMockBot();
+    registerHandlers({
+      bot: bot as any,
+      registry: makeStubRegistry(),
+      factory: makeMockFactory(),
+      globalModel: 'test-model',
+      configPath: TEST_CONFIG_PATH,
+    } as any);
+
+    const ctx = makeCwdCtx('list');
+    await commandHandlers.get('cwd')!(ctx);
+
+    const replyText: string = ctx.reply.mock.calls[0][0];
+    expect(replyText).toContain('just now');
+  });
+
+  it('relativeTime: 2 days ago → "2d ago" (regression guard)', async () => {
+    const twoDaysAgo = new Date(new Date(NOW).getTime() - 2 * 24 * 60 * 60_000).toISOString();
+    const entries = [{ alias: 'old', path: CWD_PATH, addedAt: twoDaysAgo, lastUsedAt: twoDaysAgo }];
+    mockListKnownCwds.mockReturnValue(entries);
+    mockLoadConfig.mockResolvedValue({ knownCwds: entries });
+
+    const { bot, commandHandlers } = makeMockBot();
+    registerHandlers({
+      bot: bot as any,
+      registry: makeStubRegistry(),
+      factory: makeMockFactory(),
+      globalModel: 'test-model',
+      configPath: TEST_CONFIG_PATH,
+    } as any);
+
+    const ctx = makeCwdCtx('list');
+    await commandHandlers.get('cwd')!(ctx);
+
+    const replyText: string = ctx.reply.mock.calls[0][0];
+    expect(replyText).toContain('2d ago');
+  });
+
   // ── removing alias for an active session's cwd ───────────────────────────────
 
   it('removing alias for an active session cwd — succeeds; session itself is unaffected', async () => {

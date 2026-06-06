@@ -24,6 +24,9 @@ const REDACT_MARKER = '[REDACTED]';
 const HIGH_ENTROPY = 'k9Xm2pQr7vNsLwDhYcE4aOjZtFu1Ii8bGnA5MoV';
 // The same length but short — must NOT be redacted.
 const SHORT_TOKEN  = 'shorttoken123';
+// Fake GitHub token — obviously not a real PAT (contains '-'), won't trip secret scanning.
+// Reused in T1 and T2 so a single value covers both the unquoted and quoted ENV-pass tests.
+const FAKE_GH_TOKEN = 'not-a-real-token-0000';
 
 describe('redactSecrets — keyword-prefixed tokens', () => {
   it('replaces value after "token:" keyword', () => {
@@ -57,9 +60,9 @@ describe('redactSecrets — ENV-style assignments', () => {
   });
 
   it('redacts the value in GITHUB_TOKEN=<value>', () => {
-    const input  = 'GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz12345678';
+    const input  = `GITHUB_TOKEN=${FAKE_GH_TOKEN}`;
     const result = redactSecrets(input);
-    expect(result).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz12345678');
+    expect(result).not.toContain(FAKE_GH_TOKEN);
     expect(result).toContain('GITHUB_TOKEN');
   });
 });
@@ -151,7 +154,7 @@ describe('redactSecrets — quote preservation (C6)', () => {
   });
 
   it('C6-4 double-quoted ENV assignment: closing quote preserved', () => {
-    const input  = 'GITHUB_TOKEN="ghp_abcdefghijklmnopqrstuvwxyz12345678"';
+    const input  = `GITHUB_TOKEN="${FAKE_GH_TOKEN}"`;
     const result = redactSecrets(input);
     expect(result).toBe('GITHUB_TOKEN="[REDACTED]"');
   });
@@ -194,12 +197,18 @@ describe('redactSecrets — AWS key patterns (C2-I1)', () => {
     expect(result).toContain('AWS_ACCESS_KEY_ID');
   });
 
-  it('redacts value in AWS_SECRET_ACCESS_KEY=<value with slashes>', () => {
-    // 40-char value containing forward slashes (base64-style)
-    const input  = 'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
-    const result = redactSecrets(input);
-    expect(result).not.toContain('wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY');
-    expect(result).toContain('AWS_SECRET_ACCESS_KEY');
+  it('redacts bare high-entropy value with / and + (guards C8 charset)', () => {
+    // Bare value — NO KEY= prefix — so only HIGH_ENTROPY_PATTERN can redact it.
+    // Contains / and + (chars added to the charset in cycle-8). If the charset
+    // regressed to exclude those chars, the 42-char value would fragment into short
+    // runs (longest: ~12 chars) and NEITHER assertion below would hold.
+    // Deliberately avoids keyword words (token, key, secret…) to prevent
+    // KEYWORD_PATTERN from firing first and masking the real test target.
+    // The toBe assertion further guards against partial/fragmented redaction.
+    const bare = 'FAKE+Xm3z9pQr/vNsLwD7hYc+E4aOjZtFu1Ii/8bGn';
+    const result = redactSecrets(bare);
+    expect(result).not.toContain(bare);
+    expect(result).toBe('[REDACTED]');
   });
 
   it('plain prose with words "access" or "key" NOT adjacent to assignment → not redacted', () => {

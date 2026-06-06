@@ -1,438 +1,8 @@
+> 📦 Entries from 2026-05-22 through 2026-05-30 archived. This archive process completed 2026-06-06.
+
+---
+
 > 📦 Entries from 2026-05-22 and earlier archived to decisions-archive-2026-05-29.md on 2026-05-29.
-
----
-
-# Phase 8.5 Sprint — Task Completion Decisions
-
-## Carter — Task 1: copyExtension.ts Decision Record
-
-**Date:** 2026-05-29T23:23:02-07:00  
-**Author:** Carter (Bridge Dev)  
-**Task:** Phase 8.5 Task 1 — Extension copy installer
-
-### Decision: Runner pattern for `install:extension`
-
-**Options considered:**
-- `node --import tsx/esm src/install/copyExtension.ts` — runs TS source directly, no build step needed
-- `node dist/install/copyExtension.js` — runs compiled JS, consistent with `service:install`/`service:uninstall`
-
-**Chose:** `node dist/install/copyExtension.js`
-
-**Reasoning:** Matches the established pattern in all other runtime scripts (`service:install`, `service:uninstall`). The handoff doc explicitly lists this form. Aaron already runs `npm run build` before install — the pre-build requirement is a documented step. Keeping the pattern consistent avoids a split where some install scripts use tsx and others don't.
-
-**Implication:** `npm run install:extension` requires `npm run build` first. This is expected and matches the acceptance criteria in the handoff (`npm run build && npm run install:extension`).
-
-### Decision: Project root detection
-
-Used `path.resolve(__dirname, '..', '..')` from `dist/install/copyExtension.js` to walk up to the project root and find `extension.mjs`. This is analogous to the `getProjectRoot()` walk in `src/service/install.ts` but simpler — the compiled path depth is fixed (`dist/install/`), so two `..` steps are reliable without the filesystem walk.
-
-### Deferred
-
-Dev-symlink/junction logic (`NODE_ENV=development`) deferred per task spec. Left as a TODO comment referencing handoff Q3 (`.copilot/reach-install-handoff.md §"Dev Shortcut (Dogfooding)"`).
-
----
-
-## Carter — Task 2: Full Orchestrator Decision Record
-
-**Date:** 2026-05-29T23:36:06-07:00  
-**Author:** Carter (Bridge Dev)  
-**Task:** Phase 8.5 Task 2 — Full install orchestrator, uninstaller, dev junction
-
-### Decision: `existsSync` + `rmSync` over `lstatSync` for removal
-
-**Context:** Initial implementation used `fs.lstatSync` + conditional `unlinkSync`/`rmSync` to safely remove paths that might be junctions vs plain directories.
-
-**Problem:** Jun's tests mock `fs.existsSync` and `fs.rmSync` but not `fs.lstatSync`. Using `lstatSync` on non-existent test paths (which aren't real filesystem paths) caused unexpected `ENOENT` failures.
-
-**Decision:** Use `fs.existsSync` + `fs.rmSync({ recursive: true, force: true })` for all removal. On Windows, `rmSync` with `recursive: true` removes the junction link itself (not the target contents), which is the correct behavior for dev-mode junctions.
-
-**Trade-off accepted:** Slightly less precise — does not distinguish junctions from plain dirs. In practice this is fine because `rmSync` handles both correctly on Windows.
-
-### Decision: Source file check deferred to production branch in copyExtension
-
-**Context:** Dev mode creates a junction pointing `reach/` to the repo root. The extension.mjs is accessible via the junction — no explicit copy needed.
-
-**Decision:** Move the `existsSync(sourcePath)` guard inside the `else` (production) branch. Dev mode skips it.
-
-**Implication for Jun's tests:** TC10–TC13 do not mock SOURCE_PATH. If the check were in the shared preamble, those tests would fail. Moving it inside the production branch makes dev mode tests clean.
-
-### Decision: Orchestrator structure for index.ts
-
-`runInit()` is the exported function signature for Jun's tests and for the eventual Task 2 orchestrator. Flow:
-
-1. Config wizard (TTY-gated; non-TTY + missing vars = exit non-zero with instructions)
-2. `copyExtension()` — sync, exits on error
-3. Print next-step pointers **before** calling `install()` (service install calls `process.exit` internally via node-windows events — code after it never runs)
-4. `install()` from `src/service/install.ts` — handles its own exit
-
-**Implication for Jun:** `install()` is async but resolves before the 'start' event fires (event handler calls process.exit). Tests must mock `install` from `src/service/install.ts`.
-
-### Decision: Uninstaller step ordering
-
-Extension dir and LOCALAPPDATA deletion happen **before** calling `uninstall()` from service/install.ts. This is required because service uninstall is event-driven and calls `process.exit` in its 'uninstall' event handler — any code after calling `uninstall()` is unreachable.
-
-Order: removeExtension() → wipeLocalData() (if --wipe) → uninstall()
-
-### Public function signatures (for Jun)
-
-```typescript
-// copyExtension.ts
-export function copyExtension(): void
-
-// index.ts
-export async function runInit(): Promise<void>
-
-// uninstall.ts
-export interface UninstallOptions { wipe: boolean }
-export function runUninstall(opts: UninstallOptions): void
-```
-
-No changes from what's natural. Jun can import and test all three directly.
-
----
-
-## Issue #8 Fix: mirror.input SDK API Drift
-
-**Date:** 2026-05-29T23:23:03-07:00  
-**Author:** Noble Six (Lead / Architect)  
-**Status:** Implemented  
-**Issue:** #8 — mirror.input broken: SDK 0.2.2 returns Promise<string>, extension expects async iterable
-
-### Root Cause
-
-The extension (`extension.mjs`) held a direct SDK `CopilotSession` reference (from `joinSession()`) and consumed its `send()` method as an async iterable:
-
-```js
-// extension.mjs:374 — BROKEN on SDK v0.2.2
-for await (const chunk of sdkSession.send(text)) { ... }
-```
-
-`@github/copilot-sdk@0.2.2` changed `send()` to return `Promise<string>` (a message ID, not an async iterable). Streaming now flows through event emitters:
-- `session.on('assistant.message_delta', handler)` — per-chunk deltas
-- `session.on('session.idle', handler)` — completion signal
-- `session.on('session.error', handler)` — error signal
-
-The daemon side (`src/copilot/impl.ts` / `CopilotSessionAdapter`) was **already correct** — it had been adapted to v0.2.2's event-emitter model. The extension.mjs was not updated at the same time, creating a split that broke only the direct mirror.input path.
-
-Also: the old code passed a bare string to `send(text)` — the v0.2.2 API requires `MessageOptions` (`send({ prompt: text })`).
-
-### Decision
-
-**Replace the `for await` loop in `streamSdkResponse` with the event-emitter streaming pattern.**
-
-**Options Evaluated:**
-
-| Option | Summary | Decision |
-|--------|---------|----------|
-| A | `await send()` for the full response (batch, no streaming) | ❌ `send()` returns a message ID string, not the reply text |
-| B | Add an adapter wrapper to convert Promise→AsyncIterable | ❌ Unnecessary indirection; the fix is straightforward in-place |
-| C | Use the event-emitter pattern directly in `streamSdkResponse` | ✅ Chosen — mirrors the proven pattern in `impl.ts`; no new abstractions |
-
-**Why Option C:** The daemon side (`CopilotSessionAdapter.bridge()`) already solves this exact problem with the event-emitter pattern. That pattern is stable and tested. Replicating it in `streamSdkResponse` is the lowest-risk fix.
-
-### Implementation
-
-**File changed:** `extension.mjs` — `streamSdkResponse` function replaced.
-
-New pattern:
-1. Register `session.on('assistant.message_delta', ...)` before sending — writes each chunk as a `stream` frame to the pipe
-2. Register `session.on('session.idle', ...)` — resolves the outer Promise
-3. Register `session.on('session.error', ...)` — rejects the outer Promise
-4. Call `sdkSession.send({ prompt: text })` fire-and-forget — errors caught and forwarded to reject
-5. 5-minute timeout guard (matching `impl.ts` `STREAM_TIMEOUT_MS`)
-6. `settled` flag prevents double-resolve/reject if multiple signals fire
-7. All listeners are unsubscribed on completion (via `cleanup()`)
-
-**Backpressure:** The original loop had drain-wait logic. The new version writes without drain-wait. Rationale: the pipe is a local Unix/named pipe; write rate is bounded by SDK event delivery; Node.js buffers internally. Drain handling can be reintroduced if back-pressure issues are observed in production.
-
-### Test Coverage
-
-**File changed:** `tests/bridge/extension-protocol-drift.test.ts` — new `describe` block added.
-
-Four static-analysis assertions on `extension.mjs` source text:
-1. `for await ... of sdkSession.send(` is **absent** (old broken pattern)
-2. `sdkSession.on('assistant.message_delta', ...)` is **present** (event-emitter chunks)
-3. `sdkSession.send({ prompt: ...)` is **present** (correct MessageOptions shape)
-4. `sdkSession.on('session.idle', ...)` is **present** (completion detection)
-
-These tests will fail immediately if the code is regressed to the old pattern, catching API drift before runtime.
-
-### Architectural Notes
-
-**Split Adaptation Problem:** Two places hold SDK sessions in Reach:
-1. **Daemon** (`src/copilot/impl.ts`): `CopilotClientImpl` creates sessions via `CopilotClient.createSession()` / `resumeSession()`, wrapped in `CopilotSessionAdapter`.
-2. **Extension** (`extension.mjs`): `joinSession()` returns a raw SDK `CopilotSession`.
-
-Both must be updated whenever the SDK streaming API changes. The daemon is protected by TypeScript + the `CopilotSession` interface contract. The extension is plain JS — no compile-time safety.
-
-**Recommendation for Phase 9:** Extract a shared `streamingAdapter.mjs` (or include a minimal typed helper) so both paths share one implementation of the event-emitter pattern. This reduces the surface for future drift.
-
-**Issue #9 (Telegram Echo):** The issue body notes that Bug #2 (double echo) "likely resolves with this fix." Assessment: **Probable but not guaranteed.** The echo was occurring because `mirror.input` never reached the model (crashed at the `for await` line), so responses were not being generated and the daemon may have re-sent messages. With the streaming path now functional, the double-echo should stop. Marked for re-verification in dogfood.
-
-### Verification
-
-- `npx tsc --noEmit` — clean (extension.mjs is JS; tsc runs on `src/` only)
-- `npm run lint` — zero warnings
-- `npx vitest run` — all tests pass including the 4 new Issue #8 regression guards
-
----
-
-## Jun Task 3 — copyExtension.ts Test Infrastructure Decisions
-
-**Date:** 2026-05-29T23:27:00-07:00  
-**Author:** Jun (Test Engineer)  
-**Task:** Phase 8.5 Task 3 — Write tests for src/install/copyExtension.ts
-
-### Decision 1: Test File Location
-
-**Choice:** `tests/install/copyExtension.test.ts`
-
-**Alternatives considered:**
-- `tests/unit/install/copyExtension.test.ts` — spec document suggested this path, but the `tests/unit/` directory does not exist anywhere in the repo. All existing tests live at `tests/<feature>/` (e.g., `tests/service/`, `tests/config/`, `tests/bridge/`).
-
-**Rationale:** Mirror the established repo convention. Creating a `tests/unit/` subtree would be a convention-breaking exception with no existing precedent.
-
-### Decision 2: FS Mocking Strategy — vi.mock('fs') with spread actual
-
-**Choice:** `vi.mock('fs', async (importOriginal) => { const actual = ...; return { ...actual, existsSync, mkdirSync, copyFileSync } })`
-
-**Alternatives considered:**
-- `memfs` / in-memory filesystem — would require installing a new devDependency and registering a custom resolver. No existing test in the suite uses memfs. Overkill for a function that calls 3 fs methods (existsSync, mkdirSync, copyFileSync).
-- `vi.mock('node:fs')` — would work but the source module uses `import * as fs from 'fs'` (bare specifier), so the mock specifier must match.
-- tmpdir + real fs — inappropriate: tests would touch the real APPDATA if env is not completely overridden; platform-sensitive; slower.
-
-**Rationale:** Exact same pattern as `tests/service/install.test.ts`. Spreads actual so non-overridden exports (constants, `Stats`, etc.) remain available to any transitive import.
-
-### Decision 3: process.exit spy — throw instead of swallow
-
-**Choice:** `vi.spyOn(process, 'exit').mockImplementation(code => { throw new Error(\`process.exit(\${code})\`); })`
-
-**Rationale:** Same pattern used throughout the test suite. Throwing lets `expect(() => fn()).toThrow('process.exit(1)')` work cleanly. Swallowing would let subsequent lines in the production function run after the mock exit, producing false positives.
-
-**Caveat:** `vi.clearAllMocks()` in `beforeEach` resets mock implementations (sets them to `undefined`). The implementation must be re-established in `beforeEach` after the `clearAllMocks` call. This is the same pattern documented in Jun's Phase 8 P1 sprint learning (history.md).
-
-### Decision 4: Source path determination in tests
-
-**Challenge:** `copyExtension.ts` resolves the project root via `path.resolve(__dirname, '..', '..')`. Under vitest + ESM, `__dirname` is the actual source directory (`src/install/`), so `getProjectRoot()` resolves to `process.cwd()` (the project root) at test time.
-
-**Choice:** Use `path.join(process.cwd(), 'extension.mjs')` as the expected `SOURCE_PATH` constant in tests.
-
-**Rationale:** `process.cwd()` in vitest is the project root (where `vitest.config.ts` lives). This matches what the production code resolves. If Carter's `getProjectRoot()` changes to a walk-up approach (as in `service/install.ts`), `process.cwd()` would still match because the project root `package.json` is at `process.cwd()`.
-
-### Decision 5: MOCK_APPDATA includes a space in the username
-
-**Choice:** `'C:\\Users\\Aaron Smith\\AppData\\Roaming'`
-
-**Rationale:** TC7 specifically exercises APPDATA paths with spaces and unicode. Rather than a clean ASCII path for the default mock and a separate constant for TC7, using the spaced path as the default constant means TC1–TC6 are also exercised with a realistic path. The unicode variant (Aaröñ Śmíth) is kept exclusive to TC7 to avoid obscuring other assertions.
-
-### What Carter's Implementation Needs for Tests to Pass
-
-At the time of writing, `src/install/copyExtension.ts` was already implemented by Carter. Tests pass GREEN against that implementation. If Carter changes the file, the following contracts must hold:
-
-1. **Export:** `export function copyExtension(): void` (sync, not async)
-2. **APPDATA check:** reads `process.env['APPDATA']`; exits 1 if falsy; error message contains "APPDATA"
-3. **Copilot CLI check:** calls `fs.existsSync` on a path containing `GitHub Copilot` + `extensions`; exits 1 if false; error message contains "GitHub Copilot CLI not detected"
-4. **mkdir:** calls `fs.mkdirSync(reachDir, { recursive: true })` when reach/ doesn't exist; catches and exits 1 on throw with the error message in the console.error output
-5. **Source check:** calls `fs.existsSync` on a path ending with `extension.mjs` that does NOT contain the APPDATA path; exits 1 if false; error message contains "Source file not found"
-6. **Copy:** calls `fs.copyFileSync(sourcePath, targetPath)`; catches and exits 1 on throw with the error message in the console.error output
-7. **Log:** calls `console.log` with a string containing the full target path
-
-### Test Count Summary
-
-| ID  | Name                                               | Status |
-|-----|----------------------------------------------------|--------|
-| TC1 | Happy path: copies and logs                        | ✅ full |
-| TC2 | First install: creates reach/ subdir               | ✅ full |
-| TC3 | Upgrade: idempotent overwrite                      | ✅ full |
-| TC4 | No Copilot CLI: exits 1 with detected message      | ✅ full |
-| TC5 | APPDATA unset: exits 1 with clear APPDATA message  | ✅ full |
-| TC6 | Source file missing: exits 1 with source message   | ✅ full |
-| TC7 | Spaces + unicode in APPDATA path                   | ✅ full |
-| TC8 | mkdir EPERM: exits 1 with EPERM in message         | ✅ full |
-| TC9 | copyFileSync EPERM: exits 1 with EPERM in message  | ✅ full |
-
-**9 full tests, 0 todo. All GREEN against Carter's implementation.**
-
----
-
-## Jun Task 2 — Test Infrastructure Decisions
-
-**Date:** 2026-05-29T23:44:00-07:00  
-**Author:** Jun (Test Engineer)  
-**Phase:** 8.5 Task 2 — Junction mode, uninstall, orchestrator
-
-### Scope
-
-Three test files:
-1. `tests/install/copyExtension.test.ts` — extended with TC10–TC14 (junction mode)
-2. `tests/install/uninstall.test.ts` — new (6 tests, UN1–UN6)
-3. `tests/install/index.test.ts` — new (13 tests, IX1–IX13)
-
-### Decisions
-
-**D1: Readline mock uses an answer queue (not jest-style argument matchers)**
-
-**Decision:** `rlAnswerQueue: string[]` pushed in each test; `question()` calls `cb(rlAnswerQueue.shift() ?? '')`. The mock is wired through `vi.hoisted()` so the queue is shared between the `vi.mock('readline', ...)` factory and the test bodies.
-
-**Rationale:** Carter's implementation calls `readline.createInterface` + `rl.question` N times (once per missing var). An ordered queue cleanly simulates multi-prompt flows without needing to match on prompt text, which is fragile. Empty answer (`''`) triggers the empty-input exit path, matching production behavior.
-
-**D2: `vi.mock('../../src/install/copyExtension.js')` — relative path to mock local sibling**
-
-**Decision:** When index.ts imports `'./copyExtension.js'`, the test file at `tests/install/index.test.ts` mocks it as `vi.mock('../../src/install/copyExtension.js')`.
-
-**Rationale:** Vitest resolves both import paths to the same file, so the mock intercepts correctly. This is consistent with the pattern in `tests/config/env.test.ts` which mocks `../../src/config/config.js`.
-
-**D3: Service install mock exports all expected symbols**
-
-**Decision:** The `vi.mock('../../src/service/install.js', ...)` factory exports: `install`, `uninstall`, `createService`, `resolveCurrentUser`, `promptPassword`. Even though only `install` is called by `runInit`, exporting the full shape prevents TypeScript-level import errors if the module is imported with named bindings elsewhere.
-
-**Rationale:** Previous experience (Phase 8 P1) showed that sparse mocks cause "not a function" errors when other module code uses named imports. Better to over-mock.
-
-**D4: `process.stdin.isTTY` controlled via `Object.defineProperty` (not spy)**
-
-**Decision:** Set TTY state with `Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false })`. Restore in `afterAll`.
-
-**Rationale:** `process.stdin.isTTY` is a plain property, not a getter — `vi.spyOn` cannot stub it. `Object.defineProperty` with `configurable: true` is the standard pattern for non-spy overrides.
-
-**D5: `vi.clearAllMocks()` NOT `vi.restoreAllMocks()` in `beforeEach`**
-
-**Decision:** Use `vi.clearAllMocks()` in `beforeEach`, then immediately re-establish all mock implementations in the same block.
-
-**Rationale:** Phase 8 P1 sprint learned that `vi.restoreAllMocks()` wipes ALL tracked `vi.fn()` implementations, including those created in `vi.mock()` factory closures. `clearAllMocks()` only resets call records, leaving implementations intact. Re-establishing the handful of spy implementations manually (exit, console) is cheap and predictable.
-
-**D6: `src/install/uninstall.ts` — Jun created the stub**
-
-**Decision:** Carter had not yet created `uninstall.ts` when tests were written. Jun created a minimal stub exporting the correct interface (`UninstallOptions`, `runUninstall`). Carter is expected to replace the body — the exported types and function signature must be preserved.
-
-**Required final shape:**
-```typescript
-export interface UninstallOptions { wipe: boolean; }
-export async function runUninstall(opts: UninstallOptions): Promise<void>
-```
-
-**D7: Junction TC10–TC14 confirmed GREEN — Carter landed junction support**
-
-**Observation:** TC10–TC14 (junction mode tests) passed immediately without needing Carter to make any changes. Carter had already implemented the `NODE_ENV=development` branch in `copyExtension.ts` (lines 49–75) by the time tests were run. The junction log line is `"[reach] Extension linked (dev mode): ${targetDir}"` — TC11's assertion for `/linked|dev/i` matches this.
-
-### Final test counts
-
-| File | Tests | Status |
-|------|-------|--------|
-| tests/install/copyExtension.test.ts | TC1–TC14 (14) | 14/14 GREEN ✅ |
-| tests/install/uninstall.test.ts | UN1–UN6 (6) | 6/6 GREEN ✅ |
-| tests/install/index.test.ts | IX1–IX13 (13) | 13/13 GREEN ✅ |
-| **Total** | **33** | **33/33 GREEN ✅** |
-
-Full suite after these additions: `npx vitest run` → 33 new pass, all 33 GREEN.
-`npx tsc --noEmit` → GREEN.
-
----
-
-## Kat Task 4: README Install Section Update
-
-**Date:** 2026-05-29T23:36:10-07:00  
-**Agent:** Kat  
-**Task:** Phase 8.5 Task 4 — Update README install section for new install story
-
-### Summary
-
-Updated README.md to document the new Phase 8.5 install workflow, replacing the old multi-step "Setup" and "Windows Service" sections with a streamlined flow centered on `npm run init`.
-
-### Changes Made
-
-**Consolidated Sections:**
-- **Old:** Separate "Setup" (steps 1–5) + "Windows Service" + old env config
-- **New:** Single cohesive "Installation" workflow with subsections
-
-**New Sections Added:**
-
-1. **Quick Start** — Happy path: clone → npm install → npm run build → npm run init (4 lines + explanation)
-2. **Installation** subsections:
-   - **What `npm run init` Does** — Ordered list of 4 steps (config wizard → extension → service → next steps)
-   - **Configuration** — Required (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_IDS`) vs Optional (`TELEGRAM_CHAT_ID`, `REACH_MODEL`, etc.)
-   - **Windows Service Details** — Service name, auto-restart, event logging, state preservation
-3. **Development Workflow** — NODE_ENV=development junction trick + manual reinstall
-4. **Upgrading** — Fast path (`git pull && npm run build && npm run install:extension`) + full path (`npm run init`)
-5. **Uninstall** — Preserve state (default) vs Full reset (`--wipe`)
-6. **Platform Support** — Windows-only for Phase 8.5–9; cross-platform deferred
-
-### Removed
-- Old "Setup" section (lines 18–82 in original)
-- Old "Windows Service" section (lines 176–201 in original) — consolidation into Installation
-- Old pairing mode explanation (moved to Configuration)
-
-### Voice & Formatting
-- Matched existing README style: practical, concise, PowerShell examples with $env: syntax
-- No new Markdown features; used existing lists, code blocks, bold/italic
-- Section ordering: Quick Start → Installation → Dev → Upgrading → Uninstall → Platform
-
-### Line Count Delta
-
-| Section | Old | New | Change |
-|---------|-----|-----|--------|
-| Quick Start | 0 | 8 | +8 |
-| Installation | 65 | 38 | −27 |
-| Platform Support | 0 | 2 | +2 |
-| Total removed (old Windows Service) | 26 | 0 | −26 |
-| **Net change** | ~65 | ~48 | **−17 lines** |
-
-### Script Name Mismatches Found & Status
-
-**Missing Scripts (referenced in README but not in package.json):**
-
-| Script | Referenced In | Status | Notes |
-|--------|---------------|--------|-------|
-| `npm run init` | Quick Start, Installation, Upgrading | ✗ MISSING | Primary entry point (Aaron's decision). Will be added in Task 2 (orchestrator) |
-| `npm run uninstall` | Uninstall section | ✗ MISSING | Will be added in Task 2 (orchestrator) |
-| `npm run uninstall -- --wipe` | Uninstall section | ✗ MISSING | Will be added in Task 2 (orchestrator) |
-
-**Existing & Verified:**
-
-| Script | Status | Used In |
-|--------|--------|---------|
-| `npm run install:extension` | ✓ EXISTS | Development Workflow, Upgrading |
-| `npm run build` | ✓ EXISTS | Quick Start, Upgrading |
-
-### Rationale for Not Changing Script References
-
-Aaron's locked decisions (from task brief) explicitly specify `npm run init` as the primary entry point, not `npm run install` or `npm run setup`. The current mismatch reflects that:
-1. **Task 1 (Carter) completed:** `install:extension` script added and `copyExtension.ts` shipped
-2. **Task 2 (Kat or Carter) pending:** Full orchestrator (`index.ts`, `configWizard.ts`, `uninstall.ts`) + npm scripts will be added
-3. **Task 4 (Kat) — this task:** README updated to document final design
-
-The scripts referenced in the README will exist when Task 2 completes.
-
-### Architecture Decisions
-
-1. **Single "Quick Start" block** — One simple 5-command sequence for users, not multi-step callouts
-2. **What `npm run init` Does** — Explicit, ordered walkthrough to set expectations
-3. **Config wizard integration** — Prompts explained inline (no separate "Configuration Wizard" section)
-4. **Development Workflow separate** — NODE_ENV=development junction trick prominent; fast iteration path documented
-5. **Uninstall with `--wipe` flag** — Mirrors Unix tool patterns (preserve state by default, full reset via flag)
-6. **Platform Support as final note** — Windows-only disclaimer placed at end, not buried in prerequisites
-
-### Validation Notes
-
-- ✓ README voice & formatting matches existing style (no new Markdown features introduced)
-- ✓ All sections are self-contained and scannable (as required by Aaron)
-- ✓ Practical focus: no marketing copy, no screenshots, no badges
-- ✓ Windows-only note present
-- ✗ **Scripts don't exist yet** (see table above) — will be resolved in Task 2
-
-### Next Steps
-
-- Task 2 (Orchestrator implementation): Add `npm run init` and `npm run uninstall` scripts to package.json
-- No further README changes needed after Task 2 completes
-
----
-
-# Phase 9: Persona Review Cycles 1 & 2
-
-## Kat — Phase 9 Review Decisions: I10 + I11
-
-**Date:** 2026-05-30  
-**Author:** Kat  
-**Status:** Shipped (pending Carter wire-up for I10 warning surface)
 
 ---
 
@@ -539,14 +109,6 @@ Jun can import and test each pattern category with representative inputs.
 
 ---
 
-## Jun — Phase 9 Review Tests: Decisions
-
-**Date:** 2026-05-30  
-**Author:** Jun (Test Engineer)  
-**Wave:** Phase 9 review — test-quality blockers + anticipatory regression tests
-
----
-
 ### B2 — Vacuous `/new` assertion (handlers.slashGuard.test.ts)
 
 **What was broken**
@@ -636,14 +198,6 @@ Three files shared the same grammY bot shape. Extracted to `tests/helpers/botMoc
 
 ---
 
-## Jun — Cycle 2 Decisions: handlers.test.ts migration
-
-**Date:** 2026-05-30  
-**Author:** Jun  
-**Status:** Complete
-
----
-
 ### Context
 
 Cycle 2 review identified that `tests/bot/handlers.test.ts` contained a local `makeStubRegistry` function that was missed during the F-8 helpers extraction. The local stub was missing `upsert`, masked by an `as unknown as ISessionRegistry` cast.
@@ -671,13 +225,6 @@ A behavioral gap surfaced during validation:
 ### Cast situation
 
 The `as unknown as ISessionRegistry` cast lives inside the shared helper's implementation. Consumers always receive a typed `ISessionRegistry` from the function return type.
-
----
-
-## Carter — Phase 9 Review Fix Wave Decisions
-
-**Date:** 2026-05-30  
-**Author:** Carter  
 
 ---
 
@@ -791,21 +338,6 @@ Updated the file-level docstring to list all four pattern groups accurately and 
 
 ---
 
-# Phase 8.5: Reach Install Story (Decision)
-
-**Date:** 2026-05-29T22:22:08-07:00  
-**Author:** Noble Six (Lead / Architect)  
-**Status:** Design Complete — Ready for Phase 8.5 Execution
-
-# Noble Six — Install Story Decision
-
-**Date:** 2026-05-29T22:22:08-07:00  
-**Author:** Noble Six (Lead / Architect)  
-**For:** Squad team (Carter, Kat, Jun, Scribe)  
-**Full doc:** `.copilot/reach-install-handoff.md`
-
----
-
 ## The Gap
 
 Aaron tried `/afk` during Phase 8 dogfood prep. It doesn't work because `extension.mjs` is never installed to the Copilot CLI extensions directory. The daemon has `npm run service:install` (Phase 2). The extension has nothing.
@@ -861,23 +393,6 @@ Deferred. Windows-only for Phase 8.5 and Phase 9. No launchd, no systemd.
 
 Five UX preference questions documented in handoff doc (script naming, wizard hard-block on empty allowed-user-IDs, dev symlink, uninstall wipe flag). Noble Six defers these to Aaron.
 
-
----
-
-# PR #7 Cloud Review Cycle Dispositions (Phase 8)
-
-**Date:** 2026-05-28  
-**Cycles:** 1–4 (Extended: Real production bugs found)  
-**Owner:** Kat (Bot Dev)  
-**Status:** All findings addressed; branch f78ccd6 awaiting PR
-
-## Dogfood Bug Fixes (#3, #4)
-
-# Kat — Dogfood Bugs #3 and #4 Fix Notes
-
-**Date:** 2026-05-29T22:34:52-07:00  
-**Branch:** `user/aaron/dogfood-bugs-3-4`  
-**Author:** Kat (Bot Dev)
 
 ---
 
@@ -964,17 +479,6 @@ Test suite after fixes: **538 passed / 4 skipped / 0 failed**. tsc clean, lint z
 
 ---
 
-## Cycle 1 — afkStreamRouter.ts State Leaks
-
-# kat-pr7-cycle1 — PR #7 Copilot Review Fixes
-
-**Date:** 2026-05-28T22:45:13-07:00  
-**Author:** Kat  
-**Branch:** user/aaron/phase-8  
-**Commit:** 09d0c40
-
----
-
 ## Summary
 
 Addressed all 4 substantive Copilot review threads on `src/bot/afkStreamRouter.ts` from PR #7.
@@ -1028,17 +532,6 @@ New file: `tests/bot/afkStreamRouter.test.ts` (8 cases)
 - `npx vitest run` — 525 passed / 4 skipped / 0 failed
 - `npm run lint` — 0 warnings
 
-
----
-
-## Cycle 2 — handleChunk Placeholder Retry
-
-# Decision Note — PR #7 Cycle 2: handleChunk Placeholder Retry
-
-**Date:** 2026-05-28T22:45:13-07:00  
-**Author:** Kat (Bot Dev)  
-**File:** `src/bot/afkStreamRouter.ts` — `handleChunk`  
-**Commit:** `2f12755`
 
 ---
 
@@ -1119,15 +612,6 @@ if (state.messageId === undefined) {
 
 ---
 
-## Cycle 3 — Telegram Display Cap + isActive Guard
-
-# Decision Note — PR #7 Cycle 3
-**Author:** Kat  
-**Date:** 2026-05-28T23:25:16-07:00  
-**File:** `src/bot/afkStreamRouter.ts`
-
----
-
 ## Thread A — Telegram 4096-char display cap
 
 **Problem:** `state.text` is an unbounded accumulator. Once it exceeds 4096 characters, every subsequent `sendMessage`/`editMessageText` call returns a Telegram 400 error. Combined with the cycle-2 retry path, this produces an infinite retry loop — the stream stalls permanently. Separately, an empty `state.text` on the first chunk causes `sendMessage` to reject with a 400 (empty body).
@@ -1173,16 +657,6 @@ The `topicId` resolution is also skipped (it's only needed for the send), which 
 | C5 | `displayText()` is used for every Telegram text argument in `handleChunk` — raw `state.text` is never passed directly. |
 | C6 | In `handleError`, the `isActive()` guard gates only the Telegram send — not the state cleanup. |
 
-
----
-
-## Cycle 4 — Production Bug: Timer Leak + Fleet Tests
-
-# Decision Note — PR #7 Cycle 4 (Kat)
-
-**Date:** 2026-05-28T23:25:16-07:00  
-**Author:** Kat  
-**Context:** Copilot code review cycle 4 on PR #7 (extended past maxCycles by Aaron — real production bug found).
 
 ---
 
@@ -1252,75 +726,6 @@ The `topicId` resolution is also skipped (it's only needed for the send), which 
 
 ---
 
-
-# Phase 8 Dogfooding Plan (2026-05-29)
-
-**Date:** 2026-05-29T21:53:17-07:00  
-**From:** Noble Six (Lead/Architect)  
-**Status:** Ready for Aaron's execution
-
-## Summary
-
-Comprehensive dogfooding plan synthesized from Phase 6 checklist, Phase 7 ADR-11 decisions, and Phase 8 P1+watch sweep deliverables. Validates production-facing behavior before Phase 9 design decisions lock in.
-
-**Location:** `.copilot/reach-dogfood-plan-phase8.md`
-
-## What Was Tested
-
-Phase 8 completed four hardening items:
-1. **Permission prompting edge cases** (ADR-9, no-timeout guarantee)
-2. **AFK mode fleet binding & stream routing** (ADR-11 + F4 refactor)
-3. **Multi-chunk stream truncation & edge cases** (Cycle 3 fixes)
-4. **Config guard for deny-all protection** (N2 guard)
-
-## Plan Structure
-
-**4 scenario groups, 16 total scenarios:**
-
-| Group | Scenarios | High-Risk Behavior |
-|-------|-----------|-------------------|
-| A: Permission Prompting | 5 | No-timeout guarantee, concurrent prompts, deny execution |
-| B: AFK Mode | 6 | Auto-binding, fleet join, mid-stream deactivation |
-| C: Stream Routing | 6 | Truncation, empty placeholder, transient failure, race conditions |
-| D: Config Guard | 2 | Deny-all fatal exit + actionable message |
-
-**Success bar:** ≥80% green (≥13/16), zero critical severity.  
-**Time estimate:** 45–90 minutes.
-
-## Key Architectural Notes
-
-### Mirror Rate Limiter Extraction (Future)
-
-During F4 soft refactor (watch sweep), identified `allowMirrorInput` + `mirrorRates`/`globalMirrorRate` as a second cohesive extractable unit. Not extracted now because `afkMode.ts` is comfortably under 700 LOC post-refactor (649 LOC).
-
-**Natural trigger:** Extract when file approaches 700 again or rate-limit logic gains complexity.
-
-### ADR-10 Pipe Token Validation
-
-Pipe authentication (token validation on extension side) is documented but not implemented. Not a blocker for Phase 8 dogfooding on solo machine, but is a pre-production gap flagged for Phase 9+.
-
-## Triage Protocol
-
-**Critical (data loss, security):** File immediately, halt dogfooding.  
-**High (command fails, stream broken):** File immediately, continue other scenarios.  
-**Medium (UX friction, edge case):** Capture in "dogfood findings" issue after session.
-
-All issues labeled `squad` for team visibility.
-
-
-
----
-
-# Phase 9 Sprint — Dogfood Feedback Resolutions
-
-# Noble Six Phase 9 Triage — Findings
-
-**Date:** 2026-05-30T11:32:20-07:00  
-**Author:** Noble Six (Lead / Architect)  
-**Context:** Phase 9 triage for Aaron's 3 dogfood feedback items
-
----
-
 ## Finding 1: Slash Commands Intentionally Blocked
 
 **Discovery:** During Item 2 investigation, confirmed that slash commands in Telegram topics are intentionally blocked by explicit guards, not a bug.
@@ -1385,18 +790,6 @@ All three items are feature additions within existing architectural boundaries:
 - Item 1: Extends AFK mode (ADR-11) with orientation message
 - Item 2: Activates existing protocol envelope (ADR-8, ADR-11 §9)
 - Item 3: Extends config layer (no ADR)
-
----
-
-**Filed to:** `.squad/decisions/inbox/noble-six-phase9-triage.md`  
-**Next:** Merge to decisions.md after Phase 9 sprint approval
-
-
-# Kat — Phase 9 Item 1: Orientation Message Decisions
-
-**Date:** 2026-05-30T11:49:29-07:00
-**Author:** Kat (Bot Dev)
-**Task:** Phase 9 Item 1 — AFK topic orientation message + /status command
 
 ---
 
@@ -1477,30 +870,6 @@ The `💬 Last from…` block is omitted entirely when no excerpt is available (
 ## Decision 6: Model fallback
 
 Added `globalModel?: string` to `AfkModeOptions`. Passed from `cfg.model` in `main.ts`. Fallback chain: `registryEntry.model ?? options.globalModel ?? 'unknown'`.
-
----
-
-## Files Changed
-
-| File | Change |
-|------|--------|
-| `src/bridge/protocol.ts` | Added `lastAssistantExcerpt?: string` to `AfkRequestMessage` |
-| `src/bot/afkBridgePort.ts` | Updated `AfkBridgeEvents['afk.request']` tuple type |
-| `src/bridge/extensionBridge.ts` | Updated `on('afk.request')` signatures + emit with excerpt |
-| `extension.mjs` | Added `lastAssistantMessage` cache, `assistant.message` listener, excerpt in `sendModeRequest()` |
-| `src/bot/afkMode.ts` | TopicBinding.orientationSent, lastKnownExcerpts map, formatOrientationMessage, sendOrientationMessage, handleStatusCommand, globalModel option |
-| `src/bot/commands.ts` | Added `'status'` to BOT_COMMANDS |
-| `src/bot/handlers.ts` | Added `statusProvider` to HandlerOptions, registered `/status` command, updated /help |
-| `src/main.ts` | Passed `globalModel` and `statusProvider: afkMode` |
-| `tests/bridge/afk-request-dispatch.test.ts` | Updated expectation to include `undefined` excerpt arg |
-| `tests/bridge/extension-protocol-drift.test.ts` | Updated AfkRequestMessage field assertions |
-
-
-# Phase 9 Item 2 — Slash Command Pass-Through Decisions
-
-**Date:** 2026-05-30  
-**Author:** Carter  
-**Phase:** 9 Item 2 — Telegram → CLI slash command relay
 
 ---
 
@@ -1592,22 +961,6 @@ Two pre-existing tests were updated to match the new behavior:
    mirror.input. All other T4 assertions (no back.confirmed, no mode.changed,
    no closeForumTopic) remain correct — text pass-through doesn't trigger the
    back.request protocol round-trip.
-
----
-
-## Coordination note for Jun
-
-`isBotCommand` is exported as a named export from `src/bot/commands.ts`.
-`BOT_COMMANDS` is typed `ReadonlySet<string>` (declared with explicit type annotation,
-initialized from `new Set([...])`). Both names match the assumptions in the design doc.
-
-
-# Kat — Phase 9 Item 3 Config Schema Decisions
-
-**Date:** 2026-05-30T11:46:28-07:00
-**Author:** Kat (Bot Dev)
-**Task:** T5 — Config schema extension + knownCwds helpers
-**Files:** `src/config/config.ts`, `src/config/knownCwds.ts`
 
 ---
 
@@ -1744,19 +1097,6 @@ interface KnownCwd {
 
 ---
 
-## 7. Persistence pattern
-
-Reuses existing `saveConfig()` atomic write (write to `<path>.tmp` → `fs.rename`). No new I/O abstractions introduced.
-
-
-# Phase 9 Item 3 — /cwd Command Group + /new --cwd Flag
-
-**Author:** Carter  
-**Date:** 2026-05-30  
-**Phase:** 9 Item 3 (T6 + T7)
-
----
-
 ## General Topic Detection Mechanism
 
 Used `ctx.message?.message_thread_id`:
@@ -1867,25 +1207,6 @@ Minor observation: `args.slice(2).join(' ')` is used for the path argument in `/
 
 ---
 
-## Coordination Note for Jun
-
-Function signatures match the design doc:
-- `isBotCommand()` — unchanged (Item 2, already green)
-- `BOT_COMMANDS` — now includes `'cwd'` (8 commands total)
-- `registerHandlers(options: HandlerOptions)` — `configPath?: string` added as optional field
-- No new exported functions beyond what's documented; `/cwd` logic is internal to `registerHandlers`
-
-The `relativeTime()` helper is a private (non-exported) function in `handlers.ts`. If Jun needs to test it independently, extract it to a utility module and I'll update the import.
-
-
-# Jun — Phase 9 Item 2 Test Infrastructure Decisions
-
-**Date:** 2026-05-30T11:46:29-07:00
-**Author:** Jun (Test Engineer)
-**Context:** Anticipatory tests for Phase 9 Item 2 — slash command pass-through (isBotCommand guard)
-
----
-
 ## D1 — Carter's Module Import Path
 
 **Decision:** Tests import from `../../src/bot/commands.js` (i.e., `src/bot/commands.ts`).
@@ -1966,24 +1287,6 @@ Pre-existing failures unrelated to Jun's work:
 Used `AfkModeController.forTesting()` with a seed of `mode.active=true` and a pre-bound session at `TOPIC_ID=42`. This avoids replicating the full FakeDaemon/FakeExtensionClient activation flow for a unit-level guard test.
 
 The bridge mock uses `vi.fn()` for all AfkBridgePort methods; `sendToSession` captures the `mirror.input` payload for assertion.
-
----
-
-## D7 — BOT_COMMANDS Expected Members
-
-Per design doc §Item 2:
-```
-['new', 'list', 'remove', 'resume', 'help', 'pair']
-```
-
-If Carter adds new bot commands (e.g., `'back'`), add them to `isBotCommand.test.ts` `BOT_COMMANDS` describe block. The `it.each` test will enforce this mechanically once the module is importable.
-
-
-# Jun — Phase 9 Item 3 Test Infrastructure Decisions
-
-**Date:** 2026-05-30T12:16:00-07:00  
-**Author:** Jun (Test Engineer)  
-**Status:** ALL GREEN — Carter's T6/T7 already landed when tests ran.
 
 ---
 
@@ -2095,14 +1398,6 @@ All three files matched Carter's implementation exactly on first run. No import 
 no reply string regex adjustments needed. `cwd` is correctly in `BOT_COMMANDS` (commands.ts
 line 35). The isBotCommand guard correctly blocks `/cwd` in session topics' `message:text`
 handler.
-
----
-
-# Kat — Phase 9 README Documentation
-
-**Date:** 2026-05-30T12:18:53-07:00
-**Author:** Kat (Bot Dev)
-**Task:** Document Phase 9 work in README.md
 
 ---
 
@@ -2313,3 +1608,1150 @@ No try/catch at the callsite. Cleaner control flow.
 - `npm run lint --max-warnings 0` — clean  
 - `npx vitest run` — 783 passed / 4 skipped / 1 todo (identical to baseline)
 
+
+---
+# Decision: Full process.argv save/restore in isDirectRun tests
+
+**Date:** 2026-06-05  
+**PR:** #10, Cycle 10  
+**Thread:** T1 — `tests/install/isDirectRun.test.ts:20-32`  
+**Author:** Carter (Bridge Dev)
+
+## Decision
+
+Replace the cycle-6 `argv[1]`-only save/restore pattern with a full-array
+save/restore in `isDirectRun.test.ts`.
+
+**Before (cycle-6 pattern):**
+```ts
+let savedArgv1: string | undefined;
+beforeEach(() => { savedArgv1 = process.argv[1]; });
+afterEach(() => {
+  if (savedArgv1 === undefined) {
+    process.argv.splice(1, 1);
+  } else {
+    process.argv[1] = savedArgv1;
+  }
+});
+```
+
+**After:**
+```ts
+let savedArgv: string[];
+beforeEach(() => { savedArgv = process.argv.slice(); });
+afterEach(() => { process.argv = savedArgv; });
+```
+
+## Rationale
+
+Cycle 6 fixed a state leak caused by the original `afterEach` not handling the
+case where `argv[1]` was `undefined` (it would write `undefined` back as a
+string). The cycle-6 fix saved/restored only `argv[1]`.
+
+IDR5 (added later) calls `process.argv.splice(1)` which mutates the **array
+length** — removing all elements from index 1 onward. Restoring only `argv[1]`
+does not undo the splice; any elements beyond index 1 remain absent. This can
+cause order-dependent flakiness in tests that run after IDR5 and rely on
+`process.argv` having its normal shape.
+
+A full-array `slice()` snapshot at `beforeEach` and full reference restore at
+`afterEach` handles:
+- `argv[1]` being `undefined` (naturally preserved in the slice)
+- `argv[1]` being `''` (distinguished correctly, same as cycle-6)
+- `splice`-based length mutations (restored by reference reassignment)
+
+## Supersedes
+
+Cycle-6 `argv[1]`-only pattern. The full-array pattern is strictly more
+correct and no more complex.
+
+---
+# carter-pr10-cycle11: relativeTime() Guards
+
+**Date:** 2026-06-05  
+**Author:** Carter (Bridge Dev)  
+**PR:** #10 — Cycle 11
+
+---
+
+## Decision 1: NaN fallback string → `'unknown'`
+
+**Choice:** Return `'unknown'` when `Date.parse(iso)` yields `NaN`.
+
+**Rationale:**
+- `'just now'` would be misleading — the timestamp isn't *recent*, it's *unreadable*.
+- `'unknown'` is honest and already fits the output vocabulary of the `/cwd list` rendering
+  (`last used unknown`), which reads naturally as a data-quality indicator rather than a time claim.
+- It avoids emitting garbled strings like `'NaNd ago'` that would confuse users and
+  look like bugs in screenshots.
+
+---
+
+## Decision 2: Future timestamp clamp → `diffMs = Math.max(0, ...)`
+
+**Choice:** Clamp `diffMs` to `0` when the stored timestamp is ahead of `Date.now()`.
+
+**Rationale:**
+- Small positive skews (seconds to minutes) arise from NTP drift between the machine that
+  wrote the config and the machine running the bot. They are not errors — they are expected noise.
+- Clamping to 0 means the `mins < 1` branch fires and returns `'just now'`, which is the
+  correct human interpretation of "happened approximately now".
+- Negative diffMs would propagate through `Math.floor` into negative minute/hour/day values,
+  producing output like `'-1m ago'` — nonsensical and unhandled by the existing branches.
+- An explicit `Math.max(0, ...)` is self-documenting and cheaper than adding a dedicated
+  negative-branch to an otherwise clean function.
+
+---
+# carter-pr10-cycle12: Wipe Markers Audit + Quoted Session Name Fix
+
+**Date:** 2026-06-05  
+**Author:** Carter (Bridge Dev)  
+**PR:** #10 — Cycle 12
+
+---
+
+## T1: registry.json Added to wipeLocalData() Marker List
+
+### Markers added
+
+`registry.json` added to the `markerFiles` array in `wipeLocalData()` (`src/install/uninstall.ts:64`).
+
+**Source:** `src/config/env.ts:43` — `path.join(getReachDataDir(), 'registry.json')`. The file
+is a direct child of the data dir (not nested). No exported constant exists for the basename, so
+`'registry.json'` is inlined — consistent with how `'config.json'` and `'bridge-auth.json'` are
+already expressed.
+
+### Full marker audit against `<dataDir>/` state files
+
+| File | Source | In marker list before? | Action |
+|---|---|---|---|
+| `config.json` | `src/config/config.ts` `getConfigPath()` | ✓ yes | no change |
+| `bridge-auth.json` | `src/bridge/pipeAuth.ts` `getPipeAuthPath()` | ✓ yes | no change |
+| `registry.json` | `src/config/env.ts` `registryPath` | ✗ missing | **added** |
+
+No other `<dataDir>/…` constructions found in the codebase. `src/config/migrate.ts` copies from
+legacy dirs into `<dataDir>` but introduces no new files beyond the three above. The marker list is
+now exhaustive for all known Phase 9 state files.
+
+**Broadening concern:** All three markers are specific Reach JSON files. A random directory
+containing an unrelated `registry.json` (e.g. an npm package) would be a false positive, but the
+combination check (`some`) means _any_ of the three triggers a pass — the safety check is already
+using a low-confidence bar by design (fail-closed on inspection error). Adding one more
+Reach-specific name is appropriate.
+
+---
+
+## T2: Unified Whitespace Check for Session Name
+
+### Decision: Unify both paths (`sessionParts.length > 1` replaced by `/\s/.test(sessionName)`)
+
+**Chosen approach:** Replace the `sessionParts.length > 1` guard with a single `/\s/.test(sessionName)`
+check applied to the final resolved session name.
+
+**Rationale:**
+- The root invariant is: _a session name must not contain whitespace_, regardless of how the
+  whitespace got there (unquoted split vs. quoted single token).
+- `sessionName = sessionParts.join(' ').trim()` already collapses all session parts into one string.
+  Testing that string for `\s` catches both paths:
+  - Unquoted `my session` → two tokens → `sessionName = 'my session'` → `\s` fires ✓
+  - Quoted `"my session"` → one token `'my session'` → `\s` fires ✓
+- The unified check is shorter, has one fewer code path, and its intent is self-evident.
+- Error message is identical between both cases — callers see consistent semantics.
+
+**Alternative considered:** Add a second guard after the existing `sessionParts.length > 1` check.
+Rejected — two parallel checks with the same error string are redundant and invite drift.
+
+---
+# Carter — PR #10 Cycle 13 Decisions
+
+**Branch:** user/aaron/phase9  
+**Date:** 2026-06-05  
+**Commit scope:** test (test-only changes)
+
+---
+
+## T1/T2 — Fake-token constant
+
+**Constant chosen:** `FAKE_GH_TOKEN = 'not-a-real-token-0000'`
+
+**Rationale:**  
+T1 and T2 both exercise the ENV-assignment pass (`GITHUB_TOKEN=<value>` /
+`GITHUB_TOKEN="<value>"`). `ENV_ASSIGNMENT_PATTERN` requires the value to match
+`[^\s'"]{8,}` — at least 8 non-space, non-quote characters. The original
+`ghp_abcdefghijklmnopqrstuvwxyz12345678` is a `ghp_`-prefixed 40-char value
+that GitHub secret scanning recognises as a real PAT shape (prefix + length +
+charset).
+
+`not-a-real-token-0000` (21 chars) satisfies `[^\s'"]{8,}`, contains `-` which
+is never present in a real GitHub PAT, and is lexically unmistakeable as fake.
+It is reused verbatim for the quoted C6-4 variant so both tests reference a
+single constant, making intent clear.
+
+No change to what the tests assert — just the fixture value inside the quotes.
+
+---
+
+## T3 — Bare-value restructuring (high-entropy charset guard)
+
+**Problem (Copilot review):** The original test used
+`AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY`. Because
+`AWS_SECRET_ACCESS_KEY` matches `ENV_ASSIGNMENT_PATTERN` (the `ACCESS_KEY`
+suffix), the ENV pass redacts the value on Pass 2 *regardless* of whether the
+high-entropy charset is correct. If someone reverted the cycle-8 `/`+`+` charset
+extension in `HIGH_ENTROPY_PATTERN`, this test would still pass — false safety.
+
+**Fix:** Drop the `AWS_SECRET_ACCESS_KEY=` prefix entirely. The new fixture is:
+
+```
+FAKE+Xm3z9pQr/vNsLwD7hYc+E4aOjZtFu1Ii/8bGn  (42 chars)
+```
+
+This bare value is only reachable by `HIGH_ENTROPY_PATTERN` (Pass 3).
+
+**Why this value specifically:**
+1. Length 42 ≥ 39 threshold — matches as a single run. ✓
+2. Contains `/` (position 13) and `+` (positions 4, 24) — the chars added in
+   cycle-8.
+3. Contains no keyword words (`token`, `key`, `secret`, …) at word boundaries,
+   so `KEYWORD_PATTERN` (Pass 1) does not fire first. (Earlier draft used
+   `…/aws/key/…` which caused `\bkey\b` to match and produce
+   `…/aws/key[REDACTED]` instead of `[REDACTED]`.)
+4. Starts with `FAKE` — obviously not a real credential; won't trip AWS secret
+   scanning (which looks for `AWS` prefix + length + alphanumeric pattern).
+
+**Charset-regression proof:** If `HIGH_ENTROPY_PATTERN` reverted to
+`[A-Za-z0-9_\-]{39,}` (no `/`, no `+`), the 42-char value fragments at each
+`/` and `+`:
+- `FAKE` (4), `Xm3z9pQr` (8), `vNsLwD7hYc` (10), `E4aOjZtFu1Ii` (12), `8bGn` (4)
+- Longest fragment: 12 chars — far below the 39-char threshold.
+- Neither `not.toContain(bare)` nor `toBe('[REDACTED]')` would hold → test FAILS.
+
+**Companion assertion added:** `expect(result).toBe('[REDACTED]')` — verifies the
+whole 42-char run was matched as one token, guarding against the fragmentation
+scenario above.
+
+---
+
+## Sibling `ghp_` scan
+
+Grepped all `tests/**/*.ts` for `ghp_`. Only two occurrences found, both in
+`tests/bot/redactSecrets.test.ts` (lines 60 and 154) — both fixed by T1/T2
+above. No sibling fixtures elsewhere.
+
+---
+# Carter — PR #10 Cycle 14 Decisions
+
+**Date:** 2026-06-05  
+**Bugs addressed:** T2 (connectivity-breaking path mismatch), T1 (stale socket cross-connection frame leak)
+
+---
+
+## 0. extension.mjs — source or generated?
+
+**Finding: HAND-EDITED source file.**
+
+- Not in `.gitignore`
+- Committed to git (earliest log entry predates Phase 9)
+- No TypeScript counterpart (`src/extension*` — no matches)
+- No build script in `package.json` that emits it (`build` = `tsc --project tsconfig.json` only)
+- No "GENERATED — do not edit" header comment
+- Header says "Reach CLI Extension" — authored prose
+
+**Consequence:** Both T1 and T2 fixes were applied directly to `extension.mjs`.
+
+---
+
+## T2 — Auth file path mismatch (daemon ↔ extension)
+
+### Root cause
+
+`getReachDataDir()` in `src/config/config.ts` was migrated to `~/.reach/` in Cycle 3
+(PR #10 storage unification). `pipeAuth.ts` uses `getReachDataDir()` so the daemon
+correctly writes `~/.reach/bridge-auth.json`. However, `getAuthFilePath()` in
+`extension.mjs` was never updated and still read from `%LOCALAPPDATA%\reach\bridge-auth.json`.
+Daemon writes to `~/.reach/`; extension reads from `%LOCALAPPDATA%\reach\` — completely
+different directories → extension never discovers the pipe → zero connectivity.
+
+### Fix
+
+Rewrote `getAuthFilePath()` in `extension.mjs` to mirror `getReachDataDir()` in
+`src/config/config.ts` exactly:
+
+```js
+function getAuthFilePath() {
+  const override = process.env['REACH_DATA_DIR'];
+  const dataDir = (override && override.trim() !== '')
+    ? resolve(override.trim())
+    : join(homedir(), '.reach');
+  return join(dataDir, 'bridge-auth.json');
+}
+```
+
+Added `resolve` to the `node:path` import.
+
+### LOCKSTEP REQUIREMENT
+
+**⚠️ The path-resolution logic is now duplicated across two runtime boundaries:**
+
+| File | Runtime | Logic |
+|------|---------|-------|
+| `src/config/config.ts` `getReachDataDir()` | TypeScript (compiled) | `REACH_DATA_DIR` override → `path.resolve(override.trim())`, fallback `~/.reach` |
+| `extension.mjs` `getAuthFilePath()` | Standalone JS | Mirrors above exactly |
+
+These two cannot import each other (TS daemon vs standalone `.mjs` extension deployed separately).
+
+**Rule:** Any future change to `getReachDataDir()` in `src/config/config.ts` MUST be
+manually mirrored in `extension.mjs getAuthFilePath()`. Code review checklist should
+include this when `src/config/config.ts` is modified.
+
+A comment in both files now calls this out explicitly.
+
+### Tests
+
+- Fixed N2 tests in `tests/bridge/b3-pipe-auth.test.ts`: changed `vi.stubEnv('LOCALAPPDATA', tempDir)`
+  to `vi.stubEnv('REACH_DATA_DIR', tempDir)`. The old stubs were broken — they stubbed
+  `LOCALAPPDATA` but `getReachDataDir()` reads `REACH_DATA_DIR`, so the tests were not
+  actually redirecting the file path (side-effecting the real `~/.reach/` directory).
+
+- Added N3 suite (4 tests) pinning the daemon's `getAuthFilePath()` contract:
+  - Default path (`~/.reach/bridge-auth.json`)
+  - `REACH_DATA_DIR` absolute override
+  - Whitespace trimming
+  - Whitespace-only string treated as unset
+
+- **Extension-side path not unit-testable from current TS harness.** `getAuthFilePath()`
+  is not exported from `extension.mjs`, and the file is a side-effectful module that
+  immediately connects (cannot safely import in a test). The N3 daemon-side tests + code
+  review of the mirrored logic provide the safety net.
+
+---
+
+## T1 — Stale pipeSocket cross-connection frame leak in streamSdkResponse()
+
+### Root cause
+
+`pipeSocket` is a module-level mutable that is swapped on reconnect (see `connectToDaemon()`,
+line ~795: `pipeSocket = socket`). The `enqueueFrame` closure inside `streamSdkResponse()`
+enqueued tasks that read `pipeSocket` at execution time. If a reconnect occurred between
+enqueue and execution, the task would see the **new** `pipeSocket` and write old-stream
+frames onto the new connection. The daemon's new connection has no knowledge of the old
+`requestId` → framing corruption.
+
+### Fix
+
+Captured `pipeSocket` into a local `const socket` at the **start** of each stream
+(immediately after `await gate` — serial entry through `streamQueue`). All writes for
+this stream target the captured `socket`:
+
+1. **`enqueueFrame` early-out:** `if (socket === null || socket.destroyed) return;`
+   — prevents enqueuing when the captured socket is already gone.
+
+2. **`.then()` body stale-check:** `if (socket !== pipeSocket || socket.destroyed) return;`
+   — at execution time, if a reconnect swapped `pipeSocket`, the frame is dropped.
+   Old-stream frames must never land on a new connection.
+
+3. **Final done=true frame:** guarded with `socket !== null && !socket.destroyed && socket === pipeSocket`
+   before calling `sendToDaemon`. If a reconnect happened, the done frame is silently
+   dropped (new connection gets fresh streams only).
+
+4. **Error frame in catch:** `const canNotify = socket === null || (!socket.destroyed && socket === pipeSocket)`
+   — `socket === null` means the error occurred before the stream started (before
+   `await gate`), so fall through to `sendToDaemon`'s own guard. Otherwise, only
+   notify if still on the same connection.
+
+`socket` is declared with `let socket = null` **before** the outer `try` block so it
+is in scope in `catch`.
+
+### Failure mode analysis
+
+| Scenario | Behavior |
+|----------|----------|
+| No reconnect during stream | `socket === pipeSocket` throughout → no change from existing behavior |
+| Reconnect between enqueue and execution | `socket !== pipeSocket` → frame dropped → new connection receives only fresh stream frames |
+| Socket destroyed (daemon crash, no reconnect) | `socket.destroyed` → frame dropped → no unhandled write error |
+| Error before stream started | `socket === null` → `sendToDaemon` path, existing guard applies |
+
+### Tests
+
+- `FakeExtensionClient` + `FakeDaemon` operate over in-memory `PassThrough` streams,
+  not through `extension.mjs` directly — the streaming path in `extension.mjs` is tightly
+  coupled to `sdkSession` events and cannot be driven via the existing harness without
+  extracting `streamSdkResponse()` as a pure function or introducing SDK mocks.
+- **Testability limitation documented:** No test added for T1. Correctness relies on
+  careful reasoning + the captured-socket guard pattern (standard JS closure capture
+  semantics). The guard is idiomatic and risk is low given serial `streamQueue`.
+
+---
+
+## Tests summary
+
+- N2 (2 tests): fixed stub from `LOCALAPPDATA` → `REACH_DATA_DIR` — were silently broken
+- N3 (4 tests): new path-contract suite for daemon `getAuthFilePath()`
+- Net test delta: +4 (845 → 849)
+
+---
+# Carter — PR #10 Cycle 15 Decisions
+
+**Date:** 2026-06-06  
+**Thread:** T1 — Secret prompt echoes bot token to terminal (`src/install/index.ts:92-99`)
+
+---
+
+## D1: Masking approach — blank vs asterisk
+
+**Decision: blank (option a) — no echo at all.**
+
+Blank masking (fully suppressed output) is chosen over asterisk masking (`*` per char). Rationale:
+- Standard behavior for secret entry (matches `sudo`, Python `getpass`, SSH passphrases)
+- Does not leak token length (asterisks reveal how many chars were typed)
+- Simpler implementation — one-liner suppressor vs char-counting echo
+
+Pattern used: `(rl as any)._writeToOutput` override with a function that writes the prompt text through on the first call and swallows all subsequent writes (echoed keystrokes). This is the **same idiom already used in `src/service/install.ts` `promptPassword()`**. Consistent with established codebase practice.
+
+---
+
+## D2: New helper — `promptSecret`
+
+Added `promptSecret(message)` alongside existing `promptLine(message)` in the prompt helpers block. Used for `TELEGRAM_BOT_TOKEN` prompt only. `TELEGRAM_ALLOWED_USER_IDS` is not a secret (numeric user IDs, not credentials) and keeps `promptLine`.
+
+`promptSecret` is intentionally not exported; it's local to the install wizard, same as `promptLine`.
+
+---
+
+## D3: Non-TTY degradation
+
+No special handling needed in `promptSecret` itself. The wizard already gates on `process.stdin.isTTY` before any prompting:
+
+```typescript
+if (needsPrompt && !process.stdin.isTTY) {
+  // exits with instructions
+  process.exit(1);
+}
+```
+
+`promptSecret` is only called inside the `if (!botToken)` block, which is only reached after the non-TTY gate. Safe by design.
+
+---
+
+## D4: Sibling audit findings
+
+- **`src/install/uninstall.ts`**: No readline prompts at all. Clean.
+- **`src/service/install.ts` `promptPassword()`**: Already has `_writeToOutput` masking (cycle predates this fix). No action required.
+- **Token echo-back**: After capturing the bot token, the wizard logs `[reach] Written to <envPath>` — the path only, not the token value. No accidental echo. Clean.
+
+---
+
+## D5: Test observability limitation
+
+The readline mock (`vi.mock('readline', ...)`) returns a plain object with a synchronous `question` stub. The mock has no real TTY output stream, so the `_writeToOutput` suppression cannot be observed by watching stdout content.
+
+Mitigation: `capturedWriteFns` array added to hoisted mock state. The mock's `question` stub captures `rl._writeToOutput` at call time, allowing tests to assert the suppressor function was in place during the bot token prompt (IX18) and absent for the subsequent non-secret prompt (IX19).
+
+The output-stream content assertion (IX19 comment) documents this limitation explicitly.
+
+---
+# Carter PR #10 — Cycle 16 Decisions
+
+**Date:** 2026-06-06  
+**Branch:** user/aaron/phase9 @ d899d41
+
+---
+
+## T1 — BOT_COMMAND_NAMES: DELETE (Case A: genuinely dead)
+
+### Investigation
+
+`BOT_COMMAND_NAMES` was introduced in cycle 3 as a shared command registry alias:
+
+```ts
+// src/bot/commands.ts:36
+export const BOT_COMMAND_NAMES = BOT_COMMANDS;
+```
+
+**Grep evidence — zero live references:**
+
+```
+src/      → no references outside the definition itself
+tests/    → no references at all
+```
+
+Only non-code mentions found:
+- `.squad/agents/carter/history.md` — historical narrative, not a code reference
+- `.squad/decisions.md` — two mentions, both documenting past decisions:
+  1. "Added alias export `BOT_COMMAND_NAMES` and startup drift check in `registerHandlers`" — the drift check was subsequently removed
+  2. "alias kept for isBotCommand.test.ts" — that test imports only `isBotCommand` and `BOT_COMMANDS`, not `BOT_COMMAND_NAMES`
+
+**No hardcoded duplicates to wire up.** The codebase uses `BOT_COMMANDS` (the actual `ReadonlySet`) everywhere it needs the set. Nothing is hardcoding a second command-name list that `BOT_COMMAND_NAMES` should be driving.
+
+### Decision
+
+**DELETE.** Case (a): genuinely dead export. The drift check it was originally paired with was removed in a prior cycle; `isBotCommand.test.ts` does not import it. YAGNI applies — a future consumer can re-add if needed.
+
+**Change:** Removed line 36 from `src/bot/commands.ts`. No test imports required updating.
+
+---
+
+## T2 — handlers.slashGuard.test.ts file header: REWRITTEN
+
+The "RED tests (awaiting Carter)" / "⚠️ EXISTING TEST CONFLICT" header was stale. The implementation landed in this PR: `isBotCommand()` guard is live in `handlers.ts`, and `handlers.test.ts` was already updated to use `/list` instead of `/unknown-cmd`. Rewrote the header to describe present reality.
+
+---
+
+## T3 — handlers.slashGuard.test.ts inline scaffold comments: REMOVED
+
+Removed "RED until Carter:" inline comments from test bodies (5 occurrences). Replaced the stale conflict note in the `/unknowncommand` test with a factual note that `handlers.test.ts` was already updated in this PR. Removed stale section heading suffix "(RED until Carter)".
+
+---
+
+## Extra — afkMode.slashGuard.test.ts: same treatment applied
+
+`tests/relay/afkMode.slashGuard.test.ts` carried the same generation of TDD scaffold (file header "RED tests (awaiting Carter)", 5 inline "RED until Carter." body comments, stale section heading). Carter's AFK guard change is also live in this PR. Applied identical cleanup: rewrote header to describe current reality, removed inline RED scaffolding.
+
+## Extra — isBotCommand.test.ts: stale anticipatory header and B1 describe label
+
+- File header: removed "RED until Carter lands src/bot/commands.ts" / "Expected import failure" framing; the module is live.
+- `describe('isBotCommand — B1: digit handling (anticipatory)')` → removed "(anticipatory)" suffix and the "RED until Carter lands the regex change" block comment above it; the fix has landed.
+
+---
+# Carter — PR #10 Cycle 2 Decisions
+
+Date: 2026-05-31
+
+## Thread 1 — /cwd list reply text
+
+**Decision:** Fixed the hint text inline. Changed `/new <alias>` → `/new <session-name> --cwd <alias>` at `cwdCommand.ts:106`. No structural complexity; single-line fix.
+
+## Thread 2 — removeExtension resilience
+
+**Return type chosen:** `StepResult = { label: string; ok: boolean; reason?: string }`.
+- Both `removeExtension()` and `wipeLocalData()` now return `StepResult` instead of `void`.
+- `wipeLocalData()` was already non-fatal for the rmSync failure path; it is now also counted as a step that can fail (ok: false) so the orchestrator can report it accurately.
+- The "not a Reach state directory" safety refusal also returns `{ ok: false }` — the user requested wipe but it didn't happen, so that's a failure worth reporting.
+
+**Orchestrator aggregation:** `runUninstall` collects `StepResult[]` from all sync steps, then calls `uninstall()` (which handles its own exit via node-windows). If `uninstall()` returns (in tests, or on platforms where it doesn't exit directly), the orchestrator prints a summary and calls `process.exit(1)` only if any step failed. This means the service always runs regardless of earlier failures — idempotency contract preserved.
+
+**Caveat:** In production, the node-windows service uninstaller calls `process.exit` internally, so the summary block after `uninstall()` may not execute. This is an existing architectural constraint that would require refactoring the service layer to fix — out of scope for this wave. The user still sees the per-step error logs as they occur.
+
+**Test added:** UN7 — `removeExtension` fails (rmSync throws EPERM) → service still called → `process.exit(1)` at end.
+
+## Threads 3/4/5 — isDirectRun path normalisation
+
+**Decision: extracted to a shared helper** (`src/install/isDirectRun.ts`).
+- Rationale: all three files had the exact same bug. A single helper ensures the fix is applied uniformly and gives a natural home for any future edge-case work (e.g., case-folding on Windows).
+- The helper uses `path.resolve(process.argv[1])` to normalise relative paths to absolute, then compares against `fileURLToPath(importMetaUrl)` which is already absolute.
+
+**Windows case-sensitivity:** Not added. Both `fileURLToPath(import.meta.url)` and `path.resolve(process.argv[1])` derive from the same Node.js filesystem view; in practice they carry the same casing. No flake observed in CI. If a flake surfaces in the future, add `.toLowerCase()` inside the helper guarded by `process.platform === 'win32'`.
+
+**Tests added:** `tests/install/isDirectRun.test.ts` with IDR1–IDR4 covering absolute match, relative-path match, different file (false), and empty argv[1] (false).
+
+## Anything that pushed back
+
+Nothing unexpected. The `wipeLocalData` readdirSync is not mocked in `uninstall.test.ts`; it falls through to the real `fs`, throws because the mock path doesn't exist on disk, and the existing catch block handles it — tests were already relying on that behaviour implicitly. No change needed.
+
+---
+# Carter — PR #10 Cycle 3 Fix Decisions
+
+**Wave:** Cycle 3 (PR #10, branch user/aaron/phase9)
+**Date:** 2026-05-31
+**Threads:** T2 (service uninstall composability), T6 (noble-six consolidation), T7 (isBotCommand header comment), T8 (TELEGRAM_ALLOWED_USER_IDS wizard validation)
+
+---
+
+## T2 — uninstallService() Promise shape
+
+**Final shape:** `export function uninstallService(): Promise<void>` (sync wrapper returning a Promise, not async).
+
+**Settled-guard pattern:** Boolean `settled` flag, checked at the top of every event handler and the timeout callback. First event wins; late arrivals are no-ops. Matches the extension.mjs streaming fix pattern (Noble Six Phase 8.5).
+
+**Timeout duration:** 60 000 ms (60 s). Chosen as a safe upper bound for node-windows SCM round-trip. Rejects with `'[reach] Service uninstall timed out after 60 s — uninstall event never fired'`.
+
+**Listener cleanup:** `clearTimeout(timer)` called in a shared `finish(err?)` helper that both resolves and rejects. Timer is the only external resource; node-windows event listeners are not manually removed (they become inert after `settled = true`).
+
+**Backward-compat shim:** `uninstall()` kept as a synchronous CLI shim that calls `uninstallService().then(() => process.exit(0)).catch(() => process.exit(1))`. This preserves the existing observable behavior for any code that imports the old `uninstall()` export.
+
+**main() update:** `service/install.ts:main()` now `await uninstallService()` with explicit `process.exit(0|1)` instead of calling the shim.
+
+**runUninstall() changes:**
+- Promoted to `async function runUninstall(): Promise<void>`.
+- Service step is now a tracked `StepResult` (`{ label: 'Uninstall Windows service', ok: true/false }`).
+- On rejection: logs error, pushes `{ ok: false, reason }`, continues to step summary.
+- `isDirectRun` block chains `.then(() => process.exit(0)).catch(() => process.exit(1))`.
+
+**New tests:** UN8 (service rejects → exit 1), UN9 (service resolves → no exit). Existing UN1–UN7 updated to async/await. All 9 tests green.
+
+---
+
+## T6 — Noble Six directory consolidation
+
+**Source of truth kept:** `noble-six/` (hyphenated). Physical merge performed — `noble six/` git-removed, content preserved.
+
+**Charter decision:** Kept the single charter from `noble six/charter.md` (the only copy; `noble-six/` had no charter before). Updated one stale inbox path reference: `noble six-{brief-slug}` → `noble-six-{brief-slug}`.
+
+**History merge:** `noble-six/history.md` was the shorter/newer file (Opus 4.5 instance, Phase 9 only). `noble six/history.md` was the comprehensive summarized file (Opus 4.6 instance, Phases 6–9+). Merge strategy:
+- Used `noble six/history.md` as base (complete phase history + learnings).
+- Inserted the unique "Phase 9 Sprint" detail block from `noble-six/history.md` (sprint breakdown, Knowledge Base, Decision Consolidation, No Further Phases Assigned) before the existing Learnings section.
+- The overlapping streaming-fix section (2026-05-30T22:08) was present in both; kept the `noble six/history.md` copy (which has the Learnings appendix following it) — deduplicated as instructed.
+
+**history-archive.md:** Copied verbatim from `noble six/` to `noble-six/` (Phase 1–5 archive).
+
+**No merge conflicts:** Both files were append-only; no conflicting edits detected.
+
+**team.md:** Updated to `.squad/agents/noble-six/charter.md`.
+
+**Casting registry:** `casting/registry.json` key left as `"noble six"` (string identifier used by agent dispatch, distinct from folder path). Only the physical folder path and charter reference were renamed.
+
+---
+
+## T8 — TELEGRAM_ALLOWED_USER_IDS validation regex
+
+**Validation regex:** `/^[1-9][0-9]*$/` — positive integer, no leading zero, no negative, no decimal, no whitespace in the token itself.
+
+**Normalization:** Input split on `,`, each token `.trim()`-ed, joined back as `tokens.join(',')` before writing. Handles `"123, 456"` → `"123,456"`.
+
+**Alignment with parseEnv:** `parseEnv` accepts tokens that pass `t.length > 0 && Number.isInteger(Number(t)) && Number(t) > 0`. The wizard's `/^[1-9][0-9]*$/` regex is a strict subset: it rejects leading zeros (e.g., `"007"`), which would technically pass `Number()` conversion (`Number("007") === 7`) — a deliberate tightening to reject ambiguous input. No valid use case for leading zeros in Telegram user IDs.
+
+**Divergence from parseEnv:** The wizard rejects `"007"` (leading zero); parseEnv would accept `7` derived from it. This is intentional — the wizard is the canonical entry point and should be stricter than the runtime parser.
+
+**Retry cap:** 3 attempts. On each invalid attempt, error is printed and user is reprompted. After the 3rd failure (or on blank input at any point), falls through to skip-with-confirmation (existing Q2 behavior).
+
+**New tests:** IX14 (valid `123,456`), IX15 (invalid then valid retry), IX16 (whitespace normalization), IX17 (empty token rejection + skip flow). All 4 tests green.
+
+---
+# Carter — PR #10 Cycle 3 Storage Migration Decisions
+
+**Date:** 2026-05-31  
+**Branch:** user/aaron/phase9  
+**Author:** Carter (Bridge Dev)
+
+---
+
+## Migration Approach: Option A (Explicit)
+
+**Decision:** Approach A — `migrateLegacyDataDir()` is an explicit function called from two entry points: `src/install/index.ts` (`runInit`) and `src/main.ts` (`main`).
+
+**Reasoning over Option B (lazy / first-call):**
+- Explicit call sites are easier to test: tests can call the function directly and assert side effects without going through `getReachDataDir()`.
+- The module-level `migrationAttempted` flag in Option B couples migration state to module lifecycle, making reset tricky in test environments (requires `vi.resetModules()`). In Option A the flag lives in `migrate.ts` which can be independently reset.
+- Explicit call sites make it obvious in the install and daemon startup that "migration runs here" — future maintainers don't need to know that `getReachDataDir()` has side effects.
+- Aaron's install is single-machine; the extra explicitness costs nothing.
+
+**Tradeoff accepted:** If someone adds a third entry point and forgets to call `migrateLegacyDataDir()`, migration won't run there. Acceptable: the two call sites (install + daemon start) cover the entire install lifecycle.
+
+---
+
+## REACH_DATA_DIR Resolution Rules
+
+| Input | Behavior |
+|-------|----------|
+| Not set | `path.join(os.homedir(), '.reach')` |
+| Empty string `""` | Treated as absent — uses default |
+| Whitespace only `"   "` | `.trim()` → empty → treated as absent — uses default |
+| Absolute path | `path.resolve(value.trim())` — resolved as-is |
+| Relative path | `path.resolve(value.trim())` — resolved relative to `process.cwd()` |
+
+**Rationale:** `.trim()` before empty-check prevents accidental whitespace (e.g., trailing newline in a `.env` file) from being used as a path. `path.resolve()` normalises both relative and absolute paths, making the output always absolute.
+
+---
+
+## Hardcoded Path Strings Found Beyond Initial Scope
+
+Grepped `src/` for `LOCALAPPDATA`, `APPDATA.*reach`, and `\\reach\\`. Found:
+
+| File | Pattern found | Action taken |
+|------|--------------|--------------|
+| `src/config/config.ts` | `%APPDATA%\reach` in docstring + code | ✅ Updated docstring + simplified function |
+| `src/bridge/pipeAuth.ts` | `%LOCALAPPDATA%\reach\bridge-auth.json` in docstring + `getAuthFilePath()` | ✅ Updated to use `getReachDataDir()` |
+| `src/install/uninstall.ts` | `%LOCALAPPDATA%\reach` in comments, `LOCALAPPDATA` env var in two functions | ✅ Removed both; uses `getReachDataDir()` |
+| `src/install/copyExtension.ts` | `%APPDATA%\GitHub Copilot\...` in docstring | ⏭️ Left untouched — this is the extension dir, not Reach state (explicitly out of scope per design doc §1) |
+
+No additional hardcoded path strings found outside these four files.
+
+---
+
+## Cross-Platform / ADR-5 Confirmation
+
+`os.homedir()` returns the correct user home directory on Windows when the daemon runs as a service per ADR-5 (service runs as the logged-in user account, not SYSTEM). When a named-user Windows service starts:
+- `os.homedir()` → `C:\Users\<username>` (same as interactive shell)
+- `APPDATA`, `LOCALAPPDATA`, and `USERPROFILE` are all populated by SCM
+
+This is documented in Noble Six's design doc §7 and confirmed by `src/service/install.ts:11`. A dedicated service-context test is deferred to Phase 10 (noted in `history.md`).
+
+---
+
+## Files Changed
+
+| File | Change |
+|------|--------|
+| `src/config/config.ts` | `getReachDataDir()` rewritten to `~/.reach/` + `REACH_DATA_DIR` override |
+| `src/config/migrate.ts` | **New** — `migrateLegacyDataDir()` one-shot migration helper |
+| `src/bridge/pipeAuth.ts` | `getAuthFilePath()` → `getReachDataDir() + '/bridge-auth.json'`; import added |
+| `src/install/uninstall.ts` | `wipeLocalData()` targets `getReachDataDir()`; no-wipe hint updated; `LOCALAPPDATA` code removed |
+| `src/install/index.ts` | `migrateLegacyDataDir()` called at start of `runInit()` |
+| `src/main.ts` | `migrateLegacyDataDir()` called at start of `main()` |
+| `tests/config/config.test.ts` | `getReachDataDir()` + `getConfigPath()` tests rewritten for new behaviour |
+| `tests/config/migrate.test.ts` | **New** — migration unit tests (MIG1–MIG6) |
+| `tests/install/uninstall.test.ts` | Updated for new path structure; UN10 added |
+
+---
+# Carter — PR #10 Cycle 4 Fix Decisions
+
+**Wave:** Cycle 4 (PR #10, branch user/aaron/phase9)
+**Date:** 2026-06-01
+**Threads:** Thread 1 (uninstallService sync-throw timer leak), Thread 2 (hardcoded ~/.reach in no-wipe hint), Thread 3 (stale comment)
+
+---
+
+## Thread 1 — uninstallService sync-throw guard
+
+**finish() helper:** Already existed from Cycle 3 (T2 fix). It calls `clearTimeout(timer)` then resolve/reject. I called it from the new catch block rather than refactoring inline — the helper already does all three required things (clears timeout, resolves/rejects). No refactor needed.
+
+**Listener cleanup approach:** After `finish()` is called, `settled = true` is set before calling `finish()`, so all event handlers are neutered by the settled guard. Physical listener removal (`svc.removeListener`) was NOT added — the `ServiceInstance` interface does not expose `removeListener`, and the settled guard is sufficient. If physical removal is needed in the future, `ServiceInstance` must be extended.
+
+**Mock impl leak fix:** SU tests set `mockSvcUninstall.mockImplementation(() => { throw ... })`. The outer `beforeEach` calls `vi.clearAllMocks()` (NOT `vi.resetAllMocks()`), which preserves mock implementations. Added `afterEach(() => { mockSvcUninstall.mockReset(); })` inside the `uninstallService()` describe block to prevent the throw impl from leaking into subsequent `main()` tests.
+
+---
+
+## Thread 2 — hardcoded ~/.reach in no-wipe hint
+
+**Fix applied:** Line 114 in `src/install/uninstall.ts`. The `reachDir` variable was already resolved on line 111 via `getReachDataDir()`. Only the `Remove-Item` command line was hardcoded; the "Local state preserved" line (line 112) already used `reachDir`. Changed to template literal: `` `[reach]   Remove-Item -Recurse -Force "${reachDir}"` ``.
+
+**Other hardcoded ~/.reach strings:** Grep across `src/**/*.ts` found other occurrences in:
+- `src/config/config.ts` — JSDoc comments describing default dir. These are accurate descriptions of the *default*, not user-facing instructions. Left alone.
+- `src/config/migrate.ts` — JSDoc/inline comments. Same reasoning. Left alone.
+- `src/install/index.ts` — Migration comment. Describes legacy → new path. Left alone.
+- `src/bridge/pipeAuth.ts` — JSDoc comment. Left alone.
+- `src/install/uninstall.ts` JSDoc (`/** When true, also deletes ~/.reach/... */`) — This is describing the *default* behavior, not a runtime path. Left alone.
+
+Only the **runtime user-facing console output** in the no-wipe branch was wrong.
+
+---
+
+## Thread 3 — stale comment
+
+Comment at lines 100–101 in `src/install/uninstall.ts`. Old text claimed the service uninstaller "calls process.exit internally via node-windows events." Updated to accurately reflect the post-Cycle-3 architecture: uninstallService() returns a Promise, does not exit, and the orchestrator accumulates step results and exits at the end.
+
+---
+# Carter — PR #10 Cycle 5 Decisions
+
+**Date:** 2026-06-01  
+**Commit:** TBD (fix(pr10-cycle5): fail-closed wipe inspection + log service uninstall errors)
+
+---
+
+## 1. Other silent-catch patterns found in install/service code
+
+### `src/config/migrate.ts:113` — non-fatal empty-dir removal
+
+```ts
+try { fs.rmSync(legacyDir, { recursive: true, force: true }); } catch { /* non-fatal */ }
+```
+
+**Context:** This runs only when `copied.length === 0` — the legacy dir is already empty. The rmSync here is a cosmetic cleanup (remove the now-empty shell). If it fails, the migration has already succeeded and no data was left behind. This is a legitimate best-effort swallow: failure is genuinely non-fatal and calling out specific error paths would only add noise to migration logs.
+
+**Assessment:** Leave as-is. Not a safety bug. Unlike `wipeLocalData`, there is no risk of an unintended wipe because the directory is provably empty at this point.
+
+### No other silent-catch patterns found in `src/install/` or `src/service/`.
+
+---
+
+## 2. Final error-logging format
+
+The format chosen for service uninstall errors (in both the CLI shim and `main()`):
+
+```
+[reach] Service uninstall failed: <error.message>
+```
+
+### Rationale
+
+- **`[reach]` prefix** — Consistent with every other user-facing message in the install/service domain. Makes it easy to grep logs and correlate with other output.
+- **`Service uninstall failed:`** — Noun-phrase subject. Action-oriented. Distinguishes this from filesystem step failures in `runUninstall()` which use `ERROR:` or `WARNING:` prefixes.
+- **`<error.message>`** — The raw message from the Error object. No wrapping, no JSON, just the text. Avoids double-quoting and keeps copy-paste debugging simple.
+
+### Standardization recommendation for Aaron
+
+If other install commands (e.g., `install()` CLI shim) ever gain similar error-propagation, use the same pattern:
+
+```ts
+.catch((err) => {
+  const msg = err instanceof Error ? err.message : String(err);
+  console.error(`[reach] Service <action> failed: ${msg}`);
+  process.exit(1);
+});
+```
+
+Substitute `<action>` with `install`, `uninstall`, `start`, `stop`, etc.  
+The consistent prefix makes it trivial to filter support logs: `grep '\[reach\] Service'`.
+
+---
+
+## 3. mockImplementationOnce pattern for fire-and-forget tests
+
+When testing a `void`-returning function with an internal promise chain (fire-and-forget), and `process.exit` is mocked to throw globally, use `mockImplementationOnce` (not `mockImplementation`) to avoid leaking a non-throwing mock into subsequent tests. This pattern is now established and should be used whenever a similar fire-and-forget shim needs error-path testing.
+
+---
+# Carter — PR #10 Cycle 6 Decisions
+
+**Date:** 2026-06-01  
+**Branch:** user/aaron/phase9  
+**Commit wave:** fix(pr10-cycle6)
+
+---
+
+## T1 — Orientation Race: Option A (flag-first, no catch rollback)
+
+**Decision:** Set `binding.orientationSent = true` BEFORE `await safeSendMessage(...)`, and do NOT roll back on failure.
+
+**Reasoning:**
+
+- **Why A over B:** The race window only opens if we set the flag after the await. The callers check `!binding.orientationSent` and skip if already set; with flag-first, a second concurrent caller sees the flag immediately and skips — even while the first send is still in flight. Option B (rollback in catch) would reopen the race window on transient failures, which defeats the purpose of the guard.
+- **On failure semantics:** `safeSendMessage` already swallows errors internally (logs a warning, never throws). Even if the send fails, the orientation state is conceptually "attempted for this AFK cycle." Retrying on the next `activate()` call after a failure would require a new AFK cycle, which resets `orientationSent` anyway. So keeping the flag true on failure is correct.
+- **No retry-on-failure pattern found:** Searched the codebase — no pattern of rolling back state flags and retrying on transient errors in the AFK module. `withRateLimitRetry` covers rate-limit retries at the send layer, not flag rollback at the coordination layer.
+
+---
+
+## T2 — Double `[reach]` Prefix Audit
+
+**Decision:** Strip `[reach]` from `Error.message` bodies in `src/service/install.ts`. The logger owns context.
+
+**Single internal Error message with `[reach]` found and fixed:**
+
+```
+Line 346 (before): new Error('[reach] Service uninstall timed out after 60 s — uninstall event never fired')
+Line 346 (after):  new Error(`Service uninstall timed out after ${UNINSTALL_TIMEOUT_MS / 1000} s — uninstall event never fired`)
+```
+
+**Audit result — other `[reach]` occurrences in install.ts:**  
+All other `[reach]` occurrences are in `console.log`, `console.error`, and `console.warn` calls — these are correct (the logger adds context). There are NO other `new Error('[reach] ...')` patterns in `src/service/install.ts` or `src/install/*`.
+
+The only violator was the timeout error message. The call-site `console.error('[reach] Service uninstall failed: ${err.message}')` correctly prefixes context at the boundary.
+
+---
+
+## Cluster 1 — redactSecrets Regex Final Shape
+
+**Pattern change:** Added a 4th capture group `(["']?)` after the value in both KEYWORD_PATTERN and ENV_ASSIGNMENT_PATTERN to capture the optional trailing quote.
+
+**KEYWORD_PATTERN (final):**
+```
+/\b(token|key|secret|...)\b(\s*[:=]?\s*['"]?)([A-Za-z0-9_\-.+/=]{16,})(["']?)/gi
+```
+Groups: `(keyword)(separator+openQuote)(value)(closeQuote)`
+
+**ENV_ASSIGNMENT_PATTERN (final):**
+```
+/\b([A-Z][A-Z0-9_]*(?:TOKEN|...))\b(\s*=\s*['"]?)([^\s'"]{8,})(["']?)/g
+```
+Groups: `(varName)(separator+openQuote)(value)(closeQuote)`
+
+**Replacement shape:**
+```ts
+(_match, kw, sep, _value, closeQuote) => `${kw}${sep}[REDACTED]${closeQuote}`
+```
+
+**Why independent `(["']?)` instead of backref `\3`:**
+Conservative bias rule — false negatives (missed secrets) are worse than false positives. With backref, a mismatched-quote value (`token="secret'`) might fail to match and leak. With independent capture, the trailing character (whatever it is) is always consumed and re-emitted. Downstream pass 3 (HIGH_ENTROPY_PATTERN) provides an additional backstop.
+
+**Mismatched quote behavior:** `token="abc123longvalue1234'` → value redacted, trailing `'` re-emitted as-is. Output is malformed like the input was — acceptable for a best-effort redactor.
+
+---
+# Carter — PR #10 Cycle 7 Decisions
+
+**Date:** 2026-06-02  
+**Branch:** user/aaron/phase9  
+**Commit wave:** fix(pr10-cycle7)
+
+---
+
+## T1 — `src/config/migrate.ts`: win32 platform gate
+
+**Decision:** Option (b) — explicit `if (process.platform !== 'win32') return;` at the
+top of `migrateLegacyDataDir()`, before the `migrationAttempted` flag check.
+
+**Rationale:**
+
+Pre-Phase 8.5 Reach was Windows-only. The legacy paths (`%APPDATA%\reach\`,
+`%LOCALAPPDATA%\reach\`) are Windows-specific constructs. There has never been a
+Unix install of Reach: prior code used `process.env.APPDATA` which is undefined on
+Unix, meaning the codebase would have crashed or produced no-op behavior. There is
+no Unix legacy state to migrate FROM.
+
+The Copilot reviewer's premise ("previous default was ~/.config/reach") is incorrect.
+Pre-Cycle 3 code did not fall back to `~/.config/reach` — it used `process.env.APPDATA`
+with a fallback to `path.join(os.homedir(), 'AppData', 'Roaming')` (a Windows path
+convention even when APPDATA is unset). This fallback only makes sense on Windows.
+
+**Why Option (b) over (a):** Option (a) (do nothing) leaves the function silently
+inspecting `AppData\Roaming\reach` on a future Unix target, which would always be
+absent but is confusing. Explicit gate + documentation makes the Windows-only
+assumption clear to Phase 10 contributors. The comment explicitly warns: "When Phase
+10 adds cross-platform support, there will be no legacy Unix paths to migrate FROM."
+This prevents a future contributor from adding a `~/.config/reach` migration branch
+without understanding that no such legacy state ever existed.
+
+**Platform gate position:** Before `migrationAttempted` — this means on non-Windows,
+the function returns without setting the flag. This is correct: the flag is only
+meaningful for Windows execution flow, and returning before it is set does not create
+double-call issues (the function is still a no-op on non-Windows regardless of how
+many times it is called).
+
+---
+
+## T2 — `src/install/uninstall.ts`: `import 'dotenv/config'` added
+
+**Decision:** Add `import 'dotenv/config'` as the first import in `uninstall.ts`.
+
+**Rationale:**
+
+`runUninstall()`/`wipeLocalData()` calls `getReachDataDir()`, which honors the
+`REACH_DATA_DIR` environment variable. The daemon loads `.env` via `dotenv/config`
+(in `src/main.ts`), but the uninstall script did not. A user with
+`REACH_DATA_DIR=D:\custom\reach` in `.env` would find that `npm run uninstall -- --wipe`
+deletes `~/.reach` (the default) instead of their actual state directory, because the
+custom path was only in `.env` and never loaded.
+
+This is a real data-integrity bug: the daemon has been writing to one directory and
+the uninstall script is wiping a different one.
+
+---
+
+## T2 Audit — Sibling install entry points
+
+**`src/install/index.ts` (`npm run init`):** ✅ ALSO FIXED.
+
+`runInit()` calls `migrateLegacyDataDir()` → `getReachDataDir()`. If a user has
+`REACH_DATA_DIR` in `.env` (e.g., an upgrade on a system with a custom data dir),
+the migration would target `~/.reach` instead of the custom dir, potentially
+failing to find or copy the legacy data to the right place. Added
+`import 'dotenv/config'` as the first import.
+
+Additionally, `runConfigWizard()` reads Telegram vars from `process.env` with
+`readEnvFile()` as fallback. With `dotenv/config` loaded, `process.env` is already
+populated from `.env` before the wizard runs. The wizard's `getVal()` function reads
+`process.env` first anyway, so behavior is consistent — this doesn't change wizard
+semantics, it just makes `REACH_DATA_DIR` (and any other process-level config in
+`.env`) available through `process.env` uniformly.
+
+**`src/install/copyExtension.ts` (`npm run install:extension`):** ✅ NOT needed.
+
+`copyExtension()` does not call `getReachDataDir()`. It only uses:
+- `process.env['APPDATA']` — Windows system env var, always in `process.env`, never in `.env`
+- `process.env['NODE_ENV']` — set at CLI invocation (`NODE_ENV=development npm run ...`), not via `.env`
+
+No `dotenv/config` added.
+
+---
+
+## Test coverage added
+
+- **MIG7** (`tests/config/migrate.test.ts`): non-Windows platform mock (`process.platform = 'linux'`),
+  asserts `existsSync` is never called — the gate fires before any fs access.
+- **UN13** (`tests/install/uninstall.test.ts`): comment-level integration test note documenting
+  the manual verification procedure. Unit-level assertion confirms the `vi.mock('dotenv/config')`
+  stub is exercised (i.e., the import is present in the production module).
+- **dotenv mock** added to both `tests/install/uninstall.test.ts` and `tests/install/index.test.ts`
+  to prevent dotenv from attempting real `.env` reads during the test run.
+
+---
+# Carter — PR #10 Cycle 8 Decisions
+
+**Date:** 2026-06-03  
+**Branch:** user/aaron/phase9  
+**Commit:** fix(pr10-cycle8): redactSecrets charset for JWT/base64 + defensive excerpt truncation
+
+---
+
+## T1 — HIGH_ENTROPY_PATTERN charset
+
+**Final charset:** `[A-Za-z0-9_\-/+.=]{39,}`
+
+Added `.` and `=` to the existing `[A-Za-z0-9_\-/+]` charset. This catches:
+- JWT-shaped tokens (three `.`-separated base64url segments like `header.payload.sig`)
+- Standard base64 strings with `=` or `==` padding
+
+**Threshold:** Unchanged at 39+ characters (per cycle-2 docstring decision).
+
+**False-positive analysis:**
+
+Long URLs were the primary concern. Testing `https://example.com/very/long/path/with-many-segments`:
+- The URL-creds pattern (pass 4) doesn't help here — it only matches `user:pass@host`.
+- However, `https://example.com/very/long/path/with-many-segments` contains `:` and `/` but
+  `https:` prefix — the scheme prefix `https:` and `:` are NOT in the charset, so the URL is
+  naturally broken at the `:` character. The path segment after the host would need to be a
+  single unbroken run of 39+ chars from the allowed charset to trigger HIGH_ENTROPY_PATTERN.
+- Real path segments like `/very/long/path/with-many-segments` contain `/` (in charset) but
+  also hyphens and mixed-case short words. A run like `/very/long/path` totals 15 chars —
+  nowhere near 39.
+- Only pathological cases like `https://host/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` (a
+  40-char lowercase run) would newly match. These are not realistic URL patterns in user prose.
+- **Conclusion:** False-positive risk from the `.`/`=` addition is negligible. The module's
+  conservative bias (false positives < false negatives) applies.
+
+**Existing tests:** All 21 pre-existing redactSecrets tests continue to pass. URL fixture
+`https://user:password@example.com/repo.git` is covered by the URL_CREDS_PATTERN (pass 4)
+and the `example.com` host survives as expected.
+
+**New tests added:** C8-1 (JWT token), C8-2 (base64 with `=` padding) — both in
+`tests/bot/redactSecrets.test.ts`.
+
+---
+
+## T2 — MAX_EXCERPT_LENGTH location
+
+**Decision:** Module constant in `src/bot/afkMode.ts`.
+
+`protocol.ts` does not define a `MAX_EXCERPT_LENGTH` constant — the 500-char truncation is
+only described in the JSDoc comment on `AfkRequestMessage.lastAssistantExcerpt`. Rather than
+add a numeric export to the protocol file (which would mix wire-schema types with behavioral
+constants), `MAX_EXCERPT_LENGTH = 500` is defined at the top of `afkMode.ts` where it is used.
+
+If the protocol ever formalizes this constant (e.g., for extension-side enforcement parity),
+it can be extracted to `protocol.ts` and imported here.
+
+**Implementation:** Truncation applied at ingestion in the `afk.request` handler, before
+`lastKnownExcerpts.set()`. Excerpts exceeding 500 chars are sliced and appended with `…`
+(U+2026 HORIZONTAL ELLIPSIS). Excerpts of exactly 500 chars or fewer are stored unchanged.
+
+**New tests added:** C8 truncation block in `tests/bot/afkMode.staleExcerpt.test.ts`:
+- 600-char excerpt → truncated, `…` present in /status output
+- 500-char excerpt → stored unchanged, no `…`
+- 499-char excerpt → stored unchanged, no `…`
+
+Test strings use short space-separated words (`'word '.repeat(n)`) to avoid the
+HIGH_ENTROPY_PATTERN redacting the test values before they reach the display assertion.
+
+---
+# Carter — PR #10 Cycle 9 Decisions
+
+**Date:** 2026-06-05  
+**Branch:** user/aaron/phase9  
+**Threads:** T1 (atomic legacy migration), T2 (excerpt truncation off-by-one)
+
+---
+
+## T1 — Atomic legacy migration (`src/config/migrate.ts:84-107`)
+
+### Options considered
+
+| Option | Description | Risk |
+|--------|-------------|------|
+| A | Atomic temp+rename per-dir | Cross-device rename concern on Windows; complex partial-cleanup path |
+| B | Per-dir retry: remove early-return, check each legacy dir individually | Minimal; idempotent copy handles re-runs cleanly |
+| C | Sentinel file `.reach-migration-complete` | More state to manage; doesn't address partial dir failure |
+| D | Combine B + A | Most robust; added complexity justified only if cross-device risk is a concern |
+
+### Decision: **Option B**
+
+**Rationale:** The reported bug is precisely the early return `if (fs.existsSync(newRoot)) return;`. Removing it is sufficient — the existing per-dir loop already handles partial states correctly:
+- `mkdirSync` with `{ recursive: true }` is a no-op if the dir already exists.
+- Each legacy dir is checked for existence before attempting copy.
+- If a legacy dir was already successfully migrated (and removed), it is absent from disk and simply skipped.
+- Re-copying already-migrated files (overwrite) is harmless and idempotent.
+
+Option D (temp+rename) would guard against mid-copy crashes, but on Windows a rename (MoveFile) within the same volume is atomic and would require a scratch dir under `newRoot`. Given Phase 8.5 scope and the low frequency of mid-copy crashes, this complexity is not justified. The retry path (Option B) closes the actual failure mode: a partial migration that left `newRoot` on disk with only some legacy dirs copied.
+
+### Trade-offs / limitations
+
+- A crash between `copyFileSync` and `rmSync` on a single file leaves the legacy dir intact, which is safe (next run re-copies, then removes).
+- A crash between the last successful `rmSync` and process exit leaves no legacy dir and is fully clean.
+- The `migrationAttempted` in-process flag still prevents double-migration within one process, which is correct and unchanged.
+
+### Files changed
+
+- `src/config/migrate.ts`: removed `if (fs.existsSync(newRoot)) return;`, updated doc comment.
+- `tests/config/migrate.test.ts`: added MIG8 — partial migration retry scenario.
+
+---
+
+## T2 — Off-by-one in excerpt truncation (`src/bot/afkMode.ts:128-130`)
+
+### Decision: apply `slice(0, MAX_EXCERPT_LENGTH - 1) + '…'`
+
+`'…'` is one Unicode character (U+2026). The previous `slice(0, MAX_EXCERPT_LENGTH)` produced 500 chars then appended the ellipsis, storing 501 chars total — exceeding the documented 500-char protocol limit.
+
+Fix: `slice(0, MAX_EXCERPT_LENGTH - 1)` = 499 chars + `'…'` = **500 chars**, matching the limit exactly.
+
+### Files changed
+
+- `src/bot/afkMode.ts`: off-by-one corrected.
+- `tests/bot/afkMode.staleExcerpt.test.ts`: added `storedExcerpt.length ≤ 500` assertion to C8 truncation test.
+
+---
+# Decision: carter-pr10-stale-excerpt
+
+**Date:** 2026-05-31
+**Author:** Carter (Bridge Dev)
+**Context:** PR #10, Copilot review comment on `src/bot/afkMode.ts:119-123`
+
+## Decisions Made
+
+### 1. Empty-string treated as absent (yes — recommended)
+
+An `afk.request` with `lastAssistantExcerpt === ''` is treated identically to an
+omitted excerpt. The `lastKnownExcerpts` map entry is **deleted**, not preserved.
+
+**Rationale:** Redaction (`redactSecrets`) applied to an excerpt that consists
+entirely of secrets produces `''`. Storing an empty string would still suppress
+the "no excerpt" fallback path (`if (rawExcerpt)` is falsy), but would show
+a blank `💬 Last from …:` line with no content. Deleting the key avoids this
+display artifact and keeps the invariant: "a stored excerpt is always
+non-empty and displayable."
+
+The combined guard is: `if (lastAssistantExcerpt !== undefined && lastAssistantExcerpt !== '')`.
+
+### 2. No consumer adjustment needed in `formatOrientationMessage` / `handleStatusCommand`
+
+Both consumers reach `formatOrientationMessage`, which guards with:
+
+```ts
+const rawExcerpt = this.lastKnownExcerpts.get(binding.sessionId);
+if (rawExcerpt) { ... }
+```
+
+After the fix, a deleted key returns `undefined`, which is falsy — the `💬`
+block is correctly omitted with no consumer-side changes needed.
+
+`handleStatusCommand` delegates entirely to `formatOrientationMessage` via
+`safeSendMessage`; no further adjustment required there either.
+
+## Fix Location
+
+`src/bot/afkMode.ts:119-128` — `afk.request` handler in the constructor.
+
+---
+# Noble Six — State Storage Triage
+
+**Date:** 2026-05-31T22:50:49-07:00
+**Author:** Noble Six (Lead / Architect)
+**Context:** PR #10 cycle 3 Copilot review findings T1/T3/T4/T5 — split state storage layout
+
+---
+
+## Recommendation
+
+**Unify all Reach state under `~/.reach/` (`os.homedir()/.reach/`).**
+
+- Single root, zero platform switches, cross-platform ready for Phase 10.
+- `getReachDataDir()` becomes a one-liner: `path.join(os.homedir(), '.reach')`.
+- `pipeAuth.ts` drops its independent `LOCALAPPDATA` path and reuses `getReachDataDir()`.
+- `--wipe` simplifies to one `rmSync` on one directory.
+- Cost: S (small) — ~25 LOC across 4 files, 1.5h implementation.
+
+## Rationale
+
+The split was unintentional (two authors, two defaults, no ADR). Today's layout puts durable state in `%APPDATA%` and transient state in `%LOCALAPPDATA%`. Neither roaming nor locality matters for a single-machine daemon. `~/.reach/` matches the dominant CLI tool pattern (`~/.aws/`, `~/.kube/`, `~/.docker/`) and works unchanged on macOS/Linux — the only option that avoids a Phase 10 rewrite of path logic.
+
+## Would NOT Recommend
+
+**Option B (unify under `%APPDATA%`)** — actively harmful. `bridge-auth.json` is per-machine transient state; roaming it via `%APPDATA%` would cause auth failures on multi-machine profiles. This is the only option with a correctness hazard, not just a style preference.
+
+## Architectural Follow-Up for Phase 10
+
+Regardless of which option is chosen:
+1. **`REACH_DATA_DIR` env override** — Consider adding a `process.env.REACH_DATA_DIR` override (~3 LOC) for corporate environments with redirected home directories.
+2. **Extension path** — The Copilot extension (`extension.mjs`) lives in `%APPDATA%\GitHub Copilot\...` — this is Copilot's tree, not ours. It stays where it is regardless of state root changes.
+3. **XDG compliance** — The current `~/.reach/` recommendation is XDG-adjacent but not XDG-compliant (which would be `~/.local/share/reach/` for data, `~/.config/reach/` for config). Full XDG is overkill for a tool this small — revisit only if Reach grows to need cache/log separation.
+
+---
+
+Full design doc: `.copilot/reach-state-storage-design.md`

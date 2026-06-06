@@ -1,3 +1,4 @@
+# Carter — History (PR #10 squash-merged 2026-06-06, commit 692e770)
 # Carter — History (Summarized 2026-05-30 → Phase 9 complete)
 # Carter — History (Summarized 2026-05-28 → Phase 8.5 complete 2026-05-30)
 

@@ -231,3 +231,14 @@ back to `SESSION_ID`. `basename` added to the existing `node:path` import.
 
 **Known Phase 10 follow-up:** Cross-platform path detection in /new --cwd (Unix `/` startsWith check deferred).
 
+
+### Phase 10 (Channel Abstraction P1-5): Handler Migration (2026-06-06)
+
+- Command handlers now use `(channelCtx, args)` signature via `channel.onCommand()`.
+- `ctx.reply()` replaced by `channel.sendMessage(channelCtx, text)`.
+- `message_thread_id` is implicit in `channelCtx` — `TelegramChannel.sendMessage` handles falsy `threadId` by omitting `message_thread_id` (General Topic).
+- AFK mirror stays grammY-specific via `setMessageInterceptor()` because it needs `ctx.from?.id` and other Telegram `Context` fields.
+- `/status` and `/cwd` use the synthetic-ctx adapter pattern to bridge to legacy grammY-only APIs without widening `ChannelPort`.
+- Single Bot instance: `TelegramChannel` owns the bot; `main.ts` casts to get it for `AfkModeController` and prompt registry wiring.
+- `ensurePromptRegistry(bot)` stays in `registerHandlers` for the `interactiveDestructive` eager-registration behavioral test.
+- Zero-regression outcome: Carter's 849 tests pass through the new seam.

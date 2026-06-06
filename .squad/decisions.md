@@ -1,283 +1,6 @@
-> 📦 Entries from 2026-05-22 through 2026-05-30 archived. This archive process completed 2026-06-06.
+> 📦 Entries from 2026-05-30 and earlier archived to decisions-archive-2026-06-06.md on 2026-06-06.
 
 ---
-
-> 📦 Entries from 2026-05-22 and earlier archived to decisions-archive-2026-05-29.md on 2026-05-29.
-
----
-
-### I10 — Sensitive-Directory Warning in `validatePath`
-
-**Decision: warn-via-return-field (not throw)**
-
-Aaron explicitly picked **warn, not block**. The `validatePath` return type is extended to:
-
-```typescript
-{ ok: true; normalized: string; warning?: string } | { ok: false; reason: string }
-```
-
-When `warning` is set, the caller (the `/cwd add` handler) is responsible for surfacing it to the user before adding the entry. The entry is still added — the warning is informational only.
-
-**Sensitive prefix list (Windows-only — `process.platform === 'win32'`)**
-
-| Prefix | Source |
-|--------|--------|
-| `%WINDIR%` (typically `C:\Windows`) | `process.env.WINDIR ?? 'C:\\Windows'`, resolved once via `nodePath.resolve` |
-| `C:\Program Files` | Hardcoded |
-| `C:\Program Files (x86)` | Hardcoded |
-| Any `C:\Users\<OtherUser>\` | Detected by parsing path under `C:\Users\`; excluded if under current user's `process.env.USERPROFILE` |
-
-**Junction/symlink detection**
-
-`fs.lstat(normalized)` is called to check `isSymbolicLink()`. If `true`, `fs.realpath(normalized)` resolves the actual target. The sensitive-prefix check runs on both:
-
-1. `normalized` (string-resolved path) → warning **without** junction suffix
-2. `realPath` (fs-resolved target) → warning **with** `(resolved through junction)` suffix, only if `normalized` itself did not trigger
-
-**Warning message format**
-
-```
-Warning: path is under a sensitive directory (<prefix>). Sessions started here may modify system files.
-```
-Junction variant:
-```
-Warning: path is under a sensitive directory (<prefix>). Sessions started here may modify system files. (resolved through junction)
-```
-
----
-
-### I10 → Carter Handoff: `/cwd add` handler in `handlers.ts`
-
-The `/cwd add` handler calls `validatePath(rawPath)`. After this change the return value is:
-```typescript
-{ ok: true; normalized: string; warning?: string }
-```
-
-**What handlers.ts must do:**
-
-```typescript
-const pathResult = await validatePath(rawPath);
-if (!pathResult.ok) {
-  await ctx.reply(`❌ ${pathResult.reason}`);
-  return;
-}
-// Surface warning before adding (user sees it immediately; entry still gets added).
-if (pathResult.warning) {
-  await ctx.reply(`⚠️ ${pathResult.warning}`);
-}
-const newConfig = addKnownCwd(config, alias, pathResult.normalized, new Date().toISOString());
-await saveConfig(configPath, newConfig);
-await ctx.reply(`✅ Added "${alias}" → ${pathResult.normalized}`);
-```
-
-The reply order matters: warning first, confirmation second. This ensures the user sees the warning even if subsequent steps fail.
-
----
-
-### I11 — Secret Redaction in `lastAssistantExcerpt`
-
-**Decision: daemon-side redaction in dedicated module**
-
-Redaction runs in `src/bot/redactSecrets.ts` → `redactSecrets(text: string): string`. Called in `afkMode.ts:formatOrientationMessage` on the raw excerpt before composing the orientation message.
-
-**Rationale:**
-- Extension stays a pure cache (no logic)
-- Daemon owns all Telegram-facing concerns
-- Symmetric with N2 guard location
-- Easier to unit-test in isolation (no extension mocking needed)
-
-**Pattern list (order matters — most specific first)**
-
-| # | Pattern | What it catches | Replacement |
-|---|---------|-----------------|-------------|
-| 1 | `\b(token\|key\|secret\|password\|authorization\|bearer\|api[_-]?key\|access[_-]?token)\b(\s*[:=]?\s*['"]?)([A-Za-z0-9_\-.+/=]{16,})['"]?` | Keyword-adjacent tokens (API keys, bearer tokens, passwords in logs) | `${keyword}${sep}[REDACTED]` |
-| 2 | `(?<!<)[A-Za-z0-9_\-]{40,}` | Bare high-entropy strings (JWT tokens, SHA hashes used as tokens, long secrets not near a keyword) | `[REDACTED]` |
-| 3 | `(https?:\/\/)[^:@\s]+:[^@\s]+@` | URLs with embedded credentials | `${protocol}[REDACTED]@` |
-
-**Bias:** Over-redaction (false positives) is acceptable. Under-redaction (false negatives) is not. Pattern 2 will redact long code snippets, commit SHAs, etc. — that's OK for an orientation excerpt.
-
-**Email addresses:** Preserved for now — may be relevant assistant context.
-
-**Export contract (for Jun's tests)**
-
-```typescript
-// src/bot/redactSecrets.ts
-export function redactSecrets(text: string): string
-```
-
-Jun can import and test each pattern category with representative inputs.
-
----
-
-### B2 — Vacuous `/new` assertion (handlers.slashGuard.test.ts)
-
-**What was broken**
-
-The test at the `/new` guard section looked like this:
-
-```ts
-await handler(makeMockCtx('/new test-name'));
-// ...
-expect(makeMockCtx('/new test-name').reply).not.toHaveBeenCalled();
-```
-
-Two separate `makeMockCtx(...)` calls were made:
-1. One was passed to the handler (the handler ran against it).
-2. A **fresh** ctx was created for the assertion — this ctx was never passed to anything.
-
-The `expect(ctx.reply).not.toHaveBeenCalled()` on the fresh ctx was therefore vacuously true regardless of what the handler did. Even if the guard were removed and `reply` were called, this test would still pass.
-
-**What changed**
-
-Captured the ctx before the handler call:
-
-```ts
-const ctx = makeMockCtx('/new test-name');
-await handler(ctx);
-expect(ctx.reply).not.toHaveBeenCalled();
-```
-
-This mirrors the `/list` test immediately below, which was already correct. The assertion is now falsifiable: if the guard logic were removed, the handler would call `ctx.reply`, and the test would fail.
-
----
-
-### I7 — extension-back-banner.test.ts rewrite
-
-**Why option (a) failed**
-
-`handleBackConfirmed` and `handleModeChanged` are NOT exported by `extension.mjs`. Attempted export lookup shows only `isDestructive` and `isKnownSafe` are exported. Additionally, `extension.mjs` has top-level side effects:
-- Reads `process.env.SESSION_ID`, `process.env.SESSION_NAME` at module load
-- Imports `@github/copilot-sdk/extension` which bootstraps the Copilot extension host
-
-Direct import in vitest would trigger these side effects and likely fail or require a full daemon environment.
-
-**Why option (b) was deferred**
-
-Extracting `handleBackConfirmed` and `handleModeChanged` into a separate module would require modifying `extension.mjs`. This file is outside wave scope. Tracked as a follow-up for the next wave.
-
-**Chosen approach: source-analysis (option analogue)**
-
-Following the established pattern in `tests/bridge/extension-protocol-drift.test.ts`, which uses `readFileSync` to parse `extension.mjs` as text.
-
-The new `extension-back-banner.test.ts`:
-1. Reads `extension.mjs` with `readFileSync`
-2. Extracts `handleBackConfirmed` and `handleModeChanged` bodies using a brace-balancing parser
-3. Asserts structural properties
-
-**What this catches**
-
-If a future developer adds `showCliMessage` to the wrong branch, removes guards, or renames strings, the tests fail and catch the regression.
-
----
-
-### Helpers extraction — reconciliation of makeMockBot / makeStubRegistry
-
-**`makeStubRegistry`**
-
-All copies were structurally identical. Extracted to `tests/helpers/registryMocks.ts`.
-
-**`makeMockBot`**
-
-Three files shared the same grammY bot shape. Extracted to `tests/helpers/botMocks.ts`.
-
-`afkMode.slashGuard.test.ts` has a DIFFERENT `makeMockBot()` shape (the AfkModeController API). Kept local.
-
-**`makeMockCtx`**
-
-`handlers.slashGuard.test.ts` version moved to `tests/helpers/botMocks.ts` as the common version.
-
----
-
-### Anticipatory regression tests — contract divergence notes
-
-**B1 (isBotCommand digit fix):** RED until Carter lands regex fix.
-**I10 (validatePath warning):** RED until Kat adds warning field.
-**I11 (redactSecrets):** RED until Kat creates redactSecrets.ts.
-**B3 (prod-over-dev junction):** RED until Carter adds lstatSync check.
-**I3+I4 (quote-aware flag parser):** RED until Carter lands parser.
-
----
-
-### Context
-
-Cycle 2 review identified that `tests/bot/handlers.test.ts` contained a local `makeStubRegistry` function that was missed during the F-8 helpers extraction. The local stub was missing `upsert`, masked by an `as unknown as ISessionRegistry` cast.
-
-### findByName — no extension needed
-
-The Craft reviewer flagged that the local stub's `findByName` was a functional linear-search, while the shared helper's `findByName` is `vi.fn()` (no-op). Investigation confirmed **no test in handlers.test.ts asserts on `findByName` behavior**.
-
-Decision: **straight migration** — no need to add a `findByName?: (name: string) => SessionEntry | undefined` override parameter to the shared helper.
-
-### remove() default — shared helper updated
-
-A behavioral gap surfaced during validation:
-- Local stub: `remove: vi.fn(async (topicId) => map.delete(topicId))` — returned `true` when the entry existed
-- Shared helper: `remove: vi.fn()` — returned `undefined` (falsy)
-
-**Decision:** Updated shared helper's `remove` default to `vi.fn().mockResolvedValue(true)`.
-
-**Rationale:**
-- Matches the `ISessionRegistry` interface semantically
-- "Success" is the default state for a stub backed by real entries
-- Tests that need the failure branch already call `.mockResolvedValue(false)` explicitly
-- No other consumers were affected
-
-### Cast situation
-
-The `as unknown as ISessionRegistry` cast lives inside the shared helper's implementation. Consumers always receive a typed `ISessionRegistry` from the function return type.
-
----
-
-### Streaming serialization choice (I1+I2)
-
-- Chose Noble Six Option A: per-session serialization queue in `extension.mjs` (`streamQueue` gate + `releaseLock`)
-- Reason: `session.idle` has no correlation key, so message-id-only filtering cannot safely terminate concurrent streams
-- Added drain-aware `writeFrame()` and per-request write queue to avoid fire-and-forget pipe writes under backpressure
-
-### Flag parser tokenizer design (I3+I4)
-
-- Implemented `parseNewFlags` in `src/bot/newFlagParser.ts` as a small state-machine tokenizer
-- Supports single/double quoted values and minimal `\"` / `\\` unescaping inside double quotes
-- Decision on repeated flags: last value wins (e.g., multiple `--model` entries keep the final one)
-- Error policy: throws friendly errors for missing flag values, flag-as-value misuse, unknown flags, and missing session name
-
-### Shared registry choice (I6)
-
-- Implemented Option A: canonical command set remains `BOT_COMMANDS` in `src/bot/commands.ts`
-- Added alias export `BOT_COMMAND_NAMES` and startup drift check in `registerHandlers`
-- Drift between hard-coded handler registrations and command registry now fails fast at startup
-
-### /cwd extraction layout (I8+I9)
-
-- Extracted inline `/cwd` logic into `handleCwdCommand(ctx, opts)` in `src/bot/cwdCommand.ts`
-- Chose function-based module extraction (not class) to keep handler wiring simple and testable
-- Added structured logging hooks (`info/warn/error`) and surfaced `validatePath().warning` before success replies
-
-### isDirectRun pattern
-
-- Chose ESM-accurate direct execution check: `process.argv[1] === fileURLToPath(import.meta.url)`
-- Applied in:
-  - `src/install/copyExtension.ts`
-  - `src/install/index.ts`
-  - `src/install/uninstall.ts`
-- Rationale: avoids fragile suffix checks against transpiled path/name variations
-
-### Divergences from Noble Six design
-
-- Kept serialization queue design unchanged
-- Backpressure implementation uses explicit per-request promise chaining (`writeQueue`) plus `writeFrame()` rather than one-pending-chunk buffering
-- Added structural drift tests in `tests/bridge/extension-protocol-drift.test.ts` to pin queue/backpressure primitives
-
-### redactSecrets reconciliation outcome
-
-- Jun's 3 RED tests remained red after Kat's baseline implementation
-- Extended `src/bot/redactSecrets.ts` with:
-  - env-assignment secret redaction (`*_TOKEN`, `*_SECRET`, etc.)
-  - slightly broader high-entropy threshold (`39+`) to match real-world token samples in tests
-- Preserved Kat's over-redaction bias and existing pattern ordering intent
-
----
-
 ## Carter — Phase 9 Review Cycle 2 Decisions
 
 **Timestamp:** 2026-05-30  
@@ -2817,3 +2540,1390 @@ Full design doc: `.copilot/reach-state-storage-design.md`
 **Reference Value:** This inventory is input to Noble Six's Phase 1 task breakdown (P1-2 through P1-5 in the ADR).
 
 **Full Document:** See `.squad/decisions/inbox/carter-teams-channel-inventory.md` (reference archive).
+---
+
+## Accepted — Phase 1 Channel Abstraction (feature/channel-abstraction)
+
+**Date:** 2026-06-06  
+**Status:** SHIPPED (committed, 937 tests green, Noble Six review pending)  
+**Participants:** Carter (Bridge Dev), Kat (Bot Dev), Jun (Test Engineer), Noble Six (Architect)  
+**Branch:** feature/channel-abstraction  
+**Commit baseline:** d84dc0c (Carter), e69e50b (Kat), 3739640 (Jun)  
+**Summary:** Completed ChannelPort abstraction, Telegram adapter, and full conformance kit. Core domain now transport-agnostic; ready for Teams Phase 2 (pending corp branch development).
+
+---
+
+### P1 Implementation — Carter's Core Rewire
+
+# Carter: Phase 1 Core Rewire — Decision Record
+
+**Date:** 2026-06-06  
+**Author:** Carter (Bridge Dev)  
+**Branch:** `feature/channel-abstraction`  
+**Covers:** P1-2 (SessionEntry string IDs), P1-3 (relay on ChannelPort), P1-4 (TelegramChannel adapter), P1-6 (startup wiring)
+
+---
+
+## SessionEntry Migration & Back-Compat Decision
+
+### Decision
+Rename `topicId: number` → `threadId: string` and `chatId: number` → `channelId: string` in `SessionEntry` (and `lastTopicId?: number` → `lastTopicId?: string`).
+
+### Rationale
+The ChannelPort contract (`src/channel/port.ts`) uses opaque string IDs (`threadId`, `channelId`) for transport-agnostic addressing. Telegram-specific numeric forum topic IDs must be converted to strings at the adapter boundary; other transports (Teams, Slack) use non-numeric thread/channel identifiers.
+
+### Back-Compat: Existing Persisted Sessions
+Existing installs have `registry.json` files on disk with JSON like `{ "topicId": 42, "chatId": -1001234567890 }`. On load, `SessionRegistry.load()` runs `coerceId(raw)`:
+
+```typescript
+function coerceId(raw: Record<string, unknown>) {
+  const threadId = String(raw['threadId'] ?? raw['topicId']);
+  const channelId = String(raw['channelId'] ?? raw['chatId']);
+  return { ...raw, threadId, channelId };
+}
+```
+
+This handles both old (`topicId/chatId`) and new (`threadId/channelId`) keys, converting numeric JSON values to strings. Migration is transparent — next write uses the new field names. No data loss, no manual migration required.
+
+### `lastTopicId` Migration
+`afkMode.ts` reads `persisted.lastTopicId` via `Number(persisted.lastTopicId)` before calling Telegram API. This handles both `number` (legacy) and `string` (new) stored values. Writes always use `String(topicId)`.
+
+---
+
+## TelegramChannel Adapter Capabilities
+
+```typescript
+capabilities = {
+  supportsMessageEdit: true,        // editMessageText available
+  supportsThreadCreation: true,      // createForumTopic available
+  supportsInteractivePrompts: true,  // inline keyboard prompt flow
+  supportsStreaming: true,           // 800ms throttle edit during streaming
+  maxMessageLength: 4096,            // Telegram hard limit
+}
+```
+
+These values are declared in `src/channel/telegram/index.ts` and match the existing Telegram behavior.
+
+---
+
+## Adapter Architecture Choices
+
+### `onMessage`/`onCommand` are no-ops
+`TelegramChannel` doesn't register `bot.on('message:text')` or `bot.command()` — those stay in `src/bot/handlers.ts` for this release. This preserves zero behavior change and avoids double-registration. The ChannelPort contract allows these to be no-ops.
+
+### `bot.start()` stays in `main.ts`
+`channel.start()` wraps `bot.start()` internally but is not called from `main.ts`. The daemon still calls `bot.start(cfg.token, { onStart: ... })` directly. This keeps the startup path identical to pre-P1.
+
+### MarkdownV2 duck-typing
+The relay duck-types to `TelegramChannel` to use `editMessageWithMarkdown` / `sendMessageWithMarkdown` (MarkdownV2 + plain fallback). Non-Telegram channels get `formatForTransport(text)` + plain `editMessage`/`sendMessage`. This preserves the exact formatting behavior for Telegram without requiring MarkdownV2 in the port contract.
+
+---
+
+## Relay Behavior Preserved
+
+- **800ms throttle edit:** During streaming, `channel.editMessage()` fires at most once per 800ms. Now wrapped in try-catch so a failed throttle edit doesn't abort the stream.
+- **Chunk cap:** `splitMessage` returns ≤25 chunks. Chunk[0] updates the placeholder via `editMessage`; chunks[1..24] are new `sendMessage` calls. The placeholder creation (`sendMessage('…')`) + 24 follow-up sends = 25 user-visible messages maximum.
+- **F-E behavior:** When first-chunk `editMessage` fails, the relay logs "First-chunk edit failed", attempts a fallback edit (try-catch), and returns without sending follow-up chunks.
+
+---
+
+## Handoff Notes for Kat
+
+### 1. Command handlers still call `ctx.reply()` directly
+All 8 commands in `src/bot/handlers.ts` use `ctx.reply()` with Telegram-specific options (`message_thread_id`, `parse_mode`, etc.). Kat should migrate these onto `channel.sendMessage()` in the next round. The seam is: replace `ctx.reply(text, opts)` with `channel.sendMessage(channelCtx, text)` where `channelCtx = { threadId: String(ctx.message.message_thread_id), channelId: String(ctx.chat.id) }`.
+
+Files to touch:
+- `src/bot/handlers.ts` — all 8 command handlers (`/new`, `/list`, `/remove`, `/resume`, `/help`, `/status`, `/cwd`, message:text)
+- `src/bot/afkMode.ts` — `ctx.reply()` calls in mirror input handler and `/status`
+
+### 2. `TelegramChannel.onCommand`/`onMessage` are ready to use
+Currently no-ops. When Kat migrates, `onCommand(name, handler)` and `onMessage(handler)` can be wired to `bot.command(name, ...)` and `bot.on('message:text', ...)` in `TelegramChannel`. Ensure no double-registration with the existing `handlers.ts` registrations during the transition.
+
+### 3. `channel.start()` should be called from `main.ts`
+Currently `main.ts` still calls `bot.start(...)` directly. Should be flipped to `await channel.start()` so all channels start via the port.
+
+### 4. Test assertions
+Tests that check relay behavior now use `channel.sendMessage` instead of `ctx.reply` for the placeholder. Tests that check command-response behavior still use `ctx.reply` — these will need updating when Kat migrates command handlers onto the port.
+
+---
+
+## Notes for Jun (Conformance Kit)
+
+The following behaviors should be pinned in the conformance kit:
+
+1. **`sendMessage('…')` as relay placeholder:** `relay.relay(ctx, text)` always calls `channel.sendMessage(ctx, '…')` as the first operation.
+2. **`editMessage` for first chunk:** After stream completes, `channel.editMessage(ctx, ref, formattedChunk0)` is called.
+3. **`sendMessage` for follow-up chunks (≤24):** Chunks 2..N via `channel.sendMessage(ctx, formattedChunkN)`.
+4. **No throw from relay:** The relay never throws even if `editMessage` or `sendMessage` fails — errors are logged and the relay returns gracefully.
+5. **`resolve(threadId: string)`:** SessionLookup takes a string, not a number.
+
+
+---
+
+### P1 Implementation — Kat's Handler Migration
+
+# Kat Phase 1 Handler Migration Notes
+
+## Decision
+
+Single-Bot consolidation is now in place: `TelegramChannel` owns the only grammY `Bot` instance, and `main.ts` casts the selected channel to `TelegramChannel` when direct grammY access is required for `AfkModeController` and related Telegram-only wiring.
+
+## Handlers Now Routed Through ChannelPort
+
+All 8 handlers now register through the port seam via `channel.onCommand()`:
+
+- `new`
+- `list`
+- `remove`
+- `resume`
+- `help`
+- `pair`
+- `status`
+- `cwd`
+
+The catch-all relay path now registers via `channel.onMessage()`.
+
+## Notes for Jun's Conformance Kit
+
+- `/status` and `/cwd` use synthetic grammY `Context` adapters — their internal `ctx.reply(...)` calls map to `channel.sendMessage(channelCtx, text)`.
+- `handleStatusCommand` still accepts a grammY `Context`; do not change that signature in conformance coverage.
+- `handleTelegramMessage` is intercepted before the port `onMessage` handler via `setMessageInterceptor()` on `TelegramChannel` (Telegram-specific by design).
+- Capability fallback paths (edit, streaming, prompt, thread creation) are unchanged; they still live in `relay.ts`.
+- The handler registered via `channel.onMessage()` applies the `isBotCommand(text)` filter; the Telegram adapter does **not** apply that filter itself.
+- Empty `threadId` in `ChannelContext` means General Topic; `TelegramChannel.sendMessage` must omit `message_thread_id` from the Telegram API call in that case.
+
+
+---
+
+### P1 Implementation — Jun's Conformance Kit
+
+# Jun Phase 1 Conformance Kit — Decision Record
+
+**Date:** 2026-06-06
+**Author:** Jun (Test Engineer)
+**Branch:** `feature/channel-abstraction`
+**Covers:** P1-7 (behavioral conformance kit) + P1-8 (full regression)
+
+---
+
+## What the Kit Covers
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `tests/channel/conformance/FakeChannel.ts` | Configurable in-memory `ChannelPort` with per-capability flags |
+| `tests/channel/conformance/runner.ts` | Parameterized `runChannelPortConformance(makePort, opts)` + `runCapabilityFallbackMatrix()` |
+| `tests/channel/conformance/fakeChannel.conformance.test.ts` | Kit self-validation on FakeChannel + full matrix (44 tests) |
+| `tests/channel/conformance/telegram.conformance.test.ts` | Kit against TelegramChannel (mocked grammY) + Kat's gotchas (44 tests) |
+
+### Test Domains
+
+1. **Lifecycle** — `start()` resolves, `stop()` resolves, `stop()` idempotent.
+2. **Outbound** — `sendMessage` returns `MessageRef{id:string}`; empty threadId accepted.
+3. **editMessage** — returns `boolean`; false when `supportsMessageEdit=false`.
+4. **Formatting** — `formatForTransport` non-null; `splitMessage` all chunks ≤ `maxMessageLength`; footer in last chunk.
+5. **Inbound** — `onMessage` handler fires with string `threadId`/`channelId`; single-handler model (replace semantics); `onCommand` dispatches per-name.
+6. **Prompts** — `promptUser` returns a string option value; AbortSignal (pre-fired and mid-wait) resolves `''`.
+7. **Thread management** — `createThread` returns `ChannelContext`; throws when `supportsThreadCreation=false`.
+8. **Capabilities shape** — all fields present, correct types, `maxMessageLength > 0`.
+
+---
+
+## Capability-Fallback Matrix
+
+All 4 capability flags exercised in both ON and OFF states. Every cell PASSED.
+
+### supportsMessageEdit
+
+| State | Contracted behavior | Asserted | Result |
+|---|---|---|---|
+| `false` | `editMessage` returns `false`; core must NOT call it (send-once final) | FakeChannel returns `false`, `edits` array stays empty; send-once scenario exercised | ✅ PASS |
+| `true` | `editMessage` returns `true` and records the edit | FakeChannel records edit, returns `true` | ✅ PASS |
+
+### supportsStreaming
+
+| State | Contracted behavior | Asserted | Result |
+|---|---|---|---|
+| `false` | No intermediate stream edits; placeholder→final-edit only | Single edit (final), `sends=1` | ✅ PASS |
+| `false` + edit=`false` | Send new final message (no edit possible) | Two `sendMessage` calls, zero edits | ✅ PASS |
+
+### supportsInteractivePrompts
+
+| State | Contracted behavior | Asserted | Result |
+|---|---|---|---|
+| `false` | Text-fallback: wait for matching inbound text | Resolved on `injectInboundText('approve')` | ✅ PASS |
+| `false` + AbortSignal | Resolve `''` on abort | Pre-fired and mid-wait abort both return `''` | ✅ PASS |
+| `true` | Resolve immediately with `options[0].value` | Immediate resolution | ✅ PASS |
+
+### supportsThreadCreation
+
+| State | Contracted behavior | Asserted | Result |
+|---|---|---|---|
+| `false` | `createThread` MUST NOT be called; throws | FakeChannel throws; `threadCreations` empty | ✅ PASS |
+| `true` | Returns `ChannelContext` with new `threadId` | Returns context with matching `channelId` and new `threadId` | ✅ PASS |
+
+### All capabilities OFF
+
+All four flags `false` simultaneously: `sendMessage` still works, `editMessage` returns `false`, `createThread` throws, `promptUser` aborts correctly. ✅ PASS
+
+---
+
+## How a Future Adapter Plugs In
+
+### Step 1 — Implement ChannelPort
+
+```typescript
+// src/channel/teams/index.ts
+export class TeamsChannel implements ChannelPort {
+  readonly name = 'teams';
+  readonly capabilities: ChannelCapabilities = {
+    supportsMessageEdit: true,
+    supportsThreadCreation: true,
+    supportsInteractivePrompts: true,
+    supportsStreaming: false,   // Teams Graph API rate-limited
+    maxMessageLength: 28000,
+  };
+  // ... implement all methods
+}
+registerChannel('teams', () => new TeamsChannel(...));
+```
+
+### Step 2 — Run the conformance kit
+
+```typescript
+// tests/channel/conformance/teams.conformance.test.ts
+import { runChannelPortConformance } from './runner.js';
+import { TeamsChannel } from '../../../src/channel/teams/index.js';
+
+runChannelPortConformance(
+  () => new TeamsChannel(/* mocked Graph client */),
+  { name: 'TeamsChannel', skipLifecycle: true },
+);
+```
+
+### Step 3 — Adapter-specific block
+
+Add a `describe('TeamsChannel — declared capability matches actual behavior')` block asserting:
+- `capabilities.supportsStreaming === false` (declared correctly for Teams)
+- `sendMessage` actually calls the Graph API
+- `editMessage` returns `true` on success, `false` on Graph API error
+- `capabilities.maxMessageLength === 28000`
+
+### Step 4 — Regression
+
+`npx vitest run` — must pass ≥ (prior count) + (new test count).
+
+---
+
+## Telegram Anti-Lie Checks (declared = actual)
+
+| Capability | Declared | Actual behavior asserted | Match |
+|---|---|---|---|
+| `supportsMessageEdit` | `true` | `editMessage` calls `bot.api.editMessageText`, returns `true` | ✅ |
+| `supportsThreadCreation` | `true` | `createThread` calls `bot.api.createForumTopic`, returns `ChannelContext` | ✅ |
+| `supportsInteractivePrompts` | `true` | `promptUser` resolves (delegates to `promptUserForPermission`) | ✅ |
+| `supportsStreaming` | `true` | Relay's 800ms throttle edit path exercises this | ✅ (relay.test.ts) |
+| `maxMessageLength` | `4096` | `splitMessage` produces all chunks ≤ 4096 | ✅ |
+| `name` | `'telegram'` | `ch.name === 'telegram'` | ✅ |
+
+---
+
+## Kat's Gotchas — Regression Pin Results
+
+| Gotcha | Test location | Status |
+|---|---|---|
+| Empty `threadId` ⇒ omit `message_thread_id` from Telegram API call | `telegram.conformance.test.ts` — "Kat gotcha: empty threadId" | ✅ PINNED |
+| `isBotCommand` filter lives in `onMessage` handler, NOT in `TelegramChannel` | `telegram.conformance.test.ts` — "isBotCommand filter lives in onMessage handler" | ✅ PINNED |
+| `/status` and `/cwd` synthetic ctx `reply()` → `channel.sendMessage` | `telegram.conformance.test.ts` — "synthetic ctx routes reply to channel.sendMessage" | ✅ PINNED |
+| General Topic synthetic ctx has `message=undefined` (no `message_thread_id`) | `telegram.conformance.test.ts` | ✅ PINNED |
+
+---
+
+## FINDINGS
+
+**No contract violations found.**
+
+All four capability flags behave exactly as declared in `TelegramChannel.capabilities`. The abstraction is honest:
+
+- `supportsMessageEdit=true` → `editMessage` actually edits (returns `true` on success, `false` on failure without throwing).
+- `supportsThreadCreation=true` → `createThread` actually creates via `bot.api.createForumTopic`.
+- `supportsInteractivePrompts=true` → `promptUser` resolves via the inline keyboard flow.
+- `supportsStreaming=true` → relay's 800ms throttle edit path is exercised (covered by relay.test.ts).
+- `maxMessageLength=4096` → `splitMessage` enforces it.
+
+### Observation (not a bug — routing note for Carter)
+
+The relay's `safeEditFormatted` / `safeSendFormatted` duck-types to `TelegramChannel` to call `editMessageWithMarkdown` / `sendMessageWithMarkdown`. This is a deliberate design decision documented in Carter's handoff notes (MarkdownV2 duck-typing). Non-Telegram channels will use the generic `formatForTransport` + plain `editMessage`/`sendMessage` path. This is transport-correct but means the generic conformance kit cannot exercise the MarkdownV2 path for TelegramChannel. The Telegram-specific test block covers this via `formatForTransport` shape assertion.
+
+---
+
+## Regression Summary (P1-8)
+
+| Metric | Before | After |
+|---|---|---|
+| `npx tsc --noEmit` | ✅ exit 0 | ✅ exit 0 |
+| `npm run lint` | ✅ exit 0 | ✅ exit 0 |
+| `npx vitest run` | 849 passed / 4 skipped / 1 todo | **937 passed / 4 skipped / 1 todo** |
+| New conformance tests | — | +88 (44 FakeChannel + 44 Telegram) |
+
+All pre-existing 849 tests continue to pass. Zero regressions.
+
+
+---
+
+### Reference — Carter's Telegram/grammY Coupling Inventory
+
+# Telegram/grammY Coupling Inventory for Teams Generalization
+
+**Date:** 2026-06-06  
+**Author:** Carter (Bridge Dev)  
+**Status:** Read-only inventory (no code changes)
+
+---
+
+## PART 1: FILE-BY-FILE COUPLING MAP
+
+### Direct grammY/Telegram Imports
+
+| File | Imports | Coupling Description | Line(s) |
+|------|---------|----------------------|---------|
+| `src/bot/index.ts` | `Bot` from grammy | Creates grammY Bot instance; core entry point for Telegram polling | 1, 13 |
+| `src/bot/handlers.ts` | `Bot, Context` from grammy | Registers all bot commands and relay handler; every handler receives grammY Context | 1, 22, 62 |
+| `src/relay/relay.ts` | `Context` from grammy | Relay receives grammY Context; uses to extract `message_thread_id`, send replies | 1, 53 |
+| `src/bot/afkMode.ts` | `Bot, Context` from grammy | AFK mode controller owns grammY Bot; implements `handleTelegramMessage(ctx)` | 1, 92 |
+| `src/bot/afkStreamRouter.ts` | `Bot, Context` from grammy | Routes stream chunks to Telegram via Bot.api calls | 12, 46, 51 |
+| `src/bot/pairing.ts` | `Bot` from grammy | Pairing flow uses grammY Bot for /pair command | 7, 16 |
+| `src/bot/prompt.ts` | `Bot, Context` from grammy | Permission prompts via callback_query handler (grammY) | Inferred from line 72 in handlers.ts |
+
+### Telegram-Specific Concepts (No Direct Import, But Baked In)
+
+| File | Concept | Usage | Line(s) |
+|------|---------|-------|---------|
+| `src/relay/relay.ts` | `message_thread_id` | Extract topic ID from message | 54, 85, 93 |
+| `src/relay/relay.ts` | `parse_mode: 'MarkdownV2'` | Telegram-specific markdown flavor | 254, 280 |
+| `src/relay/relay.ts` | 4096-char limit | Accumulator cap (100KB DoS guard) | 15-16, 142-144 |
+| `src/relay/relay.ts` | Message edit throttle | 800ms between Telegram edits | 27 |
+| `src/relay/markdownV2.ts` | MarkdownV2 escaping | 18 special chars + `\` escaping (Telegram-only) | All |
+| `src/relay/messageSplitter.ts` | Telegram 4096 max | DEFAULT_MAX_LEN = 4096 | 43, 48 |
+| `src/relay/messageSplitter.ts` | Smart chunk boundaries | Paragraph > line > word > hard cut | 5-9 |
+| `src/bot/afkStreamRouter.ts` | `TELEGRAM_MAX_TEXT` | Hard limit: 4096 chars | 24 |
+| `src/bot/afkStreamRouter.ts` | `TELEGRAM_MAX_DISPLAY` | Safe display cap: 4000 chars | 26 |
+| `src/bot/afkStreamRouter.ts` | Truncation prefix | `'…(truncated)\n'` prefix for display overflow | 28 |
+| `src/bot/afkMode.ts` | Forum topics | Manages Telegram forum topic creation, binding, indexing | 94 (sessionTopics), 95 (topicSessions) |
+| `src/bot/afkMode.ts` | `message_thread_id` | Extract topic ID from Telegram message | 171 |
+| `src/bot/afkMode.ts` | `retry_after` | Telegram 429 rate-limit handling | 75-81 |
+| `src/bot/afkMode.ts` | Topic URL | `https://t.me/c/{chatId}/{topicId}` format | 69-72 |
+| `src/types.ts` | `topicId: number` | SessionEntry stores Telegram forum topic ID | 9 |
+| `src/types.ts` | `chatId: number` | SessionEntry stores Telegram supergroup chat ID | 11 |
+| `src/sessions/registry.ts` | Forum topic indexing | Registry maps `number` (topic ID) → SessionEntry | 81 (Map<number, ...>) |
+| `src/config/env.ts` | `TELEGRAM_BOT_TOKEN` | Required environment variable | 26 |
+| `src/config/env.ts` | `TELEGRAM_CHAT_ID` | Optional env var; triggers pairing if unset | 48 |
+| `src/config/env.ts` | `TELEGRAM_ALLOWED_USER_IDS` | Optional env var; comma-separated user IDs | 65 |
+| `src/config/config.ts` | `telegramChatId` | Config field storing paired Telegram chat ID | 20 |
+| `src/config/config.ts` | `telegramAllowedUserIds` | Config field storing allowed Telegram user IDs | 21 |
+| `src/main.ts` | `allowed_updates: ['message', 'edited_message', 'callback_query']` | Telegram bot.start() polling filter | 98 |
+
+---
+
+## PART 2: MESSAGE/SESSION RELAY FLOW
+
+### Inbound Path: Telegram Message → Copilot SDK Session
+
+```
+Telegram polling                       src/main.ts:98
+  ↓ (bot.start() with allowed_updates)
+  
+grammY message event                   src/bot/handlers.ts (registerHandlers)
+  ↓ (message:text handler)
+  
+relay(ctx: Context)                    src/relay/relay.ts:53
+  ├─ Extract topicId = ctx.message?.message_thread_id    (line 54)
+  ├─ Extract userText = ctx.message?.text                 (line 55)
+  ├─ sessionLookup.resolve(topicId)                       (line 59)
+  └─ → SessionEntry { sessionName, model, ... }
+  
+Session activation                      src/relay/relay.ts:79-107
+  ├─ factory.resume(sessionName, model)                   (line 96)
+  └─ or factory.create(sessionName, model)                (line 97)
+  
+Stream processing                       src/relay/relay.ts:140-185
+  ├─ session.send(userText)                               (line 140)
+  └─ accumulate chunks into response
+  
+Output (3 stages)
+```
+
+### Outbound Path: SDK Response → Telegram
+
+#### Stage 1: Placeholder + Streaming
+```
+await ctx.reply('…', { message_thread_id: topicId })      src/relay/relay.ts:134
+  ↓ (stores messageId in placeholder object)
+  
+Per-chunk edit (throttled 800ms)
+  await this.safeEdit(                                    src/relay/relay.ts:148
+    ctx, placeholder.chat.id, placeholder.message_id, accumulated
+  )
+  └─ calls ctx.api.editMessageText(chatId, msgId, text)  (line 258)
+```
+
+#### Stage 2: Final Edit (First Chunk with Formatting)
+```
+chunks = splitForTelegram(body, { footer, numbering, effectiveMaxLen })  (line 157)
+  ↓ (respects Telegram 4096-char hard limit; uses MarkdownV2 escaping)
+
+await this.safeEdit(ctx, chatId, msgId, chunks[0], tryMarkdown, sessionName)  (line 169)
+  ├─ tryMarkdown=true triggers MarkdownV2 escaping                     (line 174)
+  ├─ ctx.api.editMessageText(chatId, msgId, escaped, { parse_mode: 'MarkdownV2' })  (line 254)
+  └─ on MarkdownV2 error: fallback to plain text                       (line 255)
+```
+
+#### Stage 3: Follow-up Chunks (if any)
+```
+for (let i = 1; i < chunks.length; i++)                   (line 190)
+  await this.safeSend(ctx, topicId, chunks[i], tryMarkdown, ...)  (line 192)
+    ├─ ctx.reply(text, { message_thread_id: topicId })   (line 284)
+    └─ with parse_mode: 'MarkdownV2' if tryMarkdown       (line 280)
+```
+
+### AFK Mode (Alternative Inbound Path)
+
+```
+afk.request from extension bridge      src/bot/afkMode.ts:122
+  ↓
+AfkModeController.activate()           src/bot/afkMode.ts:233
+  ├─ ensureTopic() creates new forum topic for each session
+  ├─ Sends orientation message
+  └─ Tracks sessionId → topicId mapping
+  
+Telegram mirror input (same chat, AFK topic)
+  ↓ (message:text handler in main relay path, but AFK guard fires first)
+  
+handleTelegramMessage(ctx)             src/bot/afkMode.ts:161
+  ├─ Rate limiting (20 msgs/min per session, 100 msgs/min global)  (lines 212-231)
+  ├─ User ID check (TELEGRAM_ALLOWED_USER_IDS guard)      (lines 186-190)
+  ├─ Extract message_thread_id → sessionId lookup          (lines 171, 176)
+  └─ bridge.sendToSession(sessionId, { type: 'mirror.input', source: 'telegram' })  (lines 202-208)
+```
+
+### Stream Routing (AFK Mode)
+
+```
+Extension streams back response
+  ↓ (bridge protocol: stream or stream.error)
+
+AfkStreamRouter.enqueueChunk()          src/bot/afkStreamRouter.ts:63
+  ├─ Maintains in-memory StreamState per sessionId:requestId
+  ├─ Chains operations to prevent concurrent edits
+  └─ handleChunk() → edit or send Telegram message
+    ├─ displayText() applies TELEGRAM_MAX_DISPLAY cap    (line 36, 38-39)
+    ├─ ctx.api.editMessageText() or ctx.reply()
+    └─ Retry on 429 with retry_after capping            (src/bot/afkMode.ts:74-81)
+```
+
+---
+
+## PART 3: TELEGRAM-SPECIFIC DATA SHAPES & ASSUMPTIONS
+
+### Core Mappings
+- **Forum topic ↔ Session**: 1:1 mapping (SessionEntry.topicId = forum topic ID)
+- **Topic ID uniqueness**: Topic IDs are used as Map keys (no composite keys)
+- **Chat ID storage**: One persistent chatId per daemon instance (env or config)
+- **User ID control**: Optional allow-list (TELEGRAM_ALLOWED_USER_IDS)
+
+### Message Shapes
+- **Inbound**: `ctx.message.message_thread_id` (topic), `ctx.message.text` (body), `ctx.from.id` (user)
+- **Outbound**: `ctx.reply(text, { message_thread_id })`, `ctx.api.editMessageText(chatId, msgId, text)`
+- **Formatting**: `parse_mode: 'MarkdownV2'` with 18 special chars + `\` escaping
+- **Size limits**: 4096-char hard limit; safe cap 4000 chars for headroom
+
+### Telegram-Specific Constants
+```typescript
+TELEGRAM_MAX_TEXT = 4096                        // src/bot/afkStreamRouter.ts:24
+TELEGRAM_MAX_DISPLAY = 4000                     // src/bot/afkStreamRouter.ts:26
+MAX_ACCUMULATED_BYTES = 100_000                 // src/relay/relay.ts:16
+MAX_CHUNKS = 25                                 // src/relay/relay.ts:18
+MARKDOWN_ESCAPE_EFFECTIVE_MAX = 2048            // src/relay/relay.ts:24 (MarkdownV2 escape budget)
+STREAM_EDIT_THROTTLE_MS = 800                   // src/relay/relay.ts:27
+MAX_MIRROR_TEXT_LENGTH = 4096                   // src/bot/afkMode.ts:54
+MAX_RATE_LIMIT_DELAY_MS = 30_000                // src/bot/afkMode.ts:60 (cap Telegram retry_after)
+```
+
+### Error Handling Specific to Telegram
+- **Parse entities error** (400): Falls back from MarkdownV2 to plain text (src/relay/relay.ts:225-239)
+- **Rate limit** (429): Extracts `retry_after` from error (src/bot/afkMode.ts:74-81); caps to 30s
+- **Empty message** (400): Never send empty string; use `'…'` placeholder (src/relay/relay.ts:156)
+
+---
+
+## PART 4: CONFIG/ENV SURFACE
+
+### Environment Variables
+| Var | Type | Required | Default | Parsed In | Used In |
+|-----|------|----------|---------|-----------|---------|
+| `TELEGRAM_BOT_TOKEN` | string | ✅ Yes | N/A | src/config/env.ts:26 | src/main.ts:58 |
+| `TELEGRAM_CHAT_ID` | number | ❌ No | undefined (triggers pairing) | src/config/env.ts:48 | src/main.ts:33 |
+| `TELEGRAM_ALLOWED_USER_IDS` | comma-separated numbers | ❌ No | undefined (allow all) | src/config/env.ts:65 | src/main.ts:65, src/bot/afkMode.ts:187 |
+| `REACH_MODEL` | string | ❌ No | `'claude-sonnet-4'` | src/config/env.ts:32 | src/main.ts:73 |
+| `REACH_PERMISSION_POLICY` | enum | ❌ No | `'approveAll'` | src/config/env.ts:35 | src/main.ts:74 |
+| `REACH_DATA_DIR` | path | ❌ No | `~/.reach/` | src/config/config.ts:37 | src/config/env.ts:43 |
+
+### Config File (config.json)
+| Field | Type | Set By | Used In | Example |
+|-------|------|--------|---------|---------|
+| `telegramChatId` | number | /pair command | src/config/env.ts:59 | `-1001234567890` |
+| `telegramAllowedUserIds` | number[] | /pair command | src/config/env.ts:81 | `[123456789, 987654321]` |
+| `knownCwds` | KnownCwd[] | /cwd add command | /new --cwd flag resolution | See src/config/config.ts:12-17 |
+
+### Auth/Bridge Surface
+- **pipeAuth**: Generated for extension ↔ daemon IPC (src/main.ts:38, src/bridge/pipeAuth.ts)
+- **authToken**: Per-connection token in RegisterMessage (src/bridge/protocol.ts:26)
+
+---
+
+## PART 5: ABSTRACTION SEAMS VS TANGLED COUPLING
+
+### ✅ GOOD SEAMS (Ready for Generalization)
+
+#### Relay Ports Layer (src/relay/ports.ts)
+- **SessionLookup**: Relay receives topicId → ResolvedSession (no Telegram assumptions)
+- **PermissionPrompter**: Relay delegates prompting; doesn't know platform
+- **Relay contract**: Pure async generator (session.send → chunks); no platform coupling
+- **Why good**: Relay can work with any transport if SessionLookup is retargetable
+
+#### Message Formatting Utilities
+- **escapeMarkdownV2()**: Pure function; no platform state or I/O
+- **splitForTelegram()**: Takes `maxLen` parameter; could become generic `splitForPlatform(maxLen, formatter)`
+- **Why good**: Could be reused for Teams markdown or other formats with wrapper
+
+#### Session Registry Abstraction
+- **ISessionRegistry interface**: Abstract contract for register/resolve/list/move
+- **Concrete: SessionRegistry** (Maps topicId → entry)
+- **Why good**: Registry interface allows swapping implementations; topicId is the only platform-specific key
+
+### ❌ TANGLED COUPLING (Requires Rework for Teams)
+
+#### 1. Handler Registration (src/bot/handlers.ts:62-300+)
+**Problem**: Every command handler directly calls `ctx.reply()` with Telegram-specific options
+```typescript
+/new: await ctx.reply('❌ Usage: /new <name>...', { message_thread_id: topicId })
+/list: await ctx.reply(lines.join('\n'))
+```
+**Impact**: Commands are Telegram-only; duplicating for Teams requires copying all handlers
+**Rework needed**: Abstract "responder" interface; pass platform-agnostic context
+
+#### 2. Topic ID = Forum Topic Concept (src/types.ts, src/sessions/registry.ts)
+**Problem**: SessionEntry explicitly stores `topicId: number` (Telegram forum topic ID)
+```typescript
+export interface SessionEntry {
+  sessionName: string;
+  topicId: number;              // ← Telegram-specific
+  chatId: number;               // ← Telegram-specific
+  ...
+}
+```
+**Impact**: Registry, AFK mode, relay all assume "topic ID" maps to a Telegram forum topic
+**Rework needed**: Rename to `channelId` or `sessionChannelId`; store transport-agnostic ID
+
+#### 3. MarkdownV2 Hardcoding (src/relay/relay.ts:254, 280)
+**Problem**: `parse_mode: 'MarkdownV2'` is baked into Telegram send calls
+```typescript
+() => ctx.api.editMessageText(chatId, msgId, escapeMarkdownV2(text), { parse_mode: 'MarkdownV2' })
+```
+**Impact**: Teams uses different markdown (no MarkdownV2 parsing or HTML); code path must branch or be abstracted
+**Rework needed**: Abstract "format text for platform" callback
+
+#### 4. AFK Mode Tightly Coupled to Telegram (src/bot/afkMode.ts)
+**Problem**: AfkModeController is grammY Bot consumer; manages Telegram forum topics, retry_after, message_thread_id
+```typescript
+private readonly bot: Bot<Context>;          // ← grammY type
+handleTelegramMessage(ctx: Context)          // ← Telegram-specific handler
+```
+**Impact**: AFK mode is 100% Telegram-specific; Teams would need parallel implementation
+**Rework needed**: Abstract AFK transport adapter; inject platform-specific topic/message handling
+
+#### 5. Mirror Input Path (src/bot/afkMode.ts:161-210)
+**Problem**: `handleTelegramMessage()` is Telegram-only; rate limits, user ID checks, source labeling all Telegram-centric
+```typescript
+source: 'telegram'                           // ← Hardcoded transport label
+const userId = ctx.from?.id;                 // ← Telegram user ID extraction
+```
+**Impact**: Adding Teams mirror input requires new handler with duplicated rate-limiting, auth, routing logic
+**Rework needed**: Unified mirror-input dispatcher; platform enum instead of hardcoded 'telegram'
+
+#### 6. Retry-After Handling (src/bot/afkMode.ts:74-81, src/relay/relay.ts)
+**Problem**: Telegram 429 retry_after error extraction is Telegram-specific
+```typescript
+const record = err as { error_code?: unknown; parameters?: { retry_after?: unknown } };
+if (record.error_code !== 429) return undefined;
+```
+**Impact**: Teams error format is different (no error_code, no parameters.retry_after)
+**Rework needed**: Abstract error handler; platform-specific parsing
+
+#### 7. Command Router (src/bot/handlers.ts + src/bot/commands.ts)
+**Problem**: COMMAND_NAMES is shared, but each command's `async (ctx) => { ... }` is grammY-dependent
+```typescript
+export const COMMAND_NAMES = ['new', 'list', 'remove', 'resume', 'help', 'pair', 'status', 'cwd']
+new: async (ctx) => { ... }                 // ← Each handler takes grammY Context
+```
+**Impact**: Teams integration requires new handler map with same logic but Teams API calls
+**Rework needed**: Unified command dispatcher; wrap handlers in platform adapter
+
+---
+
+## PART 6: SUMMARY OF COUPLING HOTSPOTS
+
+### High-Effort Rework Areas (for Teams support)
+1. **Bot handlers** (src/bot/handlers.ts) - All 8 commands hardcoded to grammY
+2. **AFK mode** (src/bot/afkMode.ts) - 300+ lines tightly coupled to Telegram
+3. **Relay send paths** (src/relay/relay.ts) - MarkdownV2 parsing, ctx.api calls
+4. **Session registry key** (src/sessions/registry.ts, src/types.ts) - "topicId" assumes forum topics
+5. **Message formatting** (src/relay/markdownV2.ts) - MarkdownV2 is Telegram-only
+
+### Medium-Effort Refactors (if abstraction seams exist)
+1. **Relay core** (src/relay/relay.ts) - Already receives Context; could swap adapters
+2. **Session lookup** (src/relay/ports.ts) - Already abstracted; easy to retarget
+
+### Low-Effort Reuse
+1. **Message splitter** (src/relay/messageSplitter.ts) - Pure function; works for any transport
+2. **Session registry** (src/sessions/registry.ts) - Can swap key type (topicId → channelId)
+
+---
+
+## APPENDIX: Key File Locations for Reference
+
+- **Telegram polling entry**: src/main.ts:98
+- **Handler registration**: src/bot/handlers.ts:62
+- **Relay inbound**: src/relay/relay.ts:53
+- **Relay outbound (send)**: src/relay/relay.ts:267-295 (safeSend)
+- **Relay outbound (edit)**: src/relay/relay.ts:242-265 (safeEdit)
+- **AFK mode**: src/bot/afkMode.ts:92-150 (constructor + handleTelegramMessage)
+- **Stream routing**: src/bot/afkStreamRouter.ts:55-80 (enqueueChunk)
+- **Config parsing**: src/config/env.ts:25
+- **SessionEntry type**: src/types.ts:5
+- **Registry**: src/sessions/registry.ts:80
+
+
+---
+
+### Reference — Noble Six's Locked ChannelPort Contract
+
+# P1-1: ChannelPort Contract — Locked Interface for Team Implementation
+
+**Status:** LOCKED — implement against this contract  
+**Author:** Noble Six  
+**Date:** 2026-06-06  
+**Commit:** 7b12305 on `feature/channel-abstraction`  
+**Files:** `src/channel/port.ts`, `src/channel/registry.ts`
+
+---
+
+## ChannelPort Interface (src/channel/port.ts)
+
+### Supporting Types
+
+```typescript
+interface ChannelContext { readonly threadId: string; readonly channelId: string }
+interface MessageRef     { readonly id: string }
+interface PromptOption   { readonly value: string; readonly label: string }
+type MessageHandler = (ctx: ChannelContext, text: string) => Promise<void>;
+type CommandHandler = (ctx: ChannelContext, args: string) => Promise<void>;
+```
+
+All identifiers are opaque strings. No Telegram `number` types anywhere.
+
+### ChannelCapabilities
+
+```typescript
+interface ChannelCapabilities {
+  readonly supportsMessageEdit: boolean;
+  readonly supportsThreadCreation: boolean;
+  readonly supportsInteractivePrompts: boolean;
+  readonly supportsStreaming: boolean;
+  readonly maxMessageLength: number;
+}
+```
+
+### ChannelPort Methods
+
+| Category | Method | Signature |
+|----------|--------|-----------|
+| Lifecycle | `start()` | `() => Promise<void>` |
+| Lifecycle | `stop()` | `() => Promise<void>` |
+| Outbound | `sendMessage(ctx, text)` | `(ChannelContext, string) => Promise<MessageRef>` |
+| Outbound | `editMessage(ctx, ref, text)` | `(ChannelContext, MessageRef, string) => Promise<boolean>` |
+| Formatting | `formatForTransport(markdown)` | `(string) => string` |
+| Formatting | `splitMessage(text, footer?)` | `(string, string?) => string[]` |
+| Prompts | `promptUser(ctx, question, options, signal?)` | `(ChannelContext, string, PromptOption[], AbortSignal?) => Promise<string>` |
+| Threads | `createThread(channelId, title)` | `(string, string) => Promise<ChannelContext>` |
+| Inbound | `onMessage(handler)` | `(MessageHandler) => void` |
+| Inbound | `onCommand(command, handler)` | `(string, CommandHandler) => void` |
+| Property | `name` | `readonly string` |
+| Property | `capabilities` | `readonly ChannelCapabilities` |
+
+### Required Core Fallback Behaviors (per capability)
+
+| Capability | When `false` | Core Behavior |
+|-----------|-------------|---------------|
+| `supportsMessageEdit` | Core MUST NOT call `editMessage()`. Send final response as a single message — no placeholder/edit cycle. |
+| `supportsStreaming` | No intermediate stream edits. Send "thinking…" then replace with final (if edits supported) or send final as new message. |
+| `supportsInteractivePrompts` | Adapter implements text-based "reply yes/no" fallback internally. Core may prefer text path. |
+| `supportsThreadCreation` | Core MUST NOT call `createThread()`. Users create threads manually; `/new` must be run inside an existing thread. |
+
+---
+
+## Transport Registry (src/channel/registry.ts)
+
+```typescript
+type ChannelFactory = () => ChannelPort;
+
+registerChannel(name: string, factory: ChannelFactory): void  // module-scope registration
+createChannel(name: string): ChannelPort                       // DI root calls at startup
+listChannels(): readonly string[]                              // diagnostics
+```
+
+- Startup-only selection via `REACH_CHANNEL` env var (default: `'telegram'`).
+- No runtime hot-swap. Daemon restart required to switch transports.
+- Each adapter registers itself as a side-effect import.
+
+---
+
+## Implementation Assignments
+
+| Item | Owner | What to Do |
+|------|-------|-----------|
+| P1-2: Generalize `SessionEntry` | **Carter** | `topicId: number` → `threadId: string`, `chatId: number` → `channelId: string`. Update types.ts, registry.ts, all consumers. Add registry.json migration. |
+| P1-3: Refactor relay | **Carter** | `Relay` takes `ChannelPort` instead of `grammY.Context`. Check `capabilities` before edit/streaming calls. Delegate formatting/splitting to adapter. |
+| P1-4: `TelegramChannel` adapter | **Kat** | Implement `ChannelPort` wrapping grammY. Capabilities: `{ supportsMessageEdit: true, supportsThreadCreation: true, supportsInteractivePrompts: true, supportsStreaming: true, maxMessageLength: 4096 }`. Own MarkdownV2 escaping, 4096-char splitting, inline keyboards. |
+| P1-5: Refactor handlers/commands | **Kat** | Wire command handlers via `channel.onCommand()`. |
+| P1-7: Conformance test kit | **Jun** | Behavioral contract tests: assert send/edit/receive/prompt/format behavior + capability-driven fallbacks. Every future adapter (Teams, Slack, Discord) runs this same kit. |
+| P1-8: Config + registry wiring | **Carter** | Add `REACH_CHANNEL` env var. Wire `createChannel()` into `main.ts`. |
+
+
+---
+
+### Reference — Noble Six's ADR: Communications Channel Abstraction
+
+# ADR-DRAFT: Communications Channel Abstraction & Microsoft Teams Transport
+
+**Status:** DRAFT v2 — incorporating Aaron's decisions; pending final approval  
+**Author:** Noble Six (Lead/Architect)  
+**Date:** 2026-06-06  
+**Supersedes:** N/A  
+**Context:** Aaron's user story — "If I install Reach on my corp machine, I need to use Teams chat instead of Telegram."
+
+### Decisions Locked in v2
+
+| # | Decision | Source |
+|---|----------|--------|
+| D1 | Single binary with `REACH_CHANNEL` env switch | Aaron v2 review |
+| D2 | Transport-owns formatting (each adapter owns escape/split/render) | Aaron v2 review |
+| D3 | Phase 1 starts now on feature branch in open repo | Aaron v2 review |
+| D4 | Corp can `npm install` from public repo → corp branch rebases on `main` | Aaron v2 review |
+| D5 | No public webhook endpoint → Teams inbound = polling | Aaron v2 review |
+| D6 | Corp tenant requires admin consent → client-credentials flow + admin consent | Aaron v2 review |
+| D7 | Design for N transports (Slack, Discord, etc.), not just Telegram + Teams | Aaron v2 review |
+
+---
+
+## 1. Problem Framing
+
+### Two-Phase Goal
+
+**Phase 1 — Generalize the comms channel.** Reach currently hard-couples to Telegram throughout: `grammY` Bot/Context in the relay, MarkdownV2 escaping, 4096-char message splitting, forum-topic-per-session mapping, inline-keyboard permission prompts, and the pairing flow. The core domain — Copilot SDK session relay — is transport-agnostic in principle (the `CopilotSession`/`CopilotSessionFactory` interfaces prove this), but every layer above it assumes Telegram.
+
+**Phase 2 — Add a Microsoft Teams transport,** developed on a corp-local branch that rebases on `main` (corp can `npm install` from the public repo — see §4).
+
+**Design horizon — N transports.** Aaron has directed that the abstraction must anticipate transports beyond Telegram and Teams (Slack, Discord, others). The architecture must make adding a new transport a matter of implementing a port + registering it, not forking core logic.
+
+### Core vs. Transport Concern
+
+| Layer | Concern | Transport-Dependent? |
+|-------|---------|---------------------|
+| `src/copilot/` | SDK session factory, streaming, permissions | **No** — already port-based |
+| `src/bridge/` | Extension ↔ daemon protocol (named pipe) | **No** — pure protocol |
+| `src/sessions/registry.ts` | Session persistence | **Partially** — `SessionEntry` has `topicId: number`, `chatId: number` |
+| `src/relay/relay.ts` | Message relay, streaming, chunking | **Yes** — `grammY.Context`, MarkdownV2, 4096-char limit |
+| `src/relay/markdownV2.ts` | Telegram MarkdownV2 escaping | **Yes** — pure Telegram |
+| `src/relay/messageSplitter.ts` | Telegram 4096-char chunking | **Yes** — Telegram-specific limit |
+| `src/bot/` | Commands, handlers, pairing, AFK mode, prompts | **Yes** — deeply coupled to grammY |
+| `src/config/env.ts` | Env vars | **Yes** — `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, etc. |
+| `extension.mjs` | CLI extension | **No** — talks to daemon via named pipe |
+
+---
+
+## 2. The Channel Abstraction
+
+### What a Transport Must Provide
+
+Any communications channel must expose these capabilities to the core:
+
+| Capability | Telegram | Teams | Slack | Discord |
+|-----------|----------|-------|-------|---------|
+| **Thread/conversation context** | Forum topic (int) | Channel thread (string) | Thread ts (string) | Forum channel (snowflake) |
+| **Outbound message (create)** | `ctx.reply()` | Graph POST | `chat.postMessage` | REST POST |
+| **Outbound message (edit)** | `editMessageText()` | Graph PATCH | `chat.update` | REST PATCH |
+| **Inbound message** | Long-polling | Polling (see §3) | Socket Mode / Events API | Gateway WebSocket |
+| **Rich formatting** | MarkdownV2 | HTML / Adaptive Cards | mrkdwn (Slack-flavored) | Discord markdown |
+| **Message length limit** | 4096 chars | ~28 KB (card) / ~4 KB (text) | 40,000 chars (blocks) | 2000 chars |
+| **Interactive prompts** | Inline keyboards | Adaptive Card actions | Block Kit buttons | Components (buttons) |
+| **Thread creation** | `createForumTopic()` | Root message in channel | Thread reply | Forum post |
+| **User identity** | Numeric ID | Azure AD OID (GUID) | Slack user ID (string) | Snowflake ID |
+
+### Capability Mismatches Across Transports
+
+1. **Thread model.** Telegram has first-class forum topics (integer ID, can be created/closed). Teams has reply chains. Slack has thread `ts` timestamps. Discord has forum channels. No two platforms model threads the same way. The abstraction must treat thread identity as an opaque string.
+
+2. **Formatting.** Every platform has its own markup dialect. There is no lossless universal format. (See Formatting Strategy below.)
+
+3. **Message editing.** Telegram edits are cheap (used for streaming every 800ms). Teams Graph edits are rate-limited (~2 req/sec/app/tenant). Discord edits are rate-limited per channel. Some transports may not support edits at all. The core must not assume editability.
+
+4. **Permission prompts.** Telegram uses inline keyboards. Teams uses Adaptive Card actions. Slack uses Block Kit buttons. Some transports may lack interactive elements entirely. The core must degrade gracefully.
+
+5. **Identifier types.** Telegram IDs are `number`. Everything else is `string`. The abstraction uses opaque `string` throughout.
+
+### Capabilities Descriptor
+
+Not all transports support all features. Rather than the core assuming Telegram/Teams parity, the `ChannelPort` declares what it supports via a capabilities object. The core defines fallback behavior per capability.
+
+```typescript
+// Conceptual — not production code
+interface ChannelCapabilities {
+  supportsMessageEdit: boolean;      // Can outbound messages be edited in-place?
+  supportsThreadCreation: boolean;   // Can the adapter create new threads on demand?
+  supportsInteractivePrompts: boolean; // Can the adapter show buttons/actions?
+  supportsStreaming: boolean;        // Does edit-in-place streaming make sense?
+  maxMessageLength: number;          // Transport's message size limit
+}
+```
+
+**Core fallback behaviors when a capability is absent:**
+
+| Capability | Fallback when `false` |
+|-----------|----------------------|
+| `supportsMessageEdit` | No streaming edits; send final response as new message (no placeholder → edit) |
+| `supportsThreadCreation` | Require user to create thread manually; error if no thread context |
+| `supportsInteractivePrompts` | Fall back to text-based yes/no prompt ("Reply 'yes' to approve") |
+| `supportsStreaming` | Send "thinking…" message, then replace with (or follow with) final response |
+
+This keeps the core clean: it checks capabilities before calling optional methods, rather than try/catch-ing `NotImplemented` errors.
+
+### Design Options for the Abstraction
+
+#### Option A: Port Interface + Transport Registry (Recommended)
+
+Define a narrow `ChannelPort` interface with a capabilities descriptor. Add a lightweight transport registry that maps `REACH_CHANNEL` values to adapter constructors. The DI root (`main.ts`) selects the active transport at startup.
+
+```typescript
+// Conceptual — not production code
+interface ChannelContext {
+  threadId: string;       // Opaque thread/topic identifier
+  channelId: string;      // Opaque channel/chat identifier
+}
+
+interface MessageRef {
+  id: string;             // Opaque message identifier for edits
+}
+
+interface ChannelPort {
+  readonly name: string;           // e.g. 'telegram', 'teams', 'slack'
+  readonly capabilities: ChannelCapabilities;
+  
+  // Lifecycle
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  
+  // Outbound
+  sendMessage(ctx: ChannelContext, text: string): Promise<MessageRef>;
+  editMessage(ref: MessageRef, text: string): Promise<boolean>;  // no-op if !supportsMessageEdit
+  
+  // Formatting (transport-owned — see §2 Formatting Strategy)
+  formatForTransport(markdown: string): string;
+  splitMessage(text: string, footer?: string): string[];
+  
+  // Interactive prompts (returns selected option or text response)
+  promptUser(ctx: ChannelContext, question: string, options: PromptOption[]): Promise<string>;
+  
+  // Inbound — event-driven
+  onMessage(handler: (ctx: ChannelContext, text: string) => Promise<void>): void;
+  onCommand(command: string, handler: (ctx: ChannelContext, args: string) => Promise<void>): void;
+}
+
+// Transport registry — maps REACH_CHANNEL values to factory functions
+type ChannelFactory = (config: TransportConfig) => ChannelPort;
+const TRANSPORT_REGISTRY = new Map<string, ChannelFactory>();
+
+function registerTransport(name: string, factory: ChannelFactory): void {
+  TRANSPORT_REGISTRY.set(name, factory);
+}
+
+// At startup: const channel = TRANSPORT_REGISTRY.get(process.env.REACH_CHANNEL)!(config);
+```
+
+The transport registry is deliberately simple — a `Map<string, ChannelFactory>`, not a plugin loader. Transports register themselves at import time (side-effect imports in `main.ts`). No dynamic discovery, no plugin directories, no runtime loading. This gives us N-transport extensibility without the complexity of a plugin system.
+
+**Trade-offs:**
+- ✅ Extends proven port pattern (`relay/ports.ts`)
+- ✅ N-transport ready: adding a transport = implement `ChannelPort` + call `registerTransport()`
+- ✅ Capabilities descriptor prevents core from assuming parity
+- ✅ No new runtime dependencies; no event bus indirection
+- ✅ Transport selection is explicit and fail-fast at startup
+- ⚠️ Transport registry is static (compile-time) — dynamic plugin loading is not supported (acceptable for a personal daemon)
+
+#### Option B: Event-Driven Message Bus
+
+Introduce an internal event bus (Node `EventEmitter` or similar). Transports publish `message.received` events; core subscribes. Core publishes `message.send` events; transports subscribe.
+
+**Trade-offs:**
+- ✅ Fully decoupled — transports are plug-and-play
+- ✅ Easy to add logging/metrics as bus middleware
+- ⚠️ Indirection tax — harder to trace message flow, debug failures
+- ⚠️ Adds a new architectural concept to a small codebase (~2K LOC)
+- ⚠️ A registry of port implementations is NOT the same as an event bus. The registry gives us N-transport selection without the indirection; a bus adds broadcast semantics we don't need (Reach runs exactly one transport at a time, never multiple simultaneously)
+- ❌ Event bus shines when multiple consumers process the same event (pub/sub fan-out). Reach is 1:1 — one inbound message → one relay → one outbound response. No fan-out.
+
+#### Option C: Full Hexagonal Ports-and-Adapters
+
+Formalize all external dependencies as ports (channel, persistence, config). Full DI container. Adapters wired at composition root.
+
+**Trade-offs:**
+- ✅ Maximum testability and pluggability
+- ⚠️ Significant refactoring of the DI root (`main.ts`) and config layer
+- ⚠️ Large blast radius — touches every module, high risk of regression
+- ❌ The channel layer is the only boundary that needs generalization today. Persistence and config don't vary by transport. Full hexagonal is solving problems we don't have.
+
+### ➡️ RECOMMENDATION: Option A — Port Interface + Transport Registry
+
+**Reasoning:** Reach already uses the port pattern successfully (`relay/ports.ts` defines `SessionLookup` and `PermissionPrompter`). Option A extends this proven approach with two additions for N-transport readiness:
+
+1. **Capabilities descriptor** — prevents the core from assuming any transport matches Telegram's feature set. Each adapter declares what it supports; the core degrades gracefully.
+2. **Transport registry** — a simple `Map<string, ChannelFactory>` that makes adding a new transport a mechanical step (implement interface, register factory) rather than an architectural change.
+
+The event bus (Option B) doesn't earn its keep even at N transports. Reach runs one transport at a time — there's no fan-out, no multi-subscriber scenario. The bus adds indirection without adding capability.
+
+**Key structural change:** `SessionEntry` must be generalized. `topicId: number` → `threadId: string` (opaque). `chatId: number` → `channelId: string` (opaque). This is the deepest change and affects registry, types, handlers, and tests.
+
+### Formatting Strategy
+
+**Decision (D2): Transport-owns formatting.** Each adapter owns its escape/split/render logic. The core passes raw text (SDK output, which is roughly CommonMark) to `formatForTransport()` and `splitMessage()`.
+
+**Acknowledged tension:** Aaron chose transport-owns formatting while also planning for N transports. At N=2 (Telegram, Teams) this is fine — each adapter has bespoke formatting needs. At N=4+ (add Slack mrkdwn, Discord markdown), formatting duplication may become painful: each adapter reimplements CommonMark → platform-dialect conversion independently.
+
+**Migration path (no action now; documented for future):** If formatting duplication becomes a maintenance burden across 4+ adapters, introduce an optional `CommonMarkNormalizer` utility that adapters can use internally — a shared library, not a core requirement. The `ChannelPort` contract (`formatForTransport(markdown: string): string`) does NOT change; adapters that want to use the normalizer import it as a helper. Adapters with exotic formatting needs (Adaptive Cards) can ignore it. This preserves transport autonomy while amortizing shared logic.
+
+---
+
+## 3. Teams Transport Options
+
+Aaron identified three integration paths. Comparison retained from v1; updated with resolved corp constraints.
+
+### 3a. Microsoft Graph REST API ✅ SELECTED
+
+**How it works:** Direct HTTP calls to `https://graph.microsoft.com/v1.0/teams/{teamId}/channels/{channelId}/messages`.
+
+| Aspect | Details |
+|--------|---------|
+| **Auth** | Azure AD app registration; **client-credentials flow with admin consent** (D6). Permissions: `Chat.ReadWrite`, `ChannelMessage.Send`, `ChannelMessage.Read.All`. One-time admin consent step required (see P2-2). |
+| **Outbound** | `POST` to create messages, `PATCH` to update. Rate limits: ~2 req/sec per app per tenant. |
+| **Inbound** | **Polling** (D5). `GET /teams/{id}/channels/{id}/messages` with `$filter=lastModifiedDateTime gt ...`. No webhook endpoint available in corp environment. Mirrors Telegram's long-polling model — nice symmetry. |
+| **Formatting** | HTML subset (`<b>`, `<i>`, `<code>`, `<pre>`, `<a>`) or Adaptive Cards (JSON). |
+| **Corp-tenant** | Works within tenant. Admin consent is required (confirmed). |
+| **Dev/test** | Testable with Graph Explorer or Postman against a dev tenant. |
+
+### Inbound Polling Design
+
+Graph polling frequency must balance responsiveness against rate limits. The ~2 req/sec/app/tenant rate limit is shared across ALL Graph operations (polling, sending, editing). Budget allocation:
+
+| Operation | Budget |
+|-----------|--------|
+| Poll for new messages | ~0.5 req/sec (poll every 2s) |
+| Outbound send/edit | ~1.5 req/sec (burst) |
+
+This is tighter than Telegram (which has separate rate limits for reading vs. writing). The streaming UX and polling frequency share a rate-limit budget — see Streaming UX below.
+
+### 3b. Bot Framework SDK (Fallback)
+
+Retained as fallback. If Graph API polling proves too slow or corp security mandates bot registration for message access, Bot Framework provides an alternative. Adds an HTTP server requirement, but that's solvable.
+
+### 3c. Teams MCP Server (Deferred)
+
+Retained as future option. MCP ecosystem for Teams is immature. Revisit when coverage matures.
+
+### 3d. CLI Tools — Rejected
+
+No stable CLI tool provides real-time bidirectional Teams messaging.
+
+### Streaming UX on Teams
+
+Telegram's streaming UX (edit-in-place every 800ms) works because edits are cheap. Teams Graph API rate limits (~2 req/sec/app/tenant, shared with polling) constrain this.
+
+Given the polling + rate-limit budget interaction:
+
+- **Option S1 (Recommended for Teams):** Send initial "thinking…" message, replace with final response when complete. Zero intermediate edits. Maximizes rate-limit budget for polling.
+- **Option S2:** Stream via Adaptive Card with loading state. Promising but unproven — requires corp testing.
+- **Option S3:** Throttle edits to ~0.5/sec (1 edit every 2s). Feasible but eats into polling budget; streaming feels sluggish at 2s intervals.
+
+**Recommendation: S1 for initial Teams adapter; revisit S2 if Adaptive Card refresh proves viable in corp testing.** The capabilities descriptor handles this cleanly: `TelegramChannel` sets `supportsStreaming: true`, `TeamsChannel` sets `supportsStreaming: false`. The core relay checks the flag and skips edit-in-place streaming when false.
+
+---
+
+## 4. Corp-Fork Strategy
+
+### ✅ RESOLVED: Corp Can Import from Open Repo
+
+Aaron confirmed the corp environment can `npm install` from the public GitHub repo. This is the simplest possible scenario: the corp branch imports `ChannelPort` directly, stays trivially mergeable, and carries no copied interfaces.
+
+> *Footnote: If this ever changes (air-gapped network), the contract tests in the open repo act as lockstep enforcement. The corp adapter must pass the conformance kit (P1-7) regardless of import mechanism. A vendored copy or git subtree would be the last-resort fallback.*
+
+### What Lives Where
+
+| Component | Open Repo (this repo) | Corp Branch |
+|-----------|----------------------|-------------|
+| `ChannelPort` interface + capabilities | ✅ | Inherited via `npm install` |
+| Transport registry + `REACH_CHANNEL` switch | ✅ | Inherited |
+| `TelegramChannel` adapter | ✅ | Inherited |
+| `TeamsChannel` adapter **stub** | ✅ | Inherited (replaced with live impl) |
+| Conformance test kit | ✅ | Run against live Teams adapter |
+| Teams adapter **live Graph wiring** | ❌ | ✅ |
+| Azure AD app registration + secrets | ❌ | ✅ (env vars / `.env`) |
+| Registry generalization (`threadId: string`) | ✅ | Inherited |
+
+### Branching/Sync Strategy
+
+**Corp-local branch rebases on `main`** (D4). The corp branch carries minimal diff:
+
+1. `src/channel/teams/graphClient.ts` — live Graph HTTP client (auth, send, poll, edit)
+2. `src/channel/teams/index.ts` — replaces the stub with the live adapter wiring
+3. `.env` / environment config — `REACH_CHANNEL=teams`, `TEAMS_TENANT_ID`, `TEAMS_CLIENT_ID`, `TEAMS_CLIENT_SECRET`
+
+Everything else — the `ChannelPort` interface, capabilities, transport registry, conformance tests, Telegram adapter — comes from `main` via rebase. Merge conflicts should be rare and mechanical.
+
+### LOCKSTEP Hazard Avoidance
+
+The existing lockstep between `src/config/config.ts` and `extension.mjs` is a known maintenance risk. The channel abstraction avoids creating new lockstep hazards:
+
+- `ChannelPort` is defined once in the open repo. The corp branch imports it — no copied interfaces.
+- The conformance test kit (P1-7) runs against any adapter. If the interface changes in `main` and the corp adapter doesn't update, the conformance tests fail on next rebase — the tests ARE the lockstep enforcement.
+- No logic is duplicated across runtime boundaries.
+
+---
+
+## 5. Phased Roadmap
+
+### Phase 1: Abstraction + Telegram Refactor (Open Repo)
+
+**Goal:** Extract `ChannelPort` interface with capabilities descriptor and transport registry; refactor existing Telegram code into a `TelegramChannel` adapter. Zero behavior change — all existing tests pass.
+
+| Item | Owner | Description | Blocked? |
+|------|-------|-------------|----------|
+| P1-1: Define `ChannelPort` interface + `ChannelCapabilities` | Noble Six | Core port in `src/channel/port.ts`: interface, capabilities descriptor, `MessageRef`, `ChannelContext`, `PromptOption`. Design for N transports. | No |
+| P1-2: Transport registry | Noble Six | `src/channel/registry.ts`: `Map<string, ChannelFactory>`, `registerTransport()`, startup selection via `REACH_CHANNEL`. Wire into DI root. | No |
+| P1-3: Generalize `SessionEntry` | Carter | `topicId` → `threadId: string`, `chatId` → `channelId: string`; update registry, types, all consumers. Registry migration for existing JSON files (numeric → string). | No |
+| P1-4: Refactor relay to use `ChannelPort` | Carter | `Relay` class takes a `ChannelPort` instead of `grammY.Context`. Core checks `capabilities` before calling optional features (edit, streaming, interactive prompts). Formatting/splitting delegated to adapter. | No |
+| P1-5: Create `TelegramChannel` adapter | Kat | Wraps grammY Bot behind `ChannelPort`. Owns MarkdownV2 escaping, 4096-char splitting, inline keyboards. Capabilities: `{ supportsMessageEdit: true, supportsThreadCreation: true, supportsInteractivePrompts: true, supportsStreaming: true, maxMessageLength: 4096 }`. | No |
+| P1-6: Refactor handlers/commands | Kat | Command handlers use `ChannelPort.onCommand()` instead of `bot.command()`; formatting uses adapter. | No |
+| P1-7: Conformance test kit | Jun | **Reusable** test suite that ANY `ChannelPort` implementation must pass. Tests organized by capability: (a) mandatory tests (send, receive, split, format), (b) conditional tests gated on capabilities (edit, streaming, interactive prompts, thread creation). Future adapters (Slack, Discord, Teams) run this same kit. | No |
+| P1-8: Config generalization | Carter | Add `REACH_CHANNEL=telegram` env var (default). Keep `TELEGRAM_*` vars valid when channel=telegram. Prepare `REACH_CHANNEL=teams` path (stub adapter). | No |
+| P1-9: Regression suite | Jun | Ensure 570+ existing tests pass with zero behavior change. | No |
+| P1-10: ADR finalization | Noble Six | Lock this ADR after Aaron's final approval. | No |
+
+### Phase 2: Teams Adapter (Corp + Open Repo)
+
+**Goal:** Implement `TeamsChannel` adapter using Graph REST API with polling for inbound. Developed and validated in corp environment.
+
+| Item | Owner | Description | Blocked? |
+|------|-------|-------------|----------|
+| P2-1: Teams adapter stub | Carter | Stub in open repo satisfying `ChannelPort` with capabilities `{ supportsMessageEdit: true, supportsThreadCreation: false, supportsInteractivePrompts: true, supportsStreaming: false, maxMessageLength: 4096 }`. Throws "not configured" at runtime. Passes conformance kit mandatory tests against mock. | No |
+| P2-2: Azure AD app registration + admin consent | Corp-side | Register app in corp tenant. Client-credentials flow. Permissions: `Chat.ReadWrite`, `ChannelMessage.Send`, `ChannelMessage.Read.All`. **One-time admin consent required.** | **Yes** — corp access |
+| P2-3: Graph polling client | Corp-side | `GET /messages` with `$filter` at ~2s intervals. Parse inbound messages, dispatch to `onMessage` handlers. Budget: ~0.5 req/sec for polling, ~1.5 req/sec for outbound. | **Yes** — corp access |
+| P2-4: Graph send/edit client | Corp-side | `POST` to create messages, `PATCH` to edit. Rate-limit-aware with retry/backoff. | **Yes** — corp access |
+| P2-5: Teams formatting | Kat (+ corp) | `formatForTransport()` producing HTML or Adaptive Card JSON. Design in open repo (adapter-internal module), validate in corp. | Partially |
+| P2-6: Permission prompt via Adaptive Cards | Kat (+ corp) | Adaptive Card action buttons replacing Telegram inline keyboards. Falls back to text prompt if `supportsInteractivePrompts` is ever set false. | **Yes** — corp testing |
+| P2-7: Streaming UX validation | Noble Six + corp | Start with S1 (no streaming edits). Test S2 (Adaptive Card refresh) if time permits. Inform `supportsStreaming` capability. | **Yes** — corp access |
+| P2-8: AFK mode generalization | Carter | Generalize `AfkModeController` or make it adapter-internal. Core exposes hooks; Telegram adapter uses them for forum-topic AFK. Teams adapter defers AFK to Phase 3 if complex. | No (design), **Yes** (Teams validation) |
+| P2-9: Integration testing | Jun (+ corp) | Conformance kit run against live Teams adapter in corp environment. | **Yes** — corp access |
+| P2-10: Config/env for Teams | Carter | `REACH_CHANNEL=teams`, `TEAMS_TENANT_ID`, `TEAMS_CLIENT_ID`, `TEAMS_CLIENT_SECRET`, `TEAMS_CHANNEL_ID`. | No |
+
+---
+
+## 6. Open Questions for Aaron
+
+Questions answered in v2 review are struck through. Remaining + new questions below.
+
+### Answered (v2)
+
+- ~~Single binary vs separate builds~~ → **Single binary with `REACH_CHANNEL` switch** (D1)
+- ~~Formatting strategy~~ → **Transport-owns** (D2)
+- ~~Can corp fork npm install from public repo~~ → **Yes** (D4)
+- ~~Webhook endpoint feasible~~ → **No; polling** (D5)
+- ~~Admin consent required~~ → **Yes; client-credentials + admin consent** (D6)
+
+### Remaining from v1
+
+1. **Is AFK mode in scope for Teams Phase 2?** AFK mode is deeply Telegram-specific (forum topic creation, orientation messages, stream routing). Recommend deferring Teams AFK to Phase 3, keeping Phase 2 focused on basic relay. **Decision needed.**
+
+2. **Pairing flow for Teams?** Telegram pairing uses a one-time code sent to the bot. Teams would need a different onboarding flow (e.g., configure channel ID via env var, authenticate via browser). **Phase 2 or later?**
+
+### New Questions (from N-Transport Direction)
+
+3. **Which transports are on the horizon, and in what priority order?** You mentioned Slack and Discord as possibilities. Knowing the priority helps us validate the capabilities descriptor against real transport APIs now rather than discovering gaps later. Is it Teams → Slack → Discord, or different?
+
+4. **Should the transport registry support runtime switching, or is startup-only selection sufficient?** Current design: `REACH_CHANNEL` is read once at startup; changing transport requires a daemon restart. If you envision switching transports without restart (e.g., for failover or multi-channel), the registry and relay need different wiring. **Startup-only is simpler and recommended** — a personal daemon restart is cheap.
+
+5. **Graph API vs. Bot Framework: final call?** v1 recommended Graph API (primary) + Bot Framework (fallback). Corp constraints (no webhook endpoint, admin consent available) reinforce Graph as primary. But if corp IT has existing Bot Framework infrastructure or prefers the bot registration model, that changes the calculus. **Is Graph API confirmed as primary, or do you need to check with corp IT first?**
+
+6. **Conformance kit scope — how strict?** The conformance test kit (P1-7) defines the behavioral contract for ALL adapters. Options:
+   - **(a) Interface compliance only** — tests that the adapter implements all methods, returns correct types, handles capabilities correctly.
+   - **(b) Behavioral contract** — tests that messages round-trip correctly, formatting produces valid output for the platform, prompts resolve, etc. (heavier but catches more bugs).
+   
+   Recommend **(b)** — the conformance kit is the primary quality gate for new adapters.
+
+---
+
+## Appendix: Telegram Coupling Inventory
+
+Files with direct Telegram/grammY dependencies that Phase 1 must address:
+
+| File | Coupling Type | Refactoring Needed |
+|------|--------------|-------------------|
+| `src/types.ts` | `topicId: number`, `chatId: number` | Generalize to `threadId: string`, `channelId: string` |
+| `src/bot/index.ts` | `grammY.Bot` constructor, chat ID guard | Move behind `TelegramChannel` adapter |
+| `src/bot/handlers.ts` | `grammY.Context`, `bot.command()`, `ctx.reply()` | Rewrite against `ChannelPort` |
+| `src/bot/commands.ts` | Telegram command format (`/foo`) | Keep as-is (Teams also uses `/foo` style) |
+| `src/bot/prompt.ts` | Inline keyboards, `callback_query` | Move behind adapter's `promptUser()` |
+| `src/bot/pairing.ts` | Telegram-specific pairing flow | Keep in `TelegramChannel`; stub for Teams |
+| `src/bot/afkMode.ts` | Forum topics, orientation messages | Generalize or defer to Phase 3 |
+| `src/bot/afkStreamRouter.ts` | Telegram message sending | Generalize with `ChannelPort` |
+| `src/relay/relay.ts` | `grammY.Context`, MarkdownV2, 4096 limit | Core relay uses `ChannelPort`; formatting delegated |
+| `src/relay/markdownV2.ts` | Pure Telegram | Moves into `TelegramChannel` adapter |
+| `src/relay/messageSplitter.ts` | 4096-char limit | Moves into `TelegramChannel` adapter |
+| `src/relay/ports.ts` | `topicId: number`, `chatId: number` | Generalize to string IDs |
+| `src/sessions/registry.ts` | `topicId: number`, `chatId: number` in persistence | Generalize; migration for existing registry files |
+| `src/config/env.ts` | `TELEGRAM_BOT_TOKEN`, etc. | Add channel-switch logic; keep Telegram vars valid |
+| `src/main.ts` | DI root wires grammY Bot directly | Channel selection at DI root based on `REACH_CHANNEL` |
+
+---
+
+*This is a DRAFT v2 ADR. Decisions D1–D7 are locked per Aaron's review. Remaining open questions in §6 require decisions before implementation. No code changes until Aaron gives final approval.*
+
+
+
+---
+
+### Concurrent Review — Noble Six Phase 1 Architectural Review
+
+# Noble Six — Phase 1 Architecture Review
+
+**Date:** 2026-06-06  
+**Reviewer:** Noble Six (Lead/Architect)  
+**Branch:** `feature/channel-abstraction`  
+**Commits reviewed:** d84dc0c (Carter), e69e50b (Kat), 3739640 (Jun)  
+**Prior commit (contract):** 7b12305 (Noble Six)
+
+---
+
+## VERDICT: APPROVE-WITH-NITS
+
+The branch is sound. The core abstraction is clean, the Telegram adapter preserves existing behavior, the conformance kit is genuinely behavioral, and the 937-test suite is green. The contract is Teams-ready with one required tweak and several non-blocking items.
+
+---
+
+## 1. Contract Cleanliness / Abstraction Leaks
+
+### ✅ Port contract (`src/channel/port.ts`) — Clean
+
+No Telegram-isms. All IDs are opaque strings. Capabilities descriptor is well-typed. TSDoc specifies fallback behaviors. The interface is exactly what I designed in P1-1. No modifications were needed by Carter or Kat.
+
+### ⚠️ NIT N1: `setMessageInterceptor` on TelegramChannel — Acceptable Phase-1 Debt
+
+`TelegramChannel.setMessageInterceptor(fn: (ctx: Context) => Promise<boolean>)` is a Telegram-specific method that lives OFF the port contract. It's used by `main.ts` to inject the AfkModeController's `handleTelegramMessage` before the `onMessage` handler fires.
+
+**Judgment: Acceptable.** AFK mode is deeply Telegram-specific today (forum topic creation, orientation messages, stream routing). Generalizing it would bloat Phase 1 without delivering value — Teams doesn't need AFK mode yet. The interceptor is on the concrete class, not the port. No abstraction leak.
+
+**Future path (P2/P3):** When AFK mode is generalized, the interceptor should become a port-level concept — something like `onMessageFilter(predicate)` that runs before the `onMessage` handler. Not blocking.
+
+### ⚠️ NIT N2: Synthetic grammY `Context` for `/status` and `/cwd` — Acceptable Phase-1 Debt
+
+`handlers.ts` creates a `makeSyntheticCtx(channelCtx)` that builds a fake grammY `Context` object for two commands:
+- `/status` → calls `statusProvider.handleStatusCommand(syntheticCtx)` which accepts grammY `Context`
+- `/cwd` → calls `handleCwdCommand(syntheticCtx, ...)` which accepts grammY `Context`
+
+The synthetic ctx routes `reply()` calls through `channel.sendMessage()`. It works, and Jun pinned it with regression tests. But it's a compatibility shim, not a clean abstraction.
+
+**Judgment: Acceptable.** Both `handleStatusCommand` and `handleCwdCommand` accept grammY `Context` because they're deep functions that weren't worth refactoring in Phase 1. The shim preserves behavior without changing internal APIs. But it means two commands still have an indirect Telegram dependency path.
+
+**Future path (Phase 2 or backlog):** Refactor `handleCwdCommand` and `handleStatusCommand` to accept `ChannelPort + ChannelContext` instead of grammY `Context`. This eliminates the shim. **Owner: Kat** (owns handler layer). Non-blocking.
+
+---
+
+## 2. N-Transport Readiness (Teams)
+
+### Could a Teams adapter implement `ChannelPort` AS WRITTEN?
+
+**Yes, with one required change and one advisory.**
+
+### 🔴 FINDING F1: Relay does NOT check `supportsMessageEdit` or `supportsStreaming` before calling `editMessage` — MUST FIX
+
+This is a real contract violation in `relay.ts`. The port TSDoc states:
+
+> Core MUST check capabilities.supportsMessageEdit before calling [editMessage].
+> Core MUST NOT call editMessage() [when supportsMessageEdit is false].
+
+But `relay.ts` lines 113–119 call `channel.editMessage()` during streaming without checking capabilities:
+
+```typescript
+if (now - lastEditAt >= STREAM_EDIT_THROTTLE_MS) {
+  try {
+    await this.channel.editMessage(channelCtx, placeholderRef, accumulated);  // ← no capability check
+  } catch { ... }
+}
+```
+
+And line 100 always sends a placeholder:
+```typescript
+const placeholderRef = await this.channel.sendMessage(channelCtx, '…');  // ← always sent, even when no edits will follow
+```
+
+For a Teams adapter with `supportsStreaming: false` and `supportsMessageEdit: true`, the relay would:
+1. Send a "…" placeholder (wasteful but harmless — would be replaced by final edit)
+2. Call `editMessage` during streaming at 800ms intervals (violates `supportsStreaming: false`)
+3. Call `safeEditFormatted` for the final response (correct)
+
+For a hypothetical adapter with `supportsMessageEdit: false`, the relay would:
+1. Send a "…" placeholder that can never be edited (user sees "…" forever if first-chunk edit fails)
+2. Call `editMessage` during streaming — returns false but wastes API calls
+3. Call `safeEditFormatted` → falls back to `formatForTransport + editMessage` → fails
+
+**Required fix:** Before the streaming loop, check `channel.capabilities.supportsStreaming`. If false, skip intermediate edits entirely. Before the placeholder send, check `supportsMessageEdit` — if false, don't send a placeholder; accumulate the full response and send once at the end. The fallback paths are documented in the port TSDoc; they just aren't implemented in the relay yet.
+
+**Owner: Carter** (owns relay). **Blocking: YES** — the relay must honor the contracted fallback behaviors before the port is Teams-ready. Without this, a `supportsStreaming: false` adapter would fire dozens of pointless `editMessage` calls per response.
+
+### ⚠️ NIT N3: `asTelegramChannel()` duck-typing in relay — Non-blocking but needs a plan
+
+`relay.ts` duck-types to `TelegramChannel` for `editMessageWithMarkdown` and `sendMessageWithMarkdown`:
+
+```typescript
+private asTelegramChannel(): TelegramChannel | null {
+  const ch = this.channel as unknown as TelegramChannel;
+  return typeof ch.editMessageWithMarkdown === 'function' ? ch : null;
+}
+```
+
+This is documented as intentional (Carter's handoff notes). For Telegram, it preserves the MarkdownV2-with-plain-fallback behavior. For non-Telegram channels, it falls through to the generic `formatForTransport + editMessage` path.
+
+**Judgment: Acceptable for Phase 1.** The duck-typing doesn't break any other adapter — it's a transparent optimization for Telegram. But it means the generic path (`formatForTransport + editMessage`) is exercised only in tests, never in production for Telegram. This is a minor test-coverage gap.
+
+**Future path:** When a second adapter goes live, the generic path gets real production exercise. No action needed now.
+
+### ⚠️ NIT N4: `require('grammy')` in factory registration — Lint suppression
+
+Line 288 of `src/channel/telegram/index.ts`:
+```typescript
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { Bot } = require('grammy') as typeof import('grammy');
+```
+
+This uses CJS `require()` in an ESM module to "lazily" import grammY. The intent is to avoid loading grammY when `REACH_CHANNEL !== 'telegram'`. But the module is imported via `import './channel/telegram/index.js'` in `main.ts`, which runs the side-effect registration AND parses the factory function at module load. The `require()` inside the factory only defers the actual grammY load until `createChannel('telegram')` is called — which is always called when `REACH_CHANNEL === 'telegram'`.
+
+**Judgment: Non-blocking nit.** The lazy load works as intended for the case where a Teams user never calls `createChannel('telegram')`, but the CJS `require()` in ESM is a code smell. Replace with dynamic `await import('grammy')` or just use a static top-level import since the module is only imported when Telegram is selected.
+
+**Owner: Carter.** Non-blocking.
+
+---
+
+## 3. Corp-Fork Mergeability
+
+### ✅ Structure is clean for corp branch
+
+A Teams adapter would add:
+- `src/channel/teams/index.ts` (new file — implements ChannelPort, calls `registerChannel('teams', ...)`)
+- `src/channel/teams/graphClient.ts` (new file — Graph API HTTP client)
+- `.env` additions (`TEAMS_TENANT_ID`, `TEAMS_CLIENT_ID`, etc.)
+- `import './channel/teams/index.js'` in `main.ts` (one line)
+
+No shared files need modification beyond that one import line. No new LOCKSTEP hazards.
+
+### ✅ `main.ts` casting concern
+
+`main.ts` line 64 does `const telegramChannel = channel as TelegramChannel` and accesses `telegramChannel.bot` for AFK mode wiring. When `REACH_CHANNEL=teams`, this cast would fail at runtime. But the AfkModeController is only created when `bridge` is non-null, and the AFK features are Telegram-specific. The corp fork should guard this with `if (cfg.reachChannel === 'telegram')` or move it into the TelegramChannel adapter. This is a known Phase 2 concern, not a Phase 1 blocker.
+
+---
+
+## 4. Correctness / Bugs
+
+### ✅ coerceId migration — Correct
+
+`coerceId(raw)` in `registry.ts` handles both `string` passthrough and `number → String()` conversion. Legacy JSON files with `{ "topicId": 42, "chatId": -100 }` upgrade transparently. The canonical key is `entry.threadId` (string). Legacy numeric keys (`"42"` from `Object.entries`) match via the `String(Number(key)) === key` check. Well-handled.
+
+### ✅ IdleMonitor — Clean migration
+
+`IdleMonitor` now uses `string` keys instead of `number`. All timer operations (`reset`, `cancel`, `cancelAll`) work correctly with string keys.
+
+### ✅ Empty threadId handling — Correct
+
+`TelegramChannel.sendMessage` omits `message_thread_id` when `ctx.threadId` is empty (General Topic). Pinned by Jun's regression test.
+
+### ✅ promptUser AbortSignal — Correct
+
+`TelegramChannel.promptUser` delegates to `promptUserForPermission` which already handles AbortSignal. FakeChannel's text-fallback path correctly resolves `''` on abort. Both pre-aborted and mid-wait abort are tested.
+
+### ✅ `bot.catch` in handlers.ts — Minor duplication
+
+`handlers.ts` line 367 still has `bot.catch(...)`. This is redundant with `TelegramChannel.start()` which also wires `bot.catch()` in line 93. But grammY's `bot.catch` is idempotent (last one wins), so this is harmless. Could clean up in Phase 2.
+
+---
+
+## 5. Conformance Kit Quality
+
+### ✅ Genuinely behavioral
+
+The conformance kit (`tests/channel/conformance/runner.ts`) is behavioral, not just type-shape:
+
+- **Outbound:** Asserts `sendMessage` returns a `MessageRef` with non-empty `id`; asserts empty threadId doesn't throw.
+- **Edit:** Asserts `editMessage` returns `false` when `supportsMessageEdit=false` and records no edit; returns `true` when supported.
+- **Formatting:** Asserts `formatForTransport` returns non-null string; `splitMessage` enforces `maxMessageLength` on every chunk; footer appears in last chunk.
+- **Inbound:** Asserts handler fires with string threadId/channelId; replacement semantics on second `onMessage` call.
+- **Prompts:** Asserts text-fallback resolves on matching inbound text; AbortSignal resolves `''`.
+- **Threads:** Asserts `createThread` throws when `supportsThreadCreation=false`; returns valid `ChannelContext` when supported.
+- **Full matrix:** All 4 capabilities in ON/OFF states, including the "all OFF" scenario (most constrained transport).
+
+### ✅ Plug-in path for future adapters is real
+
+`runChannelPortConformance(makePort, opts)` is parameterized. A Teams conformance test is a 4-line file:
+```typescript
+import { runChannelPortConformance } from './runner.js';
+import { TeamsChannel } from '../../../src/channel/teams/index.js';
+runChannelPortConformance(() => new TeamsChannel(mockGraphClient), { name: 'TeamsChannel', skipLifecycle: true });
+```
+
+Jun's handoff doc (jun-phase1-conformance.md) documents this exact path with a full example.
+
+### ⚠️ GAP: Conformance kit does not test the relay's capability-check behavior
+
+The conformance kit tests the **adapter's** behavior. It does NOT test the **relay's** response to capabilities (e.g., "when `supportsStreaming=false`, the relay doesn't call `editMessage` during streaming"). This is the same gap identified in F1 above. The relay tests in `tests/relay/relay.test.ts` should gain capability-driven test cases.
+
+**Owner: Jun** (tests) + **Carter** (relay fix). Blocked on F1 fix.
+
+---
+
+## Itemized Findings
+
+| # | Type | Description | Owner | Blocking? |
+|---|------|-------------|-------|-----------|
+| F1 | BUG | Relay does not check `supportsStreaming` / `supportsMessageEdit` before calling `editMessage` during streaming. Violates port contract. Sends useless placeholder + edits for `supportsStreaming:false` adapters. | **Carter** (relay) + **Jun** (add relay capability tests) | **YES** |
+| N1 | NIT | `setMessageInterceptor` on TelegramChannel — Telegram-only method off the port. Acceptable Phase-1 debt. | Backlog (Phase 3 AFK generalization) | No |
+| N2 | NIT | Synthetic grammY Context for `/status` and `/cwd`. Compatibility shim — works but not clean. | **Kat** (Phase 2 backlog) | No |
+| N3 | NIT | `asTelegramChannel()` duck-typing in relay for MarkdownV2. Documented, transparent, works. | Backlog (self-resolves when second adapter ships) | No |
+| N4 | NIT | CJS `require('grammy')` in ESM factory registration. Works but code smell. | **Carter** (Phase 2) | No |
+| N5 | NIT | `bot.catch()` in handlers.ts duplicated with TelegramChannel.start(). Harmless. | **Kat** (Phase 2 cleanup) | No |
+
+---
+
+## Is the Port Teams-Ready As Written?
+
+**Yes, after F1 is fixed.** The `ChannelPort` interface itself is Teams-ready today. A Teams adapter with `{ supportsStreaming: false, supportsThreadCreation: false, supportsMessageEdit: true, supportsInteractivePrompts: true, maxMessageLength: 28000 }` can implement it without contract changes.
+
+The blocker is in the **relay** (the consumer of the port), not the port itself. The relay must honor the capability flags it's supposed to check. F1 is a relay bug, not a port bug.
+
+**After F1 fix:** Corp fork can start implementing `TeamsChannel` against the locked port contract with confidence.

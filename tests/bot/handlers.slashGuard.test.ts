@@ -19,6 +19,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerHandlers } from '../../src/bot/handlers.js';
 import type { SessionEntry } from '../../src/types.js';
+import type { ChannelPort } from '../../src/channel/port.js';
 import { makeMockFactory, makeMockSession } from '../mocks/sdk.js';
 import { makeMockBot, makeMockCtx } from '../helpers/botMocks.js';
 import { makeStubRegistry } from '../helpers/registryMocks.js';
@@ -27,10 +28,32 @@ import { makeStubRegistry } from '../helpers/registryMocks.js';
 
 const SESSION_ENTRY: SessionEntry = {
   sessionName: 'reach-myapp',
-  topicId: 42,
-  chatId: -1001234567890,
+  threadId: '42',
+  channelId: '-1001234567890',
   createdAt: '2024-01-01T00:00:00.000Z',
-} as SessionEntry;
+};
+
+function makeMockChannel(): ChannelPort {
+  return {
+    start: vi.fn(),
+    stop: vi.fn(),
+    sendMessage: vi.fn().mockResolvedValue({ id: '100' }),
+    editMessage: vi.fn().mockResolvedValue(undefined),
+    splitMessage: vi.fn((text: string) => [text]),
+    formatForTransport: vi.fn((text: string) => text),
+    createThread: vi.fn(),
+    onMessage: vi.fn(),
+    onCommand: vi.fn(),
+    promptUser: vi.fn().mockResolvedValue('approve'),
+    capabilities: {
+      supportsMessageEdit: true,
+      supportsThreadCreation: true,
+      supportsInteractivePrompts: true,
+      supportsStreaming: true,
+      maxMessageLength: 4096,
+    },
+  } as unknown as ChannelPort;
+}
 
 // ── tests ────────────────────────────────────────────────────────────────────
 
@@ -51,7 +74,8 @@ describe('registerHandlers message:text — slash command guard', () => {
     const { bot, onHandlers } = makeMockBot();
     const registry = makeStubRegistry([SESSION_ENTRY]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
     const handler = onHandlers.get('message:text')!;
     // B2 FIX: capture ctx BEFORE invoking the handler and assert on the SAME object.
@@ -62,32 +86,37 @@ describe('registerHandlers message:text — slash command guard', () => {
 
     // relay does not run → no placeholder reply
     expect(ctx.reply).not.toHaveBeenCalled();
+    expect(channel.sendMessage).not.toHaveBeenCalled();
   });
 
   it('bot command /list in topic → message:text exits early', async () => {
     const { bot, onHandlers } = makeMockBot();
     const registry = makeStubRegistry([SESSION_ENTRY]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
     const ctx = makeMockCtx('/list');
     const handler = onHandlers.get('message:text')!;
     await handler(ctx);
 
     expect(ctx.reply).not.toHaveBeenCalled();
+    expect(channel.sendMessage).not.toHaveBeenCalled();
   });
 
   it('bot command /help in topic → message:text exits early', async () => {
     const { bot, onHandlers } = makeMockBot();
     const registry = makeStubRegistry([SESSION_ENTRY]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
     const ctx = makeMockCtx('/help');
     const handler = onHandlers.get('message:text')!;
     await handler(ctx);
 
     expect(ctx.reply).not.toHaveBeenCalled();
+    expect(channel.sendMessage).not.toHaveBeenCalled();
   });
 
   // ── CLI commands → relay is triggered ────────────────────────────────────
@@ -98,40 +127,52 @@ describe('registerHandlers message:text — slash command guard', () => {
     const { bot, onHandlers } = makeMockBot();
     const registry = makeStubRegistry([SESSION_ENTRY]);
     const factory = makeMockFactory(session);
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
     const ctx = makeMockCtx('/clear');
     const handler = onHandlers.get('message:text')!;
     await handler(ctx);
 
-    // Relay sends placeholder '…' — proves the guard let /clear through
-    expect(ctx.reply).toHaveBeenCalledWith('…', { message_thread_id: 42 });
+    // Relay sends placeholder '…' via channel.sendMessage — proves the guard let /clear through
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: '42' }),
+      '…',
+    );
   });
 
   it('/agent in topic → relay triggered', async () => {
     const { bot, onHandlers } = makeMockBot();
     const registry = makeStubRegistry([SESSION_ENTRY]);
     const factory = makeMockFactory(makeMockSession(['agent info']));
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
     const ctx = makeMockCtx('/agent');
     const handler = onHandlers.get('message:text')!;
     await handler(ctx);
 
-    expect(ctx.reply).toHaveBeenCalledWith('…', { message_thread_id: 42 });
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: '42' }),
+      '…',
+    );
   });
 
   it('/model in topic → relay triggered', async () => {
     const { bot, onHandlers } = makeMockBot();
     const registry = makeStubRegistry([SESSION_ENTRY]);
     const factory = makeMockFactory(makeMockSession(['model switched']));
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
     const ctx = makeMockCtx('/model');
     const handler = onHandlers.get('message:text')!;
     await handler(ctx);
 
-    expect(ctx.reply).toHaveBeenCalledWith('…', { message_thread_id: 42 });
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: '42' }),
+      '…',
+    );
   });
 
   it('/unknowncommand in topic → relay triggered (unknown = not a bot command = CLI)', async () => {
@@ -142,26 +183,34 @@ describe('registerHandlers message:text — slash command guard', () => {
     const { bot, onHandlers } = makeMockBot();
     const registry = makeStubRegistry([SESSION_ENTRY]);
     const factory = makeMockFactory(makeMockSession(['ok']));
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
     const ctx = makeMockCtx('/unknowncommand');
     const handler = onHandlers.get('message:text')!;
     await handler(ctx);
 
-    expect(ctx.reply).toHaveBeenCalledWith('…', { message_thread_id: 42 });
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: '42' }),
+      '…',
+    );
   });
 
   it('/clear with args in topic → relay triggered', async () => {
     const { bot, onHandlers } = makeMockBot();
     const registry = makeStubRegistry([SESSION_ENTRY]);
     const factory = makeMockFactory(makeMockSession(['cleared']));
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
     const ctx = makeMockCtx('/clear some args');
     const handler = onHandlers.get('message:text')!;
     await handler(ctx);
 
-    expect(ctx.reply).toHaveBeenCalledWith('…', { message_thread_id: 42 });
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: '42' }),
+      '…',
+    );
   });
 
   // ── regression: plain text behavior unchanged ──────────────────────────────
@@ -171,13 +220,17 @@ describe('registerHandlers message:text — slash command guard', () => {
     const { bot, onHandlers } = makeMockBot();
     const registry = makeStubRegistry([SESSION_ENTRY]);
     const factory = makeMockFactory(makeMockSession(['Response from Copilot']));
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
     const ctx = makeMockCtx('Build the parser');
     const handler = onHandlers.get('message:text')!;
     await handler(ctx);
 
-    expect(ctx.reply).toHaveBeenCalledWith('…', { message_thread_id: 42 });
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: '42' }),
+      '…',
+    );
   });
 
   it('non-topic message → ignored (no message_thread_id, regression)', async () => {
@@ -185,7 +238,8 @@ describe('registerHandlers message:text — slash command guard', () => {
     const { bot, onHandlers } = makeMockBot();
     const registry = makeStubRegistry([SESSION_ENTRY]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
     const handler = onHandlers.get('message:text')!;
     const ctx = {
@@ -197,5 +251,6 @@ describe('registerHandlers message:text — slash command guard', () => {
     await handler(ctx);
 
     expect(ctx.reply).not.toHaveBeenCalled();
+    expect(channel.sendMessage).not.toHaveBeenCalled();
   });
 });

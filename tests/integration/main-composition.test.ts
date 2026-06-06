@@ -68,6 +68,22 @@ const {
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
 vi.mock('dotenv/config', () => ({}));
+vi.mock('../../src/channel/telegram/index.js', () => ({})); // suppress side-effect registration
+vi.mock('../../src/channel/registry.js', () => ({
+  createChannel: vi.fn().mockReturnValue({
+    start: vi.fn(),
+    stop: vi.fn(),
+    sendMessage: vi.fn(),
+    editMessage: vi.fn(),
+    splitMessage: vi.fn((text: string) => [text]),
+    formatForTransport: vi.fn((text: string) => text),
+    createThread: vi.fn(),
+    onMessage: vi.fn(),
+    onCommand: vi.fn(),
+    promptUser: vi.fn(),
+    capabilities: { supportsMessageEdit: true, supportsThreadCreation: true, supportsInteractivePrompts: true, supportsStreaming: true, maxMessageLength: 4096 },
+  }),
+}));
 
 vi.mock('../../src/config/env.js', () => ({
   parseEnv: vi.fn(),
@@ -148,6 +164,7 @@ function makePairingConfig(): EnvConfig {
     allowedUserIdSet: undefined,
     configPath: 'C:\\fake\\config.json',
     registryPath: 'C:\\fake\\data\\registry.json',
+    reachChannel: 'telegram',
   };
 }
 
@@ -161,6 +178,7 @@ function makeNormalConfig(overrides: { allowedUserIdSet?: ReadonlySet<number> } 
     allowedUserIdSet: undefined,
     configPath: 'C:\\fake\\config.json',
     registryPath: 'C:\\fake\\data\\registry.json',
+    reachChannel: 'telegram',
     ...overrides,
   };
 }

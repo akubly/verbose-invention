@@ -108,8 +108,8 @@ describe('ADR-11 AFK mode contract', () => {
     expect(registry.findBySessionId('sess-1')).toMatchObject({
       sessionId: 'sess-1',
       mode: 'afk',
-      lastTopicId: topicId,
-      topicId,
+      lastTopicId: String(topicId),
+      threadId: String(topicId),
     });
     expect(client.expectAfkActivated(topicId)).toMatchObject({ topicId, topicUrl: expect.any(String) });
     expect(client.expectModeChanged(true)).toMatchObject({ active: true, since: expect.any(String) });
@@ -134,8 +134,8 @@ describe('ADR-11 AFK mode contract', () => {
     expect(client.expectAfkActivated(existingTopicId)).toMatchObject({ topicId: existingTopicId });
     expect(registry.findBySessionId('sess-1')).toMatchObject({
       mode: 'afk',
-      topicId: existingTopicId,
-      lastTopicId: existingTopicId,
+      threadId: String(existingTopicId),
+      lastTopicId: String(existingTopicId),
     });
     expect(relayTargets.topicTargets('sess-1')).toEqual([existingTopicId]);
   });
@@ -205,7 +205,7 @@ describe('ADR-11 AFK mode contract', () => {
     );
     expect(telegram.api.closeForumTopic).toHaveBeenCalledWith(CHAT_ID, topicId);
     expect(telegram.order.indexOf('sendMessage')).toBeLessThan(telegram.order.indexOf('closeForumTopic'));
-    expect(registry.findBySessionId('sess-1')).toMatchObject({ mode: 'back', lastTopicId: topicId });
+    expect(registry.findBySessionId('sess-1')).toMatchObject({ mode: 'back', lastTopicId: String(topicId) });
     expect(relayTargets.lastTarget('sess-1')).toBe('cli');
   });
 
@@ -273,7 +273,7 @@ describe('ADR-11 AFK mode contract', () => {
     expect(client.expectAfkActivated(topicId)).toMatchObject({ topicId });
     expect(client.receivedOfType('mode.changed').filter((msg) => msg.active)).toHaveLength(1);
     expect(registry.list()).toHaveLength(1);
-    expect(registry.findBySessionId('sess-1')).toMatchObject({ mode: 'afk', topicId, lastTopicId: topicId });
+    expect(registry.findBySessionId('sess-1')).toMatchObject({ mode: 'afk', threadId: String(topicId), lastTopicId: String(topicId) });
     expect(relayTargets.topicTargets('sess-1')).toEqual([topicId]);
   });
 

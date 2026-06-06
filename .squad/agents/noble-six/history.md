@@ -261,11 +261,37 @@ Phase 9's cwd registry is descriptive + selection UX. Prescriptive spawn is a di
 
 Both daemon (`CopilotSessionAdapter.sendQueue`) and extension need the same pattern. When two code paths talk to the same SDK session, the serialization must happen at each entry point independently — the SDK itself processes serially but doesn't enforce serial submission.
 
+### Channel Abstraction Architecture (2026-06-06)
+
+Conducted full Telegram-coupling inventory for the comms channel abstraction ADR. Key findings:
+
+1. **Existing port pattern is the right foundation.** `relay/ports.ts` already defines `SessionLookup` and `PermissionPrompter` as ports — extending this to a full `ChannelPort` is the natural evolution, not a new architectural concept.
+
+2. **Deepest structural change is `SessionEntry` generalization.** `topicId: number` and `chatId: number` are baked into types, registry, handlers, relay, and AFK mode. Changing these to opaque `string` identifiers is the highest-risk refactor in Phase 1.
+
+3. **Formatting must be transport-owned.** MarkdownV2 escaping, 4096-char splitting, and inline-keyboard prompts are all Telegram-specific. These cannot be generalized into a shared format — each transport must own its formatting pipeline.
+
+4. **Graph API is the right Teams transport.** Bot Framework adds an HTTP server requirement that conflicts with Reach's daemon architecture. Graph API can use polling (matching Telegram's long-polling model) without architectural disruption.
+
+5. **LOCKSTEP hazard avoidance.** The existing `config.ts`/`extension.mjs` lockstep is a known maintenance risk. The channel abstraction must define `ChannelPort` once; no interface duplication across runtime boundaries.
+
+6. **AFK mode is the hardest generalization.** It's deeply coupled to Telegram forum topics (creation, orientation messages, stream routing). Recommend deferring Teams AFK support to Phase 3.
+
+ADR draft delivered to `.squad/decisions/inbox/noble-six-comms-channel-abstraction-adr.md`. Pending Aaron's approval on 8 open questions.
+
+**v2 update (2026-06-06):** Aaron reviewed and locked 7 decisions (D1–D7). Key pushback: design for N transports, not just 2. Added capabilities descriptor (`ChannelCapabilities`) for graceful degradation when transports lack features (edit, threads, interactive prompts, streaming). Added transport registry pattern (`Map<string, ChannelFactory>`) for extensibility without event-bus indirection. Resolved corp constraints: polling for inbound (no webhook), client-credentials with admin consent, corp branch rebases on main. Documented formatting tension: Aaron chose transport-owns even for N transports; documented migration path to optional CommonMark normalizer at 4+ adapters. Conformance test kit (P1-7) reframed as reusable kit for all future adapters. 6 remaining open questions for Aaron.
+
+**P1-1 implementation (2026-06-06):** Committed `src/channel/port.ts` and `src/channel/registry.ts` on `feature/channel-abstraction` (7b12305). Final contract decisions:
+- All IDs are opaque `string` (no Telegram `number` types).
+- `ChannelPort.editMessage()` takes a `ChannelContext` alongside `MessageRef` (for rate-limit scoping by transport).
+- `promptUser()` always works — adapters with `supportsInteractivePrompts: false` implement text-based fallback internally.
+- `createThread()` is on the port (not a separate interface) — guarded by `supportsThreadCreation` capability check.
+- Transport registry is zero-config: `ChannelFactory = () => ChannelPort` — adapters read their own env vars.
+- TSDoc on the port specifies all four fallback behaviors so Carter/Kat/Jun can implement and test against them.
+
 ---
 
 ## Archive
-
-Full Phases 1–5 + detailed Phase 6 spike documentation in history-archive.md.
 
 Full Phases 1–5 + detailed Phase 6 spike documentation in history-archive.md.
 

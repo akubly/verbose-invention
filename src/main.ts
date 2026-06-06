@@ -6,6 +6,8 @@
  */
 
 import 'dotenv/config';
+import './channel/telegram/index.js'; // side-effect: registers 'telegram' channel factory
+import { createChannel } from './channel/registry.js';
 import { createBot } from './bot/index.js';
 import { registerHandlers } from './bot/handlers.js';
 import { SessionRegistry } from './sessions/registry.js';
@@ -55,6 +57,8 @@ export async function main(): Promise<void> {
 
   await registry.load();
 
+  const channel = createChannel(cfg.reachChannel);
+
   const bot = createBot(cfg.token, chatId);
   if (cfg.permissionPolicy === 'approveAll') {
     console.warn('[reach] REACH_PERMISSION_POLICY=approveAll; AFK mirror input from Telegram will be blocked for safety. Use interactiveDestructive for remote input.');
@@ -71,11 +75,13 @@ export async function main(): Promise<void> {
   const relay = registerHandlers({
     bot, registry, factory,
     globalModel: cfg.model,
+    channel,
     permissionPolicy: cfg.permissionPolicy,
     configPath: cfg.configPath,
     ...(afkMode !== undefined && { telegramMirror: afkMode, statusProvider: afkMode }),
   });
 
+  console.log(`[reach] Channel: ${cfg.reachChannel}`);
   console.log(`[reach] Model: ${cfg.model}`);
   console.log(`[reach] Permission policy: ${cfg.permissionPolicy}`);
   console.log(`[reach] Registry: ${cfg.registryPath}`);

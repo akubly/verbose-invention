@@ -279,7 +279,50 @@ land a feature, check whether Jun's anticipatory tests are failing silently.
 
 ---
 
-## Learnings: Telegram/grammY Coupling Inventory (2026-06-06)
+## Learnings: P1 Core Rewire — Channel Abstraction (2026-06-06)
+
+**Task:** Phase 1 of Teams generalization: refactor EXISTING Telegram path onto the ChannelPort contract with zero behavior change. Covers P1-2 (SessionEntry string IDs), P1-3 (relay on ChannelPort), P1-4 (TelegramChannel adapter), P1-6 (startup wiring).
+
+### What Changed
+
+**SessionEntry migration (P1-2):**
+- `topicId: number` → `threadId: string`, `chatId: number` → `channelId: string`, `lastTopicId?: number` → `lastTopicId?: string` in `src/types.ts`.
+- Back-compat on load: `src/sessions/registry.ts` `coerceId()` reads `raw['threadId'] ?? raw['topicId']` and `raw['channelId'] ?? raw['chatId']`, converting numeric JSON values to strings. Existing installs transparently migrate on next write.
+- Telegram numeric IDs converted to strings at the adapter boundary (`String(ctx.message.message_thread_id)`); numeric form restored for Telegram API calls (`Number(persisted.lastTopicId)`).
+
+**TelegramChannel adapter (P1-4):**
+- `src/channel/telegram/index.ts` — implements `ChannelPort` wrapping grammY Bot. Self-registers via `registerChannel('telegram', factory)` at module scope (side-effect import in main.ts).
+- Capabilities: `{ supportsMessageEdit: true, supportsThreadCreation: true, supportsInteractivePrompts: true, supportsStreaming: true, maxMessageLength: 4096 }`.
+- Delegates formatting to `markdownV2.ts` and splitting to `messageSplitter.ts` — zero logic rewrite.
+- Exposes `editMessageWithMarkdown()` and `sendMessageWithMarkdown()` extras for relay duck-typing.
+- `onMessage`/`onCommand` are no-ops — Kat migrates command dispatch in next round.
+
+**Relay rewire (P1-3):**
+- `src/relay/relay.ts` now takes `ChannelPort` as first arg; `relay(channelCtx: ChannelContext, text: string)`.
+- `rekeySession(fromThreadId: string, toThreadId: string)` replaces the old context-based rekey.
+- `safeEditFormatted` / `safeSendFormatted` wrap `editMessage`/`sendMessage` with MarkdownV2 duck-typing for TelegramChannel.
+- In-stream throttle edit, F-E fallback edit, and error-path edit all wrapped in try-catch so relay never propagates from editMessage failures.
+
+**Startup wiring (P1-6):**
+- `main.ts` imports `./channel/telegram/index.js` for side-effect registration.
+- `createChannel(cfg.reachChannel)` creates the port; passed to `registerHandlers()`.
+- `cfg.reachChannel` defaults to `process.env.REACH_CHANNEL ?? 'telegram'` (added to `EnvConfig`).
+
+### Relay Behavior Notes
+- The relay's 800ms throttle edit (`channel.editMessage`) now fires during streaming but is wrapped in try-catch — failures don't interrupt streaming.
+- The "chunk cap" is enforced by `splitMessage` returning ≤25 chunks; the cap check should count follow-up `sendMessage` calls (≤24), not editMessage calls (which are all updates to the same placeholder).
+
+### What Was Left for Kat
+1. **Command dispatch via ChannelPort:** All 8 command handlers in `src/bot/handlers.ts` still call `ctx.reply()` directly with Telegram options. `TelegramChannel.onMessage/onCommand` are no-ops. Kat migrates handlers onto `onCommand`/`onMessage` next round.
+2. **Formatting polish:** `safeSendFormatted` and `safeEditFormatted` duck-type to TelegramChannel for MarkdownV2. Non-Telegram channels get `formatForTransport()` + plain edit/send. Kat can replace duck-typing with a proper `formatMessage(ctx, text)` method on ChannelPort in the future.
+3. **`bot.start()` stays in main.ts:** The `channel.start()` method on TelegramChannel wraps `bot.start()` but isn't called from main.ts yet — main.ts still calls `bot.start(...)` directly. Kat should flip this in the next round to go fully through the port.
+
+### Test Suite
+- 849 tests pass (57 files), 4 skipped, 1 todo.
+- Updated tests: `relay.test.ts`, `handlers.test.ts`, `handlers.slashGuard.test.ts`, `resume.test.ts`, `idleMonitor.test.ts`, `registry.test.ts`, `registryMocks.ts`, `afkContract.ts`, `sessionRegistry.contract.test.ts`, `sdk-crash-recovery.test.ts`, `relay-with-bridge.test.ts`, `cloud-review-1.test.ts`, `main-composition.test.ts`.
+- Mechanical updates: all numeric `topicId/chatId` fixtures → string `threadId/channelId`; `ctx.reply('…')` assertions → `channel.sendMessage(ctx, '…')` for relay-triggered tests.
+
+
 
 **Task:** Map the depth of Telegram/grammY coupling in Reach to scope Microsoft Teams generalization. No code changes; read-only inventory only.
 

@@ -2,9 +2,10 @@ import type { Bot, Context } from 'grammy';
 import type { PermissionPolicy } from '../copilot/impl.js';
 import type { CopilotSessionFactory } from '../copilot/factory.js';
 import type { ISessionRegistry } from '../sessions/registry.js';
-import type { SessionLookup, PermissionPrompter } from '../relay/ports.js';
+import type { SessionLookup } from '../relay/ports.js';
+import type { ChannelPort, ChannelContext } from '../channel/port.js';
 import { Relay } from '../relay/relay.js';
-import { promptUserForPermission, ensurePromptRegistry } from './prompt.js';
+import { ensurePromptRegistry } from './prompt.js';
 import { isBotCommand, COMMAND_NAMES, type CommandName } from './commands.js';
 import { loadConfig, saveConfig } from '../config/config.js';
 import {
@@ -23,6 +24,8 @@ export interface HandlerOptions {
   registry: ISessionRegistry;
   factory: CopilotSessionFactory;
   globalModel: string;
+  /** The active ChannelPort — used to construct the Relay. */
+  channel: ChannelPort;
   permissionPolicy?: PermissionPolicy;
   telegramMirror?: { handleTelegramMessage(ctx: Context): Promise<boolean> };
   statusProvider?: { handleStatusCommand(ctx: Context): Promise<void> };
@@ -59,24 +62,20 @@ function defaultLogger(): CwdCommandLogger {
  *
  * All other text messages in forum topics are relayed to the linked session.
  */
-export function registerHandlers({ bot, registry, factory, globalModel, permissionPolicy, telegramMirror, statusProvider, configPath, logger }: HandlerOptions): Relay {
+export function registerHandlers({ bot, registry, factory, globalModel, channel, permissionPolicy, telegramMirror, statusProvider, configPath, logger }: HandlerOptions): Relay {
   const cwdLogger = logger ?? defaultLogger();
-  const sessionLookup: SessionLookup = { resolve: (topicId) => registry.resolve(topicId) };
+  const sessionLookup: SessionLookup = { resolve: (threadId) => registry.resolve(threadId) };
 
-  let permissionPrompter: PermissionPrompter | undefined;
-  if (permissionPolicy === 'interactiveDestructive') {
+  const enablePermissionPrompts = permissionPolicy === 'interactiveDestructive';
+  if (enablePermissionPrompts) {
     // Install the callback_query:data listener EAGERLY here, before bot.start()
     // begins polling. grammY forbids bot.on() registration from within active
     // handlers (memory-leak guard), so we must register during the setup phase
     // alongside the other bot.command() / bot.on() calls.
     ensurePromptRegistry(bot);
-    permissionPrompter = {
-      prompt: (chatId, topicId, toolName, args, signal) =>
-        promptUserForPermission(bot, chatId, topicId, toolName, args, signal),
-    };
   }
 
-  const relay = new Relay(sessionLookup, factory, globalModel, permissionPrompter);
+  const relay = new Relay(channel, sessionLookup, factory, globalModel, enablePermissionPrompts);
 
   // Registered via the COMMAND_NAMES loop below; defined here so relay is in scope.
   const commandHandlers: Record<CommandName, (ctx: Context) => Promise<void>> = {
@@ -111,7 +110,7 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
         return;
       }
 
-      const existing = registry.resolve(topicId);
+      const existing = registry.resolve(String(topicId));
       if (existing) {
         await ctx.reply(
           `⚠️ Topic already linked to "${existing.sessionName}". Use /remove first.`,
@@ -123,7 +122,7 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
       const nameTaken = registry.findByName(name);
       if (nameTaken) {
         await ctx.reply(
-          `⚠️ Session name "${name}" is already in use (topic #${nameTaken.topicId}). Choose a different name.`,
+          `⚠️ Session name "${name}" is already in use (topic #${nameTaken.threadId}). Choose a different name.`,
           { message_thread_id: topicId },
         );
         return;
@@ -171,8 +170,8 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
 
         await (
           resolvedCwd === undefined
-            ? registry.register(topicId, chatId, name, model)
-            : registry.register(topicId, chatId, name, model, resolvedCwd)
+            ? registry.register(String(topicId), String(chatId), name, model)
+            : registry.register(String(topicId), String(chatId), name, model, resolvedCwd)
         );
         const modelNote = model ? ` (model: ${model})` : '';
         const cwdNote = resolvedCwd ? ` (cwd: ${resolvedCwd})` : '';
@@ -196,7 +195,7 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
       }
       const lines = sessions.map((s) => {
         const modelNote = s.model ? ` (model: ${s.model})` : '';
-        return `• ${s.sessionName} ← topic #${s.topicId}${modelNote}`;
+        return `• ${s.sessionName} ← topic #${s.threadId}${modelNote}`;
       });
       await ctx.reply(lines.join('\n'));
     },
@@ -209,7 +208,7 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
         return;
       }
 
-      const removed = await registry.remove(topicId);
+      const removed = await registry.remove(String(topicId));
       if (removed) {
         await ctx.reply('✅ Session unlinked from this topic.', { message_thread_id: topicId });
       } else {
@@ -252,7 +251,7 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
 
       // F-B: refuse when legacy duplicate names exist — cannot safely pick one
       if (matches.length > 1) {
-        const lines = matches.map((e) => `  • topic #${e.topicId} (chatId ${e.chatId})`).join('\n');
+        const lines = matches.map((e) => `  • topic #${e.threadId} (channelId ${e.channelId})`).join('\n');
         await ctx.reply(
           `⚠️ Multiple sessions named "${name}" exist (legacy duplicates):\n${lines}\nCannot disambiguate. Use /remove in the topic of the entry you want to drop, then /resume here.`,
           { message_thread_id: topicId },
@@ -262,12 +261,12 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
 
       const found = matches[0]!;
 
-      if (found.topicId === topicId) {
+      if (found.threadId === String(topicId)) {
         await ctx.reply(`✅ Session "${name}" is already bound to this topic.`, { message_thread_id: topicId });
         return;
       }
 
-      const currentBinding = registry.resolve(topicId);
+      const currentBinding = registry.resolve(String(topicId));
       if (currentBinding) {
         await ctx.reply(
           `⚠️ Topic already linked to "${currentBinding.sessionName}". Use /remove first.`,
@@ -276,14 +275,14 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
         return;
       }
 
-      const oldTopicId = found.topicId;
+      const oldThreadId = found.threadId;
       try {
-        await registry.move(oldTopicId, topicId);
+        await registry.move(oldThreadId, String(topicId));
         // Migrate the live SDK session handle so the next message in the new topic
         // reuses it instead of creating a duplicate session (H-A).
-        relay.rekeySession(oldTopicId, topicId);
+        relay.rekeySession(oldThreadId, String(topicId));
         await ctx.reply(
-          `✅ Resumed session "${name}" (was bound to topic #${oldTopicId}).`,
+          `✅ Resumed session "${name}" (was bound to topic #${oldThreadId}).`,
           { message_thread_id: topicId },
         );
       } catch (err) {
@@ -359,7 +358,11 @@ Commands:
     if (!ctx.message.message_thread_id) return;
     if (isBotCommand(ctx.message.text)) return;
     if (await telegramMirror?.handleTelegramMessage(ctx)) return;
-    await relay.relay(ctx);
+    const channelCtx: ChannelContext = {
+      threadId: String(ctx.message.message_thread_id),
+      channelId: String(ctx.chat.id),
+    };
+    await relay.relay(channelCtx, ctx.message.text);
   });
 
   bot.catch((err) => {

@@ -37,30 +37,35 @@ const REQUEST_ID = 'req-relay-j2';
 
 const SESSION_ENTRY: SessionEntry = {
   sessionName: 'reach-myapp',
-  topicId: 42,
-  chatId: -1001234567890,
+  threadId: '42',
+  channelId: '-1001234567890',
   createdAt: '2026-05-22T00:00:00.000Z',
 };
 
 function makeStubRegistry(entries: SessionEntry[] = []): SessionLookup {
-  const map = new Map(entries.map((e) => [e.topicId, e]));
-  return { resolve: vi.fn((topicId: number) => map.get(topicId)) };
+  const map = new Map(entries.map((e) => [e.threadId, e]));
+  return { resolve: vi.fn((threadId: string) => map.get(threadId)) };
 }
 
-function makeMockCtx(
-  text = 'Hello Copilot',
-  topicId = 42,
-  chatId = -1001234567890,
-) {
+function makeMockChannel() {
+  const editMessage = vi.fn().mockResolvedValue(undefined);
+  const sendMessage = vi.fn().mockResolvedValue({ id: '100' });
   return {
-    message: { message_thread_id: topicId, text },
-    chat: { id: chatId },
-    reply: vi.fn().mockResolvedValue({ message_id: 100, chat: { id: chatId } }),
-    api: {
-      editMessageText: vi.fn().mockResolvedValue({ ok: true }),
-    },
+    editMessage,
+    sendMessage,
+    start: vi.fn(),
+    stop: vi.fn(),
+    splitMessage: vi.fn((text: string, footer?: string) => footer ? [`${text}\n\n${footer}`] : [text]),
+    formatForTransport: vi.fn((text: string) => text),
+    createThread: vi.fn(),
+    onMessage: vi.fn(),
+    onCommand: vi.fn(),
+    promptUser: vi.fn(),
+    capabilities: { supportsMessageEdit: true, supportsThreadCreation: true, supportsInteractivePrompts: true, supportsStreaming: true, maxMessageLength: 4096 },
   };
 }
+
+const DEFAULT_CTX = { threadId: '42', channelId: '-1001234567890' };
 
 afterEach(() => {
   vi.useRealTimers();
@@ -111,7 +116,7 @@ describe('BridgeSession as CopilotSession (direct consumption)', () => {
 describe('relay + BridgeSession integration', () => {
   it('final editMessageText contains all accumulated chunks — throttle contract preserved', async () => {
     // Freeze Date.now() → throttle (STREAM_EDIT_THROTTLE_MS = 800ms) never fires
-    // mid-stream, so relay only calls editMessageText once (the final edit).
+    // mid-stream, so relay only calls editMessage once (the final edit).
     vi.useFakeTimers({
       toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'],
     });
@@ -125,15 +130,14 @@ describe('relay + BridgeSession integration', () => {
     };
 
     const registry = makeStubRegistry([SESSION_ENTRY]);
-    const relay = new Relay(registry, factory, 'test-model');
-    const ctx = makeMockCtx();
+    const channel = makeMockChannel();
+    const relay = new Relay(channel, registry, factory, 'test-model');
 
     // Start relay — don't await yet
-    const relayDone = relay.relay(ctx as Parameters<typeof relay.relay>[0]);
+    const relayDone = relay.relay(DEFAULT_CTX, 'Hello Copilot');
 
-    // Yield to the microtask queue: relay runs through ctx.reply(), factory.resume(),
+    // Yield to the microtask queue: relay runs through sendMessage(), factory.resume(),
     // and into the `for await` loop (all mock awaits are microtask-resolved Promises).
-    // One setImmediate tick is enough — it fires after all pending microtasks drain.
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     // Relay is now parked in BridgeSession's queue-wait; emit chunks synchronously
@@ -143,13 +147,11 @@ describe('relay + BridgeSession integration', () => {
 
     await relayDone;
 
-    const editCalls = (
-      ctx.api.editMessageText as ReturnType<typeof vi.fn>
-    ).mock.calls;
+    const editCalls = (channel.editMessage as ReturnType<typeof vi.fn>).mock.calls;
     expect(editCalls.length).toBeGreaterThan(0);
 
     const finalText = editCalls[editCalls.length - 1][2] as string;
-    // The relay escapes with MarkdownV2 and appends a HUD footer
+    // The relay formats with MarkdownV2 and appends a HUD footer
     expect(finalText).toContain(escapeMarkdownV2('Alpha Beta Gamma'));
   });
 
@@ -174,10 +176,10 @@ describe('relay + BridgeSession integration', () => {
     };
 
     const registry = makeStubRegistry([SESSION_ENTRY]);
-    const relay = new Relay(registry, factory, 'test-model');
-    const ctx = makeMockCtx();
+    const channel = makeMockChannel();
+    const relay = new Relay(channel, registry, factory, 'test-model');
 
-    const relayDone = relay.relay(ctx as Parameters<typeof relay.relay>[0]);
+    const relayDone = relay.relay(DEFAULT_CTX, 'Hello Copilot');
 
     await new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -190,9 +192,7 @@ describe('relay + BridgeSession integration', () => {
 
     await relayDone;
 
-    const editCalls = (
-      ctx.api.editMessageText as ReturnType<typeof vi.fn>
-    ).mock.calls;
+    const editCalls = (channel.editMessage as ReturnType<typeof vi.fn>).mock.calls;
 
     // With Date.now frozen: exactly 1 mid-stream edit + 1 final = 2 total.
     // This is far fewer than the 5 chunks emitted — proof the throttle is working.

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { registerHandlers } from '../../src/bot/handlers.js';
 import type { SessionEntry } from '../../src/types.js';
 import type { ISessionRegistry } from '../../src/sessions/registry.js';
+import type { ChannelPort } from '../../src/channel/port.js';
 import { makeMockFactory } from '../mocks/sdk.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -25,50 +26,73 @@ function makeMockBot() {
   return { bot, commandHandlers, onHandlers };
 }
 
+function makeMockChannel(): ChannelPort {
+  return {
+    start: vi.fn(),
+    stop: vi.fn(),
+    sendMessage: vi.fn().mockResolvedValue({ id: '100' }),
+    editMessage: vi.fn().mockResolvedValue(undefined),
+    splitMessage: vi.fn((text: string) => [text]),
+    formatForTransport: vi.fn((text: string) => text),
+    createThread: vi.fn(),
+    onMessage: vi.fn(),
+    onCommand: vi.fn(),
+    promptUser: vi.fn().mockResolvedValue('approve'),
+    capabilities: {
+      supportsMessageEdit: true,
+      supportsThreadCreation: true,
+      supportsInteractivePrompts: true,
+      supportsStreaming: true,
+      maxMessageLength: 4096,
+    },
+  } as unknown as ChannelPort;
+}
+
 /**
  * Stub registry extended with findByName, which Kat will add to ISessionRegistry.
  * The stub implements the same scanning logic as the planned implementation:
  * linear search over entries by sessionName.
  */
 function makeResumeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry & { findByName: ReturnType<typeof vi.fn>; findAllByName: ReturnType<typeof vi.fn>; move: ReturnType<typeof vi.fn> } {
-  const map = new Map(entries.map((e) => [e.topicId, e]));
+  const map = new Map(entries.map((e) => [e.threadId, e]));
   const nameMap = new Map(entries.map((e) => [e.sessionName, e]));
 
   const registry = {
-    register: vi.fn(async (topicId: number, chatId: number, sessionName: string, model?: string) => {
+    register: vi.fn(async (threadId: string, channelId: string, sessionName: string, model?: string) => {
       const entry: SessionEntry = {
         sessionName,
-        topicId,
-        chatId,
+        threadId,
+        channelId,
         createdAt: new Date().toISOString(),
         ...(model !== undefined && { model }),
       };
-      map.set(topicId, entry);
+      map.set(threadId, entry);
       nameMap.set(sessionName, entry);
     }),
-    resolve: vi.fn((topicId: number) => map.get(topicId)),
+    resolve: vi.fn((threadId: string) => map.get(threadId)),
     list: vi.fn(() => Array.from(map.values())),
-    remove: vi.fn(async (topicId: number) => {
-      const entry = map.get(topicId);
+    remove: vi.fn(async (threadId: string) => {
+      const entry = map.get(threadId);
       if (entry) {
         nameMap.delete(entry.sessionName);
-        map.delete(topicId);
+        map.delete(threadId);
         return true;
       }
       return false;
     }),
     load: vi.fn(),
+    upsert: vi.fn(),
     findByName: vi.fn((name: string) => nameMap.get(name)),
     findAllByName: vi.fn((name: string) => Array.from(map.values()).filter((e) => e.sessionName === name)),
-    move: vi.fn(async (fromTopicId: number, toTopicId: number) => {
-      const old = map.get(fromTopicId);
+    move: vi.fn(async (fromThreadId: string, toThreadId: string) => {
+      const old = map.get(fromThreadId);
       if (old) {
-        map.delete(fromTopicId);
+        map.delete(fromThreadId);
         const newEntry: SessionEntry = {
           ...old,
-          topicId: toTopicId,
+          threadId: toThreadId,
         };
-        map.set(toTopicId, newEntry);
+        map.set(toThreadId, newEntry);
         nameMap.set(old.sessionName, newEntry);
       }
     }),
@@ -95,27 +119,27 @@ function makeMockCtx(overrides: Record<string, unknown> = {}) {
 
 // ─── shared fixtures ───────────────────────────────────────────────────────────
 
-/** A session bound to topic 99 (not the default topic 10). */
+/** A session bound to thread '99' (not the default thread '10'). */
 const REMOTE_ENTRY: SessionEntry = {
   sessionName: 'my-session',
-  topicId: 99,
-  chatId: -1001234567890,
+  threadId: '99',
+  channelId: '-1001234567890',
   createdAt: '2026-01-01T00:00:00.000Z',
 };
 
-/** A different session also bound to topic 99. */
+/** A different session also bound to thread '99'. */
 const OTHER_ENTRY: SessionEntry = {
   sessionName: 'other-session',
-  topicId: 99,
-  chatId: -1001234567890,
+  threadId: '99',
+  channelId: '-1001234567890',
   createdAt: '2026-01-01T00:00:00.000Z',
 };
 
-/** A session already bound to topic 10 (the "current" topic in ctx). */
+/** A session already bound to thread '10' (the "current" topic in ctx). */
 const LOCAL_ENTRY: SessionEntry = {
   sessionName: 'my-session',
-  topicId: 10,
-  chatId: -1001234567890,
+  threadId: '10',
+  channelId: '-1001234567890',
   createdAt: '2026-01-01T00:00:00.000Z',
 };
 
@@ -138,7 +162,7 @@ describe('/resume command', () => {
     const registry = makeResumeStubRegistry();
     const factory = makeMockFactory();
 
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     expect(commandHandlers.has('resume')).toBe(true);
   });
@@ -149,7 +173,7 @@ describe('/resume command', () => {
     const { bot, commandHandlers } = makeMockBot();
     const registry = makeResumeStubRegistry();
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const handler = commandHandlers.get('resume')!;
     const ctx = makeMockCtx({ match: '' });
@@ -166,7 +190,7 @@ describe('/resume command', () => {
     const { bot, commandHandlers } = makeMockBot();
     const registry = makeResumeStubRegistry();
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const handler = commandHandlers.get('resume')!;
     const ctx = makeMockCtx({ match: undefined });
@@ -180,7 +204,7 @@ describe('/resume command', () => {
     const { bot, commandHandlers } = makeMockBot();
     const registry = makeResumeStubRegistry([REMOTE_ENTRY]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const handler = commandHandlers.get('resume')!;
     const ctx = makeMockCtx({
@@ -200,7 +224,7 @@ describe('/resume command', () => {
     const { bot, commandHandlers } = makeMockBot();
     const registry = makeResumeStubRegistry([]); // empty registry
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const handler = commandHandlers.get('resume')!;
     const ctx = makeMockCtx({ match: 'unknown-session' });
@@ -216,14 +240,14 @@ describe('/resume command', () => {
   it('lists available session names in the error when session not found', async () => {
     const existing: SessionEntry = {
       sessionName: 'available-one',
-      topicId: 50,
-      chatId: -100,
+      threadId: '50',
+      channelId: '-100',
       createdAt: '2026-01-01T00:00:00.000Z',
     };
     const { bot, commandHandlers } = makeMockBot();
     const registry = makeResumeStubRegistry([existing]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const handler = commandHandlers.get('resume')!;
     const ctx = makeMockCtx({ match: 'no-such-session' });
@@ -237,11 +261,11 @@ describe('/resume command', () => {
   // ── already bound here (no-op) ─────────────────────────────────────────────
 
   it('replies with "already bound here" when session is already linked to this topic', async () => {
-    // LOCAL_ENTRY: my-session is already bound to topic 10 (the current topic)
+    // LOCAL_ENTRY: my-session is already bound to thread '10' (the current topic)
     const { bot, commandHandlers } = makeMockBot();
     const registry = makeResumeStubRegistry([LOCAL_ENTRY]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const handler = commandHandlers.get('resume')!;
     const ctx = makeMockCtx({ match: 'my-session' }); // topicId = 10
@@ -257,18 +281,18 @@ describe('/resume command', () => {
   // ── MOVE semantics: session bound to a different topic ─────────────────────
 
   it('moves session from old topic to current topic via atomic move()', async () => {
-    // REMOTE_ENTRY: my-session is bound to topic 99; we want to move it to topic 10
+    // REMOTE_ENTRY: my-session is bound to thread '99'; we want to move it to thread '10'
     const { bot, commandHandlers } = makeMockBot();
     const registry = makeResumeStubRegistry([REMOTE_ENTRY]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const handler = commandHandlers.get('resume')!;
     const ctx = makeMockCtx({ match: 'my-session' }); // current topic = 10
     await handler(ctx);
 
     // Must use atomic move — not separate remove + register
-    expect(registry.move).toHaveBeenCalledWith(99, 10);
+    expect(registry.move).toHaveBeenCalledWith('99', '10');
     expect(registry.remove).not.toHaveBeenCalled();
     expect(registry.register).not.toHaveBeenCalled();
   });
@@ -281,47 +305,47 @@ describe('/resume command', () => {
     const { bot, commandHandlers } = makeMockBot();
     const registry = makeResumeStubRegistry([entryWithModel]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const handler = commandHandlers.get('resume')!;
     const ctx = makeMockCtx({ match: 'my-session' });
     await handler(ctx);
 
     // move() is identity-preserving — model is carried forward from the stored entry
-    expect(registry.move).toHaveBeenCalledWith(99, 10);
+    expect(registry.move).toHaveBeenCalledWith('99', '10');
   });
 
   it('confirms move with a success message mentioning the old topic ID', async () => {
     const { bot, commandHandlers } = makeMockBot();
     const registry = makeResumeStubRegistry([REMOTE_ENTRY]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const handler = commandHandlers.get('resume')!;
-    const ctx = makeMockCtx({ match: 'my-session' }); // moved FROM topic 99
+    const ctx = makeMockCtx({ match: 'my-session' }); // moved FROM thread '99'
     await handler(ctx);
 
     const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
     // Success indicator (✅) and the session name must appear
     expect(replyText).toContain('my-session');
-    // Old topic ID should be mentioned (user needs to know what was unbound)
+    // Old thread ID should be mentioned (user needs to know what was unbound)
     expect(replyText).toContain('99');
   });
 
   // ── current topic already has a DIFFERENT session ─────────────────────────
 
   it('rejects move when current topic is already linked to a different session', async () => {
-    // topic 10 has "other-session"; we try to /resume "my-session" (bound at topic 99)
+    // thread '10' has "other-session"; we try to /resume "my-session" (bound at thread '99')
     const currentTopicEntry: SessionEntry = {
       sessionName: 'other-session',
-      topicId: 10,
-      chatId: -1001234567890,
+      threadId: '10',
+      channelId: '-1001234567890',
       createdAt: '2026-01-01T00:00:00.000Z',
     };
     const { bot, commandHandlers } = makeMockBot();
     const registry = makeResumeStubRegistry([currentTopicEntry, REMOTE_ENTRY]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const handler = commandHandlers.get('resume')!;
     const ctx = makeMockCtx({ match: 'my-session' }); // current topic 10 has other-session
@@ -340,7 +364,7 @@ describe('/resume command', () => {
     const { bot, commandHandlers } = makeMockBot();
     const registry = makeResumeStubRegistry([REMOTE_ENTRY]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const handler = commandHandlers.get('resume')!;
     const ctx = makeMockCtx({ match: 'my-session' });
@@ -358,7 +382,7 @@ describe('/resume command', () => {
     const { bot, commandHandlers } = makeMockBot();
     const registry = makeResumeStubRegistry();
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const handler = commandHandlers.get('help')!;
     const ctx = makeMockCtx();
@@ -370,20 +394,20 @@ describe('/resume command', () => {
 
   // ── H-A: cache rekey after successful move ───────────────────────────────────
 
-  it('calls relay.rekeySession(oldTopicId, newTopicId) after a successful move', async () => {
+  it('calls relay.rekeySession(oldThreadId, newThreadId) after a successful move', async () => {
     const { bot, commandHandlers } = makeMockBot();
     const registry = makeResumeStubRegistry([REMOTE_ENTRY]);
     const factory = makeMockFactory();
-    const relay = registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    const relay = registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const rekeySpy = vi.spyOn(relay, 'rekeySession');
 
     const handler = commandHandlers.get('resume')!;
-    const ctx = makeMockCtx({ match: 'my-session' }); // current topic = 10, session was at topic 99
+    const ctx = makeMockCtx({ match: 'my-session' }); // current topic = 10, session was at thread '99'
     await handler(ctx);
 
-    // REMOTE_ENTRY.topicId = 99, ctx topic = 10
-    expect(rekeySpy).toHaveBeenCalledWith(99, 10);
+    // REMOTE_ENTRY.threadId = '99', ctx topic = 10
+    expect(rekeySpy).toHaveBeenCalledWith('99', '10');
   });
 
   it('does not call relay.rekeySession when move() throws', async () => {
@@ -391,7 +415,7 @@ describe('/resume command', () => {
     const registry = makeResumeStubRegistry([REMOTE_ENTRY]);
     registry.move.mockRejectedValueOnce(new Error('Destination topic 10 is already bound to "other"'));
     const factory = makeMockFactory();
-    const relay = registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    const relay = registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const rekeySpy = vi.spyOn(relay, 'rekeySession');
 
@@ -405,16 +429,16 @@ describe('/resume command', () => {
   // ── F-B: legacy duplicate names ───────────────────────────────────────────
 
   it('refuses with disambiguation list when legacy duplicates share the same name', async () => {
-    const dup1: SessionEntry = { sessionName: 'my-session', topicId: 42, chatId: -100, createdAt: '2026-01-01T00:00:00.000Z' };
-    const dup2: SessionEntry = { sessionName: 'my-session', topicId: 99, chatId: -100, createdAt: '2026-01-01T00:00:00.000Z' };
+    const dup1: SessionEntry = { sessionName: 'my-session', threadId: '42', channelId: '-100', createdAt: '2026-01-01T00:00:00.000Z' };
+    const dup2: SessionEntry = { sessionName: 'my-session', threadId: '99', channelId: '-100', createdAt: '2026-01-01T00:00:00.000Z' };
 
     const { bot, commandHandlers } = makeMockBot();
     const registry = makeResumeStubRegistry([dup1, dup2]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const handler = commandHandlers.get('resume')!;
-    // ctx.message.message_thread_id = 10, distinct from both 42 and 99
+    // ctx.message.message_thread_id = 10, distinct from both '42' and '99'
     const ctx = makeMockCtx({ match: 'my-session' });
     await handler(ctx);
 
@@ -429,13 +453,13 @@ describe('/resume command', () => {
   });
 
   it('mentions /remove (not /rename) in the legacy-duplicates refusal', async () => {
-    const dup1: SessionEntry = { sessionName: 'my-session', topicId: 42, chatId: -100, createdAt: '2026-01-01T00:00:00.000Z' };
-    const dup2: SessionEntry = { sessionName: 'my-session', topicId: 99, chatId: -100, createdAt: '2026-01-01T00:00:00.000Z' };
+    const dup1: SessionEntry = { sessionName: 'my-session', threadId: '42', channelId: '-100', createdAt: '2026-01-01T00:00:00.000Z' };
+    const dup2: SessionEntry = { sessionName: 'my-session', threadId: '99', channelId: '-100', createdAt: '2026-01-01T00:00:00.000Z' };
 
     const { bot, commandHandlers } = makeMockBot();
     const registry = makeResumeStubRegistry([dup1, dup2]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const handler = commandHandlers.get('resume')!;
     const ctx = makeMockCtx({ match: 'my-session' });
@@ -456,10 +480,10 @@ describe('/resume command', () => {
       new Error('Destination topic 10 is already bound to "other-session"'),
     );
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
 
     const handler = commandHandlers.get('resume')!;
-    // resolve(10) returns undefined → pre-check passes; move() then throws
+    // resolve('10') returns undefined → pre-check passes; move() then throws
     const ctx = makeMockCtx({ match: 'my-session' });
     await handler(ctx);
 

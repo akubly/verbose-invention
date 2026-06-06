@@ -20,6 +20,8 @@ export interface EnvConfig {
   allowedUserIdSet: ReadonlySet<number> | undefined;
   configPath: string;
   registryPath: string;
+  /** The transport channel to use. Defaults to 'telegram'. */
+  reachChannel: string;
 }
 
 export async function parseEnv(): Promise<EnvConfig> {
@@ -107,5 +109,6 @@ export async function parseEnv(): Promise<EnvConfig> {
     allowedUserIdSet,
     configPath,
     registryPath,
+    reachChannel: process.env.REACH_CHANNEL ?? 'telegram',
   };
 }

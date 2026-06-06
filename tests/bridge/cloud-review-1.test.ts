@@ -35,24 +35,33 @@ const REQUEST_ID = 'req-cr1';
 
 const SESSION_ENTRY: SessionEntry = {
   sessionName: 'reach-myapp',
-  topicId: 42,
-  chatId: -1001234567890,
+  threadId: '42',
+  channelId: '-1001234567890',
   createdAt: '2024-01-01T00:00:00.000Z',
 };
 
 function makeStubRegistry(entries: SessionEntry[] = []): SessionLookup {
-  const map = new Map(entries.map((e) => [e.topicId, e]));
-  return { resolve: vi.fn((topicId: number) => map.get(topicId)) };
+  const map = new Map(entries.map((e) => [e.threadId, e]));
+  return { resolve: vi.fn((threadId: string) => map.get(threadId)) };
 }
 
-function makeMockCtx(topicId = 42, chatId = -1001234567890) {
+function makeMockChannel() {
   return {
-    message: { message_thread_id: topicId, text: 'hi' },
-    chat: { id: chatId },
-    reply: vi.fn().mockResolvedValue({ message_id: 100, chat: { id: chatId } }),
-    api: { editMessageText: vi.fn().mockResolvedValue({ ok: true }) },
+    start: vi.fn(),
+    stop: vi.fn(),
+    sendMessage: vi.fn().mockResolvedValue({ id: '100' }),
+    editMessage: vi.fn().mockResolvedValue(undefined),
+    splitMessage: vi.fn((text: string, footer?: string) => footer ? [`${text}\n\n${footer}`] : [text]),
+    formatForTransport: vi.fn((text: string) => text),
+    createThread: vi.fn(),
+    onMessage: vi.fn(),
+    onCommand: vi.fn(),
+    promptUser: vi.fn().mockResolvedValue('approve'),
+    capabilities: { supportsMessageEdit: true, supportsThreadCreation: true, supportsInteractivePrompts: true, supportsStreaming: true, maxMessageLength: 4096 },
   };
 }
+
+const DEFAULT_CTX = { threadId: '42', channelId: '-1001234567890' };
 
 // ─── T1: ADR-9 regression — idle eviction must not abort pending permission ──
 
@@ -123,10 +132,9 @@ describe('T1 — idle eviction defers when session is busy (ADR-9 no-timeout)', 
       };
 
       const registry = makeStubRegistry([SESSION_ENTRY]);
-      const relay = new Relay(registry, factory, 'test-model');
-      const ctx = makeMockCtx();
+      const relay = new Relay(makeMockChannel(), registry, factory, 'test-model');
 
-      await relay.relay(ctx as any);
+      await relay.relay(DEFAULT_CTX, 'hi');
 
       // Advance past IDLE_TIMEOUT_MS (default 300 000 ms).
       vi.advanceTimersByTime(310_000);
@@ -154,10 +162,9 @@ describe('T1 — idle eviction defers when session is busy (ADR-9 no-timeout)', 
       };
 
       const registry = makeStubRegistry([SESSION_ENTRY]);
-      const relay = new Relay(registry, factory, 'test-model');
-      const ctx = makeMockCtx();
+      const relay = new Relay(makeMockChannel(), registry, factory, 'test-model');
 
-      await relay.relay(ctx as any);
+      await relay.relay(DEFAULT_CTX, 'hi');
 
       // First idle fire: session is busy → deferred, dispose NOT called.
       vi.advanceTimersByTime(310_000);

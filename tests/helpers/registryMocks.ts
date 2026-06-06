@@ -31,12 +31,12 @@ import type { SessionEntry } from '../../src/types.js';
  * All mutating methods (register, upsert, remove, move) are vi.fn() no-ops.
  */
 export function makeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry {
-  const map = new Map(entries.map((e) => [e.topicId, e]));
+  const map = new Map(entries.map((e) => [e.threadId, e]));
   return {
     load: vi.fn(),
     register: vi.fn(),
     upsert: vi.fn(),
-    resolve: vi.fn((topicId: number) => map.get(topicId)),
+    resolve: vi.fn((threadId: string) => map.get(threadId)),
     findByName: vi.fn(),
     findAllByName: vi.fn(() => []),
     list: vi.fn(() => Array.from(map.values())),

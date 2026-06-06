@@ -19,7 +19,7 @@ describe('IdleMonitor', () => {
       const monitor = new IdleMonitor();
       const onIdle = vi.fn();
 
-      monitor.reset(42, onIdle);
+      monitor.reset('42', onIdle);
       expect(onIdle).not.toHaveBeenCalled();
 
       vi.advanceTimersByTime(DEFAULT_TIMEOUT);
@@ -30,7 +30,7 @@ describe('IdleMonitor', () => {
       const monitor = new IdleMonitor();
       const onIdle = vi.fn();
 
-      monitor.reset(42, onIdle);
+      monitor.reset('42', onIdle);
       vi.advanceTimersByTime(DEFAULT_TIMEOUT - 1);
       expect(onIdle).not.toHaveBeenCalled();
     });
@@ -40,10 +40,10 @@ describe('IdleMonitor', () => {
       const firstCb = vi.fn();
       const secondCb = vi.fn();
 
-      monitor.reset(42, firstCb);
+      monitor.reset('42', firstCb);
       vi.advanceTimersByTime(DEFAULT_TIMEOUT / 2);
 
-      monitor.reset(42, secondCb);
+      monitor.reset('42', secondCb);
       vi.advanceTimersByTime(DEFAULT_TIMEOUT);
 
       expect(firstCb).not.toHaveBeenCalled();
@@ -54,9 +54,9 @@ describe('IdleMonitor', () => {
       const monitor = new IdleMonitor();
       const onIdle = vi.fn();
 
-      monitor.reset(42, onIdle);
+      monitor.reset('42', onIdle);
       vi.advanceTimersByTime(DEFAULT_TIMEOUT - 1);
-      monitor.reset(42, onIdle); // restart
+      monitor.reset('42', onIdle); // restart
       vi.advanceTimersByTime(DEFAULT_TIMEOUT - 1);
       expect(onIdle).not.toHaveBeenCalled();
 
@@ -73,9 +73,9 @@ describe('IdleMonitor', () => {
       const cb1 = vi.fn();
       const cb2 = vi.fn();
 
-      monitor.reset(1, cb1);
+      monitor.reset('1', cb1);
       vi.advanceTimersByTime(DEFAULT_TIMEOUT / 2);
-      monitor.reset(2, cb2);
+      monitor.reset('2', cb2);
 
       vi.advanceTimersByTime(DEFAULT_TIMEOUT / 2); // topic 1 fires
       expect(cb1).toHaveBeenCalledTimes(1);
@@ -90,11 +90,11 @@ describe('IdleMonitor', () => {
       const cb1 = vi.fn();
       const cb2 = vi.fn();
 
-      monitor.reset(1, cb1);
-      monitor.reset(2, cb2);
+      monitor.reset('1', cb1);
+      monitor.reset('2', cb2);
 
       vi.advanceTimersByTime(DEFAULT_TIMEOUT / 2);
-      monitor.reset(1, cb1); // reset topic 1 only
+      monitor.reset('1', cb1); // reset topic 1 only
 
       vi.advanceTimersByTime(DEFAULT_TIMEOUT / 2); // topic 2 fires
       expect(cb2).toHaveBeenCalledTimes(1);
@@ -109,8 +109,8 @@ describe('IdleMonitor', () => {
       const monitor = new IdleMonitor();
       const onIdle = vi.fn();
 
-      monitor.reset(42, onIdle);
-      monitor.cancel(42);
+      monitor.reset('42', onIdle);
+      monitor.cancel('42');
 
       vi.advanceTimersByTime(DEFAULT_TIMEOUT * 2);
       expect(onIdle).not.toHaveBeenCalled();
@@ -118,7 +118,7 @@ describe('IdleMonitor', () => {
 
     it('is a no-op for an unknown topicId', () => {
       const monitor = new IdleMonitor();
-      expect(() => monitor.cancel(999)).not.toThrow();
+      expect(() => monitor.cancel('999')).not.toThrow();
     });
 
     it('does not affect other topics', () => {
@@ -126,9 +126,9 @@ describe('IdleMonitor', () => {
       const cb1 = vi.fn();
       const cb2 = vi.fn();
 
-      monitor.reset(1, cb1);
-      monitor.reset(2, cb2);
-      monitor.cancel(1);
+      monitor.reset('1', cb1);
+      monitor.reset('2', cb2);
+      monitor.cancel('1');
 
       vi.advanceTimersByTime(DEFAULT_TIMEOUT);
       expect(cb1).not.toHaveBeenCalled();
@@ -145,9 +145,9 @@ describe('IdleMonitor', () => {
       const cb2 = vi.fn();
       const cb3 = vi.fn();
 
-      monitor.reset(1, cb1);
-      monitor.reset(2, cb2);
-      monitor.reset(3, cb3);
+      monitor.reset('1', cb1);
+      monitor.reset('2', cb2);
+      monitor.reset('3', cb3);
       monitor.cancelAll();
 
       vi.advanceTimersByTime(DEFAULT_TIMEOUT * 2);
@@ -169,13 +169,13 @@ describe('IdleMonitor', () => {
       const monitor = new IdleMonitor();
       const firstCb = vi.fn();
 
-      monitor.reset(42, firstCb);
+      monitor.reset('42', firstCb);
       vi.advanceTimersByTime(DEFAULT_TIMEOUT);
       expect(firstCb).toHaveBeenCalledTimes(1);
 
       // After firing, a new reset should work independently
       const secondCb = vi.fn();
-      monitor.reset(42, secondCb);
+      monitor.reset('42', secondCb);
       vi.advanceTimersByTime(DEFAULT_TIMEOUT);
       expect(secondCb).toHaveBeenCalledTimes(1);
 
@@ -187,12 +187,12 @@ describe('IdleMonitor', () => {
       const monitor = new IdleMonitor();
       const onIdle = vi.fn();
 
-      monitor.reset(42, onIdle);
+      monitor.reset('42', onIdle);
       vi.advanceTimersByTime(DEFAULT_TIMEOUT);
       expect(onIdle).toHaveBeenCalledTimes(1);
 
       // cancel after fire — should not throw
-      expect(() => monitor.cancel(42)).not.toThrow();
+      expect(() => monitor.cancel('42')).not.toThrow();
     });
   });
 });

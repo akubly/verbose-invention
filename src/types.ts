@@ -5,10 +5,18 @@
 export interface SessionEntry {
   /** Human-readable session name set by /new or the CLI extension. */
   sessionName: string;
-  /** Telegram forum topic ID that maps to this session. */
-  topicId: number;
-  /** Telegram supergroup chat ID. */
-  chatId: number;
+  /**
+   * Opaque thread/topic identifier (stringified).
+   * For Telegram this is the forum topic ID converted to string.
+   * Legacy JSON files store this as numeric `topicId`; registry.load() coerces on read.
+   */
+  threadId: string;
+  /**
+   * Opaque channel/chat identifier (stringified).
+   * For Telegram this is the supergroup chat ID converted to string.
+   * Legacy JSON files store this as numeric `chatId`; registry.load() coerces on read.
+   */
+  channelId: string;
   /** ISO-8601 creation timestamp. */
   createdAt: string;
   /** Working directory for disambiguation and future spawn/resume flows. */
@@ -19,6 +27,6 @@ export interface SessionEntry {
   mode?: 'afk' | 'back';
   /** ISO-8601 timestamp when this entry entered AFK mode. */
   afkSince?: string;
-  /** Most recent AFK topic ID, retained for topic reuse. */
-  lastTopicId?: number;
+  /** Most recent AFK thread ID (stringified), retained for topic reuse. */
+  lastTopicId?: string;
 }

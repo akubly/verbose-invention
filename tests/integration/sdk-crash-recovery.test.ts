@@ -14,43 +14,49 @@ import { StreamTimeoutError } from '../../src/copilot/impl.js';
 import type { SessionEntry } from '../../src/types.js';
 import type { SessionLookup } from '../../src/relay/ports.js';
 import type { CopilotSession } from '../../src/copilot/factory.js';
-import { escapeMarkdownV2 } from '../../src/relay/markdownV2.js';
+import type { ChannelPort, ChannelContext } from '../../src/channel/port.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-/** Minimal grammY Context double for relay tests. */
-function makeMockCtx(
-  text = 'Hello Copilot',
-  topicId: number | undefined | null = 42,
-  chatId = -1001234567890,
-) {
+function makeMockChannel(): ChannelPort {
   return {
-    message: topicId !== undefined && topicId !== null
-      ? { message_thread_id: topicId, text }
-      : { text },
-    chat: { id: chatId },
-    reply: vi.fn().mockResolvedValue({ message_id: 100, chat: { id: chatId } }),
-    api: {
-      editMessageText: vi.fn().mockResolvedValue({ ok: true }),
+    start: vi.fn(),
+    stop: vi.fn(),
+    sendMessage: vi.fn().mockResolvedValue({ id: '100' }),
+    editMessage: vi.fn().mockResolvedValue(undefined),
+    splitMessage: vi.fn((text: string, footer?: string) => footer ? [`${text}\n\n${footer}`] : [text]),
+    formatForTransport: vi.fn((text: string) => text),
+    createThread: vi.fn(),
+    onMessage: vi.fn(),
+    onCommand: vi.fn(),
+    promptUser: vi.fn().mockResolvedValue('approve'),
+    capabilities: {
+      supportsMessageEdit: true,
+      supportsThreadCreation: true,
+      supportsInteractivePrompts: true,
+      supportsStreaming: true,
+      maxMessageLength: 4096,
     },
-  };
+  } as unknown as ChannelPort;
 }
+
+const DEFAULT_CTX: ChannelContext = { threadId: '42', channelId: '-1001234567890' };
+const DEFAULT_TEXT = 'Hello Copilot';
 
 /** Stub SessionLookup for integration tests. */
 function makeStubRegistry(entries: SessionEntry[] = []): SessionLookup {
-  const map = new Map(entries.map((e) => [e.topicId, e]));
+  const map = new Map(entries.map((e) => [e.threadId, e]));
   return {
-    resolve: vi.fn((topicId: number) => map.get(topicId)),
+    resolve: vi.fn((threadId: string) => map.get(threadId)),
   };
 }
 
 const SESSION_ENTRY: SessionEntry = {
   sessionName: 'reach-crash-test',
-  topicId: 42,
-  chatId: -1001234567890,
+  threadId: '42',
+  channelId: '-1001234567890',
   createdAt: '2024-01-01T00:00:00.000Z',
 };
-
 // ─── tests ────────────────────────────────────────────────────────────────────
 
 // Uses factory stubs by design so this suite can focus on Relay's contract with
@@ -85,17 +91,15 @@ describe('Integration: relay-level SDK crash recovery', () => {
     };
 
     const registry = makeStubRegistry([SESSION_ENTRY]);
-    const relay = new Relay(registry, factory, 'test-model');
-    const ctx = makeMockCtx();
+    const relay = new Relay(makeMockChannel(), registry, factory, 'test-model');
 
-    await relay.relay(ctx as any);
+    await relay.relay(DEFAULT_CTX, DEFAULT_TEXT);
 
     // Verify resetForRestart was called on SDK error
     expect(factory.resetForRestart).toHaveBeenCalledOnce();
   });
 
   it('relay does NOT call resetForRestart() on timeout error', async () => {
-    // Create a factory that throws timeout error
     const timeoutSession: CopilotSession = {
       send: vi.fn().mockReturnValue({
         async *[Symbol.asyncIterator]() {
@@ -111,17 +115,15 @@ describe('Integration: relay-level SDK crash recovery', () => {
     };
 
     const registry = makeStubRegistry([SESSION_ENTRY]);
-    const relay = new Relay(registry, factory, 'test-model');
-    const ctx = makeMockCtx();
+    const relay = new Relay(makeMockChannel(), registry, factory, 'test-model');
 
-    await relay.relay(ctx as any);
+    await relay.relay(DEFAULT_CTX, DEFAULT_TEXT);
 
     // Verify resetForRestart was NOT called on timeout
     expect(factory.resetForRestart).not.toHaveBeenCalled();
   });
 
   it('relay clears all cached sessions on SDK crash', async () => {
-    // Setup factory that crashes, then returns working session
     let callCount = 0;
     const crashingSession: CopilotSession = {
       send: vi.fn().mockReturnValue({
@@ -149,13 +151,12 @@ describe('Integration: relay-level SDK crash recovery', () => {
     };
 
     const registry = makeStubRegistry([SESSION_ENTRY]);
-    const relay = new Relay(registry, factory, 'test-model');
+    const relay = new Relay(makeMockChannel(), registry, factory, 'test-model');
 
     // First call crashes
-    await relay.relay(makeMockCtx() as any);
-
+    await relay.relay(DEFAULT_CTX, DEFAULT_TEXT);
     // Second call should resume from factory again (cache was cleared)
-    await relay.relay(makeMockCtx() as any);
+    await relay.relay(DEFAULT_CTX, DEFAULT_TEXT);
 
     // Verify factory.resume was called twice (cache was cleared after crash)
     expect(factory.resume).toHaveBeenCalledTimes(2);
@@ -164,7 +165,6 @@ describe('Integration: relay-level SDK crash recovery', () => {
   // ── factory restart workflow ──────────────────────────────────────────────────
 
   it('factory creates new session after resetForRestart()', async () => {
-    // Create a mock factory that tracks restart state
     let crashed = false;
     const crashingSession: CopilotSession = {
       send: vi.fn().mockReturnValue({
@@ -193,16 +193,14 @@ describe('Integration: relay-level SDK crash recovery', () => {
     };
 
     const registry = makeStubRegistry([SESSION_ENTRY]);
-    const relay = new Relay(registry, factory, 'test-model');
+    const relay = new Relay(makeMockChannel(), registry, factory, 'test-model');
 
     // First call — SDK crashes
-    const ctx1 = makeMockCtx('test message 1');
-    await relay.relay(ctx1 as any);
+    await relay.relay(DEFAULT_CTX, DEFAULT_TEXT);
     expect(factory.resetForRestart).toHaveBeenCalledOnce();
 
     // Second call — factory should create new session
-    const ctx2 = makeMockCtx('test message 2');
-    await relay.relay(ctx2 as any);
+    await relay.relay(DEFAULT_CTX, DEFAULT_TEXT);
 
     // Verify the working session was used
     expect(factory.create).toHaveBeenCalledWith('reach-crash-test', undefined, undefined);
@@ -212,10 +210,9 @@ describe('Integration: relay-level SDK crash recovery', () => {
   // ── cache/reset behavior ──────────────────────────────────────────────────────
 
   it('relay continues to process messages after cached session is cleared', async () => {
-    // Test that relay re-fetches session after cache is cleared
     let createCallCount = 0;
     const factory = {
-      resume: vi.fn().mockResolvedValue(null), // Always return null (no existing session)
+      resume: vi.fn().mockResolvedValue(null),
       create: vi.fn().mockImplementation(async () => {
         createCallCount++;
         return {
@@ -230,17 +227,17 @@ describe('Integration: relay-level SDK crash recovery', () => {
     };
 
     const registry = makeStubRegistry([SESSION_ENTRY]);
-    const relay = new Relay(registry, factory, 'test-model');
+    const relay = new Relay(makeMockChannel(), registry, factory, 'test-model');
 
     // First message — creates session
-    await relay.relay(makeMockCtx('message 1') as any);
+    await relay.relay(DEFAULT_CTX, 'message 1');
     expect(factory.create).toHaveBeenCalledTimes(1);
 
     // Dispose relay (clears cache)
     relay.dispose();
 
     // Second message — should create new session (cache was cleared)
-    await relay.relay(makeMockCtx('message 2') as any);
+    await relay.relay(DEFAULT_CTX, 'message 2');
     expect(factory.create).toHaveBeenCalledTimes(2);
   });
 
@@ -281,26 +278,23 @@ describe('Integration: relay-level SDK crash recovery', () => {
     };
 
     const registry = makeStubRegistry([SESSION_ENTRY]);
-    const relay = new Relay(registry, factory, 'test-model');
+    const channel = makeMockChannel();
+    const relay = new Relay(channel, registry, factory, 'test-model');
 
     // Step 1: First message triggers crash
-    const ctx1 = makeMockCtx('trigger crash');
-    await relay.relay(ctx1 as any);
-
+    await relay.relay(DEFAULT_CTX, DEFAULT_TEXT);
     expect(restartCount).toBe(1);
     expect(factory.resetForRestart).toHaveBeenCalledOnce();
 
     // Step 2: Second message triggers recovery
-    const ctx2 = makeMockCtx('test recovery');
-    await relay.relay(ctx2 as any);
-
-    expect(factory.resume).toHaveBeenCalledTimes(2); // First + recovery
+    await relay.relay(DEFAULT_CTX, DEFAULT_TEXT);
+    expect(factory.resume).toHaveBeenCalledTimes(2);
     expect(factory.create).toHaveBeenCalledOnce();
 
-    // Step 3: Verify final message was edited with success
-    const editCalls = (ctx2.api.editMessageText as ReturnType<typeof vi.fn>).mock.calls;
+    // Step 3: Verify final message was edited with the recovered content
+    const editCalls = (channel.editMessage as ReturnType<typeof vi.fn>).mock.calls;
     const finalText = editCalls[editCalls.length - 1][2] as string;
-    expect(finalText).toContain(escapeMarkdownV2('Recovered!'));
+    expect(finalText).toContain('Recovered!');
   });
 
   it('handles multiple sequential crashes by resetting the factory each time', async () => {
@@ -331,11 +325,11 @@ describe('Integration: relay-level SDK crash recovery', () => {
     };
 
     const registry = makeStubRegistry([SESSION_ENTRY]);
-    const relay = new Relay(registry, factory, 'test-model');
+    const relay = new Relay(makeMockChannel(), registry, factory, 'test-model');
 
     // Trigger multiple crashes
     for (let i = 0; i < 3; i++) {
-      await relay.relay(makeMockCtx(`crash ${i + 1}`) as any);
+      await relay.relay(DEFAULT_CTX, `crash ${i + 1}`);
     }
 
     // Verify resetForRestart was called for each crash

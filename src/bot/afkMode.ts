@@ -399,7 +399,7 @@ export class AfkModeController {
         ));
         const existing = this.resolveBindingEntry(binding);
         if (existing) {
-          const backEntry = { ...existing, mode: 'back' as const, lastTopicId: binding.topicId };
+          const backEntry = { ...existing, mode: 'back' as const, lastTopicId: String(binding.topicId) };
           delete backEntry.afkSince;
           await this.registry.upsert(backEntry);
         }
@@ -428,7 +428,7 @@ export class AfkModeController {
   }
 
   private resolveBindingEntry(binding: TopicBinding) {
-    return this.registry.resolve(binding.topicId) ?? this.registry.findByName(binding.sessionName);
+    return this.registry.resolve(String(binding.topicId)) ?? this.registry.findByName(binding.sessionName);
   }
 
   private async registrationExtras(session: BridgeSessionInfo): Promise<RegistrationExtras> {
@@ -464,7 +464,9 @@ export class AfkModeController {
       console.warn(`[afk] Duplicate registry entries for "${session.sessionName}"; creating a fresh AFK topic instead of reusing lastTopicId`);
     }
     const persisted = matches.length === 1 ? matches[0] : undefined;
-    let topicId = persisted?.lastTopicId;
+    // lastTopicId is stored as a string in SessionEntry; convert to number for Telegram API.
+    const persistedTopicId = persisted?.lastTopicId !== undefined ? Number(persisted.lastTopicId) : undefined;
+    let topicId: number | undefined = persistedTopicId;
     let createdNewTopicId: number | null = null;
 
     if (topicId !== undefined) {
@@ -491,14 +493,14 @@ export class AfkModeController {
     try {
       await this.registry.upsert({
         sessionName: session.sessionName,
-        topicId,
-        chatId: this.chatId,
+        threadId: String(topicId),
+        channelId: String(this.chatId),
         createdAt: persisted?.createdAt ?? new Date().toISOString(),
         cwd: session.cwd,
         ...(persisted?.model !== undefined && { model: persisted.model }),
         mode: 'afk',
         afkSince: this.mode.since,
-        lastTopicId: topicId,
+        lastTopicId: String(topicId),
       });
     } catch (err) {
       // F1: Orphan prevention — if upsert fails, close the created topic.
@@ -655,7 +657,7 @@ export class AfkModeController {
     this.streamRouter.cleanupSession(sessionId);
     const existing = this.resolveBindingEntry(binding);
     if (existing) {
-      const disconnectedEntry = { ...existing, mode: 'back' as const, lastTopicId: binding.topicId };
+      const disconnectedEntry = { ...existing, mode: 'back' as const, lastTopicId: String(binding.topicId) };
       delete disconnectedEntry.afkSince;
       await this.registry.upsert(disconnectedEntry);
     }
@@ -723,7 +725,7 @@ export class AfkModeController {
     controller.topicSessions.clear();
     for (const session of seed.sessions ?? []) {
       const bridgeInfo = deps.bridge.getSessionInfo(session.sessionId);
-      const registryEntry = deps.registry.resolve(session.topicId);
+      const registryEntry = deps.registry.resolve(String(session.topicId));
       const binding: TopicBinding = {
         sessionId: session.sessionId,
         sessionName: session.sessionName ?? bridgeInfo?.sessionName ?? registryEntry?.sessionName ?? session.sessionId,

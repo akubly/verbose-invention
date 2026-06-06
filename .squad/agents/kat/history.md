@@ -2,6 +2,6 @@
 
 ---
 
-**PHASE 1 COMPLETE (2026-06-06):** Shipped handler migration onto ChannelPort. Single-bot consolidation complete; TelegramChannel owns only grammY Bot instance. All 8 commands registered via channel.onCommand(); relay catch-all via channel.onMessage(). Synthetic context adapters for /status and /cwd maintain handler API compatibility. 849 pre-existing tests green (zero regressions). Orchestration log: `.squad/orchestration-log/2026-06-06T21-14-08-kat.md`. Phase 1 awaiting Noble Six review (concurrent, read-only). Reference: Phase 1 section in decisions.md.
+**PHASE 1 COMPLETE + VERIFIED (2026-06-06):** Shipped handler migration onto ChannelPort. Single-bot consolidation complete; TelegramChannel owns only grammY Bot instance. All 8 commands registered via channel.onCommand(); relay catch-all via channel.onMessage(). Synthetic context adapters for /status and /cwd maintain handler API compatibility. F1 blocker (relay capability branching) resolved by Carter + verified by Jun. Final test count: 946 green (zero regressions). Noble Six review: APPROVE-WITH-NITS. F1 (blocking) resolved. Deferred Phase 2 nits: N2 (synthetic ctx cleanup), N5 (bot.catch duplicate cleanup). Deferred backlog: N1 (setMessageInterceptor generalization). Reference: Phase 1 section in decisions.md. Next: Teams Phase 2 pending corp access.
 
 ---

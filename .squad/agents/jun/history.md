@@ -2,7 +2,7 @@
 
 ---
 
-**PHASE 1 COMPLETE (2026-06-06):** Shipped conformance kit for ChannelPort (behavioral tests + capability-fallback matrix + Telegram anti-lie checks) + full regression suite. 88 new tests added (44 FakeChannel + 44 Telegram); 937 total (up from 849). Zero contract violations found. All 4 capability flags tested in both ON and OFF states. Kat's 3 gotchas pinned. 937 tests green (zero regressions). Orchestration log: `.squad/orchestration-log/2026-06-06T21-14-08-jun.md`. Phase 1 awaiting Noble Six review (concurrent, read-only). Reference: Phase 1 section in decisions.md.
+**PHASE 1 COMPLETE + VERIFIED (2026-06-06):** Shipped conformance kit for ChannelPort (behavioral tests + capability-fallback matrix + Telegram anti-lie checks) + full regression suite. 88 new tests added (44 FakeChannel + 44 Telegram); 937 total (up from 849). Zero contract violations found. All 4 capability flags tested in both ON and OFF states. Kat's 3 gotchas pinned. F1 blocker verified in commit 2b5e4a2 (9 new relay capability tests, all pass). Final test count: 946 green (zero regressions). Noble Six review: APPROVE-WITH-NITS. F1 (blocking) resolved. Orchestration log: `.squad/orchestration-log/2026-06-06T21-32-33Z-jun.md`. Reference: Phase 1 section in decisions.md. Next: Teams Phase 2 pending corp access.
 
 ---
 

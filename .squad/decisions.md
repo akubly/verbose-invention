@@ -2545,11 +2545,33 @@ Full design doc: `.copilot/reach-state-storage-design.md`
 ## Accepted — Phase 1 Channel Abstraction (feature/channel-abstraction)
 
 **Date:** 2026-06-06  
-**Status:** SHIPPED (committed, 937 tests green, Noble Six review pending)  
+**Status:** PHASE 1 COMPLETE — review-verified (Noble Six APPROVE-WITH-NITS), F1 blocker resolved + verified, 946 tests green, port is Teams-ready as written  
 **Participants:** Carter (Bridge Dev), Kat (Bot Dev), Jun (Test Engineer), Noble Six (Architect)  
 **Branch:** feature/channel-abstraction  
-**Commit baseline:** d84dc0c (Carter), e69e50b (Kat), 3739640 (Jun)  
+**Commit baseline:** d84dc0c (Carter), e69e50b (Kat), 3739640 (Jun). F1 fixes: e1f3f4d (Carter), 2b5e4a2 (Jun).  
 **Summary:** Completed ChannelPort abstraction, Telegram adapter, and full conformance kit. Core domain now transport-agnostic; ready for Teams Phase 2 (pending corp branch development).
+
+---
+
+### CLOSE-OUT — F1 Blocker Resolved
+
+**Date:** 2026-06-06  
+**Blocker:** F1 — Relay does not check `supportsStreaming` / `supportsMessageEdit` before calling `editMessage` during streaming.
+
+**Carter's Fix (commit e1f3f4d):** Introduced explicit three-case branch at the start of streaming path:
+
+| supportsStreaming | supportsMessageEdit | Relay behavior |
+|---|---|---|
+| `true` | `true` | **Case A (Telegram):** `"…"` placeholder → throttled 800ms stream edits → final `editMessage`. Byte-identical to pre-fix code. |
+| `false` | `true` | **Case C:** `"thinking…"` placeholder → silent accumulation → single final `editMessage`. No intermediate edits. |
+| `true` or `false` | `false` | **Case B:** No placeholder. Silent accumulation. Single `sendMessage` with the complete response. `editMessage` never called. |
+
+**Jun's Verification (commit 2b5e4a2):** Nine new relay-level capability tests in `tests/relay/relay.capabilities.test.ts`:
+- 4 tests for Case B (no edits, single final message)
+- 4 tests for Case C (placeholder, single final edit, anti-regression across 12 chunks)
+- 1 regression guard for Case A (Telegram byte-identical)
+
+**Verdict:** F1 verified — relay honors all three capability cases. Test count: 937 → 946 (+9). All green.
 
 ---
 
@@ -3909,21 +3931,21 @@ The conformance kit tests the **adapter's** behavior. It does NOT test the **rel
 
 ## Itemized Findings
 
-| # | Type | Description | Owner | Blocking? |
-|---|------|-------------|-------|-----------|
-| F1 | BUG | Relay does not check `supportsStreaming` / `supportsMessageEdit` before calling `editMessage` during streaming. Violates port contract. Sends useless placeholder + edits for `supportsStreaming:false` adapters. | **Carter** (relay) + **Jun** (add relay capability tests) | **YES** |
-| N1 | NIT | `setMessageInterceptor` on TelegramChannel — Telegram-only method off the port. Acceptable Phase-1 debt. | Backlog (Phase 3 AFK generalization) | No |
-| N2 | NIT | Synthetic grammY Context for `/status` and `/cwd`. Compatibility shim — works but not clean. | **Kat** (Phase 2 backlog) | No |
-| N3 | NIT | `asTelegramChannel()` duck-typing in relay for MarkdownV2. Documented, transparent, works. | Backlog (self-resolves when second adapter ships) | No |
-| N4 | NIT | CJS `require('grammy')` in ESM factory registration. Works but code smell. | **Carter** (Phase 2) | No |
-| N5 | NIT | `bot.catch()` in handlers.ts duplicated with TelegramChannel.start(). Harmless. | **Kat** (Phase 2 cleanup) | No |
+| # | Type | Description | Status | Owner |
+|---|------|-------------|--------|-------|
+| F1 | BUG | Relay does not check `supportsStreaming` / `supportsMessageEdit` before calling `editMessage` during streaming. Violates port contract. Sends useless placeholder + edits for `supportsStreaming:false` adapters. | **RESOLVED** (e1f3f4d + 2b5e4a2, verified commit 2b5e4a2) | Carter + Jun |
+| N1 | NIT | `setMessageInterceptor` on TelegramChannel — Telegram-only method off the port. Acceptable Phase-1 debt. | Deferred to Phase 3 (AFK generalization) | Backlog |
+| N2 | NIT | Synthetic grammY Context for `/status` and `/cwd`. Compatibility shim — works but not clean. | Deferred to Phase 2 | Kat |
+| N3 | NIT | `asTelegramChannel()` duck-typing in relay for MarkdownV2. Documented, transparent, works. | Deferred to backlog (self-resolves when second adapter ships) | Backlog |
+| N4 | NIT | CJS `require('grammy')` in ESM factory registration. Works but code smell. | Deferred to Phase 2 | Carter |
+| N5 | NIT | `bot.catch()` in handlers.ts duplicated with TelegramChannel.start(). Harmless. | Deferred to Phase 2 cleanup | Kat |
 
 ---
 
 ## Is the Port Teams-Ready As Written?
 
-**Yes, after F1 is fixed.** The `ChannelPort` interface itself is Teams-ready today. A Teams adapter with `{ supportsStreaming: false, supportsThreadCreation: false, supportsMessageEdit: true, supportsInteractivePrompts: true, maxMessageLength: 28000 }` can implement it without contract changes.
+**Yes.** The `ChannelPort` interface is Teams-ready today. A Teams adapter with `{ supportsStreaming: false, supportsThreadCreation: false, supportsMessageEdit: true, supportsInteractivePrompts: true, maxMessageLength: 28000 }` can implement it without contract changes.
 
-The blocker is in the **relay** (the consumer of the port), not the port itself. The relay must honor the capability flags it's supposed to check. F1 is a relay bug, not a port bug.
+The relay now honors the capability flags correctly (F1 resolved in commit e1f3f4d, verified in commit 2b5e4a2).
 
-**After F1 fix:** Corp fork can start implementing `TeamsChannel` against the locked port contract with confidence.
+**After Phase 1:** Corp fork can start implementing `TeamsChannel` against the locked port contract with confidence.

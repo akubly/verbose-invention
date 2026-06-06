@@ -1,22 +1,3 @@
-/**
- * TelegramChannel — ChannelPort adapter wrapping the existing grammY Bot.
- *
- * Implements ChannelPort for the Telegram transport. Delegates formatting and
- * message splitting to the existing relay utilities (markdownV2, messageSplitter)
- * so that formatting behavior is identical to the pre-abstraction path.
- *
- * Registration: this module registers itself via registerChannel('telegram', ...)
- * at import time. Import it as a side-effect in the DI root (main.ts) before
- * calling createChannel().
- *
- * Capabilities declared:
- *   supportsMessageEdit: true        — Telegram supports editMessageText
- *   supportsThreadCreation: true     — Forum topics can be created via createForumTopic
- *   supportsInteractivePrompts: true — Inline keyboards are supported
- *   supportsStreaming: true          — Edit-in-place streaming at 800 ms throttle
- *   maxMessageLength: 4096           — Telegram's hard limit per message
- */
-
 import type { Bot, Context } from 'grammy';
 import type {
   ChannelPort,
@@ -61,6 +42,7 @@ export class TelegramChannel implements ChannelPort {
 
   private messageHandler: MessageHandler | undefined;
   private readonly commandHandlers = new Map<string, CommandHandler>();
+  private messageInterceptor?: (ctx: Context) => Promise<boolean>;
   /** Sessions that have already logged a MarkdownV2 rejection (log once per channel). */
   private readonly md2WarnedSessions = new Set<string>();
 
@@ -83,6 +65,7 @@ export class TelegramChannel implements ChannelPort {
 
     // Wire inbound text messages → onMessage handler.
     this.bot.on('message:text', async (ctx) => {
+      if (this.messageInterceptor && await this.messageInterceptor(ctx)) return;
       const topicId = ctx.message.message_thread_id;
       const text = ctx.message.text;
       if (!topicId || !text) return;
@@ -107,6 +90,10 @@ export class TelegramChannel implements ChannelPort {
       });
     }
 
+    this.bot.catch((err) => {
+      console.error('[bot] Unhandled error:', err.message, err.error);
+    });
+
     await this.bot.start({ allowed_updates: ['message', 'edited_message', 'callback_query'] });
   }
 
@@ -118,10 +105,9 @@ export class TelegramChannel implements ChannelPort {
 
   async sendMessage(ctx: ChannelContext, text: string): Promise<MessageRef> {
     const chatId = Number(ctx.channelId);
-    const topicId = Number(ctx.threadId);
-    const sent = await this.bot.api.sendMessage(chatId, text, {
-      message_thread_id: topicId,
-    });
+    const topicId = ctx.threadId ? Number(ctx.threadId) : undefined;
+    const opts = topicId !== undefined ? { message_thread_id: topicId } : undefined;
+    const sent = await this.bot.api.sendMessage(chatId, text, opts);
     return { id: String(sent.message_id) };
   }
 
@@ -211,6 +197,10 @@ export class TelegramChannel implements ChannelPort {
 
   onCommand(command: string, handler: CommandHandler): void {
     this.commandHandlers.set(command, handler);
+  }
+
+  setMessageInterceptor(fn: (ctx: Context) => Promise<boolean>): void {
+    this.messageInterceptor = fn;
   }
 
   // ── MarkdownV2 edit with plain-text fallback ───────────────────────────────

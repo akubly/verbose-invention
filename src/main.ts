@@ -1,14 +1,14 @@
 /**
  * Reach — DI root and daemon entry point.
  *
- * Wires the Telegram bot, session registry, and Copilot SDK factory,
- * then starts long-polling. Graceful shutdown on SIGINT/SIGTERM.
+ * Wires the channel, session registry, and Copilot SDK factory,
+ * then starts the channel. Graceful shutdown on SIGINT/SIGTERM.
  */
 
 import 'dotenv/config';
 import './channel/telegram/index.js'; // side-effect: registers 'telegram' channel factory
 import { createChannel } from './channel/registry.js';
-import { createBot } from './bot/index.js';
+import { TelegramChannel } from './channel/telegram/index.js';
 import { registerHandlers } from './bot/handlers.js';
 import { SessionRegistry } from './sessions/registry.js';
 import { CopilotClientImpl } from './copilot/impl.js';
@@ -59,7 +59,11 @@ export async function main(): Promise<void> {
 
   const channel = createChannel(cfg.reachChannel);
 
-  const bot = createBot(cfg.token, chatId);
+  // TelegramChannel exposes its bot for components that need direct grammY access
+  // (AfkModeController, ensurePromptRegistry). Only cast when needed.
+  const telegramChannel = channel as TelegramChannel;
+  const bot = telegramChannel.bot;
+
   if (cfg.permissionPolicy === 'approveAll') {
     console.warn('[reach] REACH_PERMISSION_POLICY=approveAll; AFK mirror input from Telegram will be blocked for safety. Use interactiveDestructive for remote input.');
   }
@@ -71,6 +75,12 @@ export async function main(): Promise<void> {
       globalModel: cfg.model,
     })
     : undefined;
+
+  // Wire AFK mirror interception into TelegramChannel before start() registers handlers.
+  // handleTelegramMessage needs grammY Context (for from.id, reply), so it stays Telegram-specific.
+  if (afkMode) {
+    telegramChannel.setMessageInterceptor((ctx) => afkMode.handleTelegramMessage(ctx));
+  }
 
   const relay = registerHandlers({
     bot, registry, factory,
@@ -93,7 +103,7 @@ export async function main(): Promise<void> {
     shuttingDown = true;
     console.log('\n[reach] Shutting down…');
     relay.dispose();
-    const tasks: Promise<unknown>[] = [bot.stop(), sdkFactory.stop()];
+    const tasks: Promise<unknown>[] = [channel.stop(), sdkFactory.stop()];
     if (bridge) tasks.push(bridge.stop());
     Promise.allSettled(tasks).finally(() => { console.log('[reach] Bye.'); process.exit(0); });
   };
@@ -101,5 +111,5 @@ export async function main(): Promise<void> {
   process.on('SIGTERM', shutdown);
 
   console.log('[reach] Bot started. Listening for messages…');
-  await bot.start({ allowed_updates: ['message', 'edited_message', 'callback_query'] });
+  await channel.start();
 }

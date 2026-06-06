@@ -1,8 +1,5 @@
 /**
  * Integration test: Chat ID enforcement middleware.
- *
- * Tests that the chat ID guard middleware in createBot() correctly
- * filters messages based on allowed chat ID.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -10,21 +7,19 @@ import { createBot } from '../../src/bot/index.js';
 import { registerHandlers } from '../../src/bot/handlers.js';
 import type { ISessionRegistry } from '../../src/sessions/registry.js';
 import type { SessionEntry } from '../../src/types.js';
+import type { ChannelPort, ChannelContext, CommandHandler, MessageHandler } from '../../src/channel/port.js';
 import { makeMockFactory } from '../mocks/sdk.js';
 import type { Update, Message } from 'grammy/types';
 
-// ─── helpers ──────────────────────────────────────────────────────────────────
-
-/** Minimal stub registry for integration test. */
 function makeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry {
-  const map = new Map(entries.map((e) => [e.topicId, e]));
+  const map = new Map(entries.map((e) => [e.threadId, e]));
   return {
     register: vi.fn(),
-    resolve: vi.fn((topicId: number) => map.get(topicId)),
+    resolve: vi.fn((threadId: string) => map.get(threadId)),
     findByName: vi.fn((name: string) => Array.from(map.values()).find((e) => e.sessionName === name)),
     findAllByName: vi.fn((name: string) => Array.from(map.values()).filter((e) => e.sessionName === name)),
     list: vi.fn(() => Array.from(map.values())),
-    remove: vi.fn(async (topicId: number) => map.delete(topicId)),
+    remove: vi.fn(async (threadId: string) => map.delete(threadId)),
     load: vi.fn(),
     move: vi.fn(),
   } as unknown as ISessionRegistry;
@@ -32,8 +27,8 @@ function makeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry {
 
 const SESSION_ENTRY: SessionEntry = {
   sessionName: 'reach-test',
-  topicId: 42,
-  chatId: -1001234567890,
+  threadId: '42',
+  channelId: '-1001234567890',
   createdAt: '2024-01-01T00:00:00.000Z',
 };
 
@@ -48,6 +43,54 @@ const TEST_BOT_INFO = {
   can_connect_to_business: false,
   has_main_web_app: false,
 };
+
+function makeBotBackedChannel(bot: ReturnType<typeof createBot>): ChannelPort {
+  return {
+    name: 'telegram',
+    capabilities: {
+      supportsMessageEdit: true,
+      supportsThreadCreation: true,
+      supportsInteractivePrompts: true,
+      supportsStreaming: true,
+      maxMessageLength: 4096,
+    },
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+    sendMessage: vi.fn(async (ctx: ChannelContext, text: string) => {
+      const sent = await bot.api.sendMessage(Number(ctx.channelId), text, ctx.threadId ? { message_thread_id: Number(ctx.threadId) } : undefined);
+      return { id: String(sent.message_id) };
+    }),
+    editMessage: vi.fn().mockResolvedValue(true),
+    splitMessage: vi.fn((text: string) => [text]),
+    formatForTransport: vi.fn((text: string) => text),
+    createThread: vi.fn(),
+    onMessage: vi.fn((handler: MessageHandler) => {
+      bot.on('message:text', async (ctx) => {
+        const threadId = ctx.message.message_thread_id;
+        await handler(
+          {
+            threadId: threadId !== undefined ? String(threadId) : '',
+            channelId: String(ctx.chat.id),
+          },
+          ctx.message.text,
+        );
+      });
+    }),
+    onCommand: vi.fn((command: string, handler: CommandHandler) => {
+      bot.command(command, async (ctx) => {
+        const topicId = ctx.message?.message_thread_id;
+        await handler(
+          {
+            threadId: topicId !== undefined ? String(topicId) : '',
+            channelId: String(ctx.chat?.id ?? 0),
+          },
+          (ctx.match as string | undefined)?.trim() ?? '',
+        );
+      });
+    }),
+    promptUser: vi.fn().mockResolvedValue('approve'),
+  } as unknown as ChannelPort;
+}
 
 function makeTestBot(allowedChatId: number) {
   const bot = createBot('fake-token', allowedChatId);
@@ -70,13 +113,9 @@ function makeTestBot(allowedChatId: number) {
     return prev(method, payload, signal);
   });
 
-  return { bot, sendMessage };
+  return { bot, sendMessage, channel: makeBotBackedChannel(bot) };
 }
 
-/**
- * Creates a realistic Telegram Update object for testing.
- * grammY's bot.handleUpdate() processes these to trigger handlers.
- */
 function makeUpdate(chatId: number, text: string, topicId?: number): Update {
   const message: Message = {
     message_id: 1,
@@ -109,8 +148,6 @@ function makeUpdate(chatId: number, text: string, topicId?: number): Update {
   } as Update;
 }
 
-// ─── tests ────────────────────────────────────────────────────────────────────
-
 describe('Integration: Chat ID enforcement', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -141,52 +178,46 @@ describe('Integration: Chat ID enforcement', () => {
   it('silently drops messages from disallowed chat IDs', async () => {
     const ALLOWED_CHAT = -1001234567890;
     const DISALLOWED_CHAT = -9876543210;
-    const { bot } = makeTestBot(ALLOWED_CHAT);
+    const { bot, channel } = makeTestBot(ALLOWED_CHAT);
 
     const registry = makeStubRegistry([SESSION_ENTRY]);
     const factory = makeMockFactory();
 
-    registerHandlers({ bot, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot, registry, factory, globalModel: 'test-model', channel });
 
-    const update = makeUpdate(DISALLOWED_CHAT, 'Hello from wrong chat', 42);
-    
-    // Process the update — should be silently dropped by middleware
-    await bot.handleUpdate(update);
+    await bot.handleUpdate(makeUpdate(DISALLOWED_CHAT, 'Hello from wrong chat', 42));
 
-    // Verify relay was NOT triggered (factory should not be called)
     expect(factory.resume).not.toHaveBeenCalled();
     expect(factory.create).not.toHaveBeenCalled();
   });
 
   it('allows /help command from allowed chat ID', async () => {
     const ALLOWED_CHAT = -1001234567890;
-    const { bot, sendMessage } = makeTestBot(ALLOWED_CHAT);
+    const { bot, sendMessage, channel } = makeTestBot(ALLOWED_CHAT);
 
     const registry = makeStubRegistry();
     const factory = makeMockFactory();
 
-    const handlersOutput = registerHandlers({ bot, registry, factory, globalModel: 'test-model' });
-    expect(handlersOutput).toBeDefined(); // relay instance
+    const handlersOutput = registerHandlers({ bot, registry, factory, globalModel: 'test-model', channel });
+    expect(handlersOutput).toBeDefined();
 
-    const update = makeUpdate(ALLOWED_CHAT, '/help');
-    await bot.handleUpdate(update);
+    await bot.handleUpdate(makeUpdate(ALLOWED_CHAT, '/help'));
 
     expect(sendMessage).toHaveBeenCalledOnce();
-    expect(factory.resume).not.toHaveBeenCalled(); // /help doesn't trigger relay
+    expect(factory.resume).not.toHaveBeenCalled();
   });
 
   it('drops /help command from disallowed chat ID', async () => {
     const ALLOWED_CHAT = -1001234567890;
     const DISALLOWED_CHAT = -9876543210;
-    const { bot, sendMessage } = makeTestBot(ALLOWED_CHAT);
+    const { bot, sendMessage, channel } = makeTestBot(ALLOWED_CHAT);
 
     const registry = makeStubRegistry();
     const factory = makeMockFactory();
 
-    registerHandlers({ bot, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot, registry, factory, globalModel: 'test-model', channel });
 
-    const update = makeUpdate(DISALLOWED_CHAT, '/help');
-    await bot.handleUpdate(update);
+    await bot.handleUpdate(makeUpdate(DISALLOWED_CHAT, '/help'));
 
     expect(sendMessage).not.toHaveBeenCalled();
     expect(factory.resume).not.toHaveBeenCalled();
@@ -194,21 +225,18 @@ describe('Integration: Chat ID enforcement', () => {
 
   it('middleware is applied unconditionally when allowedChatId is provided', async () => {
     const ALLOWED_CHAT = -1001234567890;
-    const { bot } = makeTestBot(ALLOWED_CHAT);
+    const { bot, channel } = makeTestBot(ALLOWED_CHAT);
 
     const registry = makeStubRegistry();
     const factory = makeMockFactory();
 
-    registerHandlers({ bot, registry, factory, globalModel: 'test-model' });
+    registerHandlers({ bot, registry, factory, globalModel: 'test-model', channel });
 
-    // Test multiple different disallowed chat IDs
     const disallowedChats = [-111, -222, -333];
     for (const chatId of disallowedChats) {
-      const update = makeUpdate(chatId, 'test message', 42);
-      await bot.handleUpdate(update);
+      await bot.handleUpdate(makeUpdate(chatId, 'test message', 42));
     }
 
-    // None of the disallowed messages triggered relay
     expect(factory.resume).not.toHaveBeenCalled();
     expect(factory.create).not.toHaveBeenCalled();
   });

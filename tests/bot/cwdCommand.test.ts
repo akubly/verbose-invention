@@ -1,46 +1,14 @@
 /**
- * /cwd command group — anticipatory tests (Phase 9 Item 3, Task T6).
- *
- * STATUS: RED until Carter lands the /cwd command handler.
- * Tests will fail with "commandHandlers.get('cwd') is undefined" until then.
- *
- * ─── Assumed API shape (Carter's T6 contract) ────────────────────────────────
- *
- * Carter adds `configPath?: string` to HandlerOptions (src/bot/handlers.ts).
- * The /cwd command is registered via `bot.command('cwd', handler)` inside
- * registerHandlers(). ctx.match is everything after '/cwd '.
- *
- * Subcommand dispatch:
- *   /cwd list (or bare /cwd)  → lists known cwds or empty-state message
- *   /cwd add <alias> <path>   → validates alias + path, persists, replies
- *   /cwd remove <alias>       → checks alias exists, removes, persists, replies
- *   /cwd <unknown>            → usage help
- *
- * General-topic-only (Aaron's locked decision):
- *   ctx.message.message_thread_id is set  → friendly refusal, no state change
- *   ctx.message.message_thread_id is absent → proceed normally
- *
- * Persistence: loadConfig(configPath) → transform → saveConfig(configPath, newConfig).
- * Atomic write semantics are Kat's responsibility (config.ts saveConfig) and are
- * already tested in tests/config/config.test.ts. Here we only assert saveConfig
- * was called with the right arguments.
- *
- * ─── Adjustments if Carter diverges ─────────────────────────────────────────
- * - Different file: update import path for registerHandlers
- * - Different option name (e.g., configLoader instead of configPath):
- *   update HandlerOptions construction below
- * - /cwd registered as separate function: import + call that instead
- * See .squad/decisions/inbox/jun-phase9-item3-tests.md for rationale.
+ * /cwd command group tests.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { registerHandlers } from '../../src/bot/handlers.js';
 import type { SessionEntry } from '../../src/types.js';
+import type { ChannelPort, ChannelContext, CommandHandler } from '../../src/channel/port.js';
 import { makeMockFactory } from '../mocks/sdk.js';
 import { makeMockBot } from '../helpers/botMocks.js';
 import { makeStubRegistry } from '../helpers/registryMocks.js';
-
-// ─── Hoisted mock state ───────────────────────────────────────────────────────
 
 const {
   mockLoadConfig,
@@ -52,17 +20,15 @@ const {
   mockListKnownCwds,
   mockGetKnownCwdByAlias,
 } = vi.hoisted(() => ({
-  mockLoadConfig:        vi.fn(),
-  mockSaveConfig:        vi.fn(),
-  mockValidateAlias:     vi.fn(),
-  mockValidatePath:      vi.fn(),
-  mockAddKnownCwd:       vi.fn(),
-  mockRemoveKnownCwd:    vi.fn(),
-  mockListKnownCwds:     vi.fn(),
+  mockLoadConfig: vi.fn(),
+  mockSaveConfig: vi.fn(),
+  mockValidateAlias: vi.fn(),
+  mockValidatePath: vi.fn(),
+  mockAddKnownCwd: vi.fn(),
+  mockRemoveKnownCwd: vi.fn(),
+  mockListKnownCwds: vi.fn(),
   mockGetKnownCwdByAlias: vi.fn(),
 }));
-
-// ─── Module mocks ─────────────────────────────────────────────────────────────
 
 vi.mock('../../src/config/config.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/config/config.js')>();
@@ -77,51 +43,58 @@ vi.mock('../../src/config/knownCwds.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/config/knownCwds.js')>();
   return {
     ...actual,
-    validateAlias:      (...args: unknown[]) => mockValidateAlias(...args),
-    validatePath:       (...args: unknown[]) => mockValidatePath(...args),
-    addKnownCwd:        (...args: unknown[]) => mockAddKnownCwd(...args),
-    removeKnownCwd:     (...args: unknown[]) => mockRemoveKnownCwd(...args),
-    listKnownCwds:      (...args: unknown[]) => mockListKnownCwds(...args),
+    validateAlias: (...args: unknown[]) => mockValidateAlias(...args),
+    validatePath: (...args: unknown[]) => mockValidatePath(...args),
+    addKnownCwd: (...args: unknown[]) => mockAddKnownCwd(...args),
+    removeKnownCwd: (...args: unknown[]) => mockRemoveKnownCwd(...args),
+    listKnownCwds: (...args: unknown[]) => mockListKnownCwds(...args),
     getKnownCwdByAlias: (...args: unknown[]) => mockGetKnownCwdByAlias(...args),
   };
 });
 
-// ─── Test helpers ─────────────────────────────────────────────────────────────
+function makeMockChannel(): ChannelPort {
+  return {
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+    sendMessage: vi.fn().mockResolvedValue({ id: '100' }),
+    editMessage: vi.fn().mockResolvedValue(undefined),
+    splitMessage: vi.fn((text: string) => [text]),
+    formatForTransport: vi.fn((text: string) => text),
+    createThread: vi.fn(),
+    onMessage: vi.fn(),
+    onCommand: vi.fn(),
+    promptUser: vi.fn().mockResolvedValue('approve'),
+    capabilities: {
+      supportsMessageEdit: true,
+      supportsThreadCreation: true,
+      supportsInteractivePrompts: true,
+      supportsStreaming: true,
+      maxMessageLength: 4096,
+    },
+  } as unknown as ChannelPort;
+}
 
-const TEST_CONFIG_PATH = '/test/reach/config.json';
+function getChannelHandler(channel: ChannelPort, command: string): CommandHandler | undefined {
+  const calls = (channel.onCommand as ReturnType<typeof vi.fn>).mock.calls as [string, CommandHandler][];
+  return calls.find(([cmd]) => cmd === command)?.[1];
+}
+
+const TEST_CONFIG_PATH = 'D:\\test\\reach\\config.json';
 const ALIAS = 'myrepo';
 const CWD_PATH = process.platform === 'win32' ? 'C:\\git\\myrepo' : '/home/user/myrepo';
 const NOW = '2024-06-01T00:00:00.000Z';
-
-/**
- * ctx for the General Topic (no message_thread_id → /cwd is allowed).
- * Pass inSessionTopic = true to simulate a session topic (/cwd must be refused).
- */
-function makeCwdCtx(matchText: string, inSessionTopic = false) {
-  return {
-    message: {
-      message_thread_id: inSessionTopic ? 42 : undefined,
-      text: matchText ? `/cwd ${matchText}` : '/cwd',
-    },
-    match: matchText,
-    chat: { id: -1001234567890 },
-    reply: vi.fn().mockResolvedValue({ message_id: 100 }),
-    api:   { editMessageText: vi.fn() },
-  };
-}
+const GENERAL_CTX: ChannelContext = { threadId: '', channelId: '-1001234567890' };
+const TOPIC_CTX: ChannelContext = { threadId: '42', channelId: '-1001234567890' };
 
 function makeKnownEntry(alias = ALIAS, path = CWD_PATH) {
   return { alias, path, addedAt: NOW };
 }
 
-// ─── Suite ────────────────────────────────────────────────────────────────────
-
-describe('/cwd command group (T6 — awaiting Carter)', () => {
+describe('/cwd command group', () => {
   beforeEach(() => {
     vi.useFakeTimers({ now: new Date(NOW) });
     vi.clearAllMocks();
 
-    // Default happy-path stubs — override per test as needed
     mockLoadConfig.mockResolvedValue({});
     mockSaveConfig.mockResolvedValue(undefined);
     mockValidateAlias.mockReturnValue({ ok: true });
@@ -142,25 +115,24 @@ describe('/cwd command group (T6 — awaiting Carter)', () => {
     vi.useRealTimers();
   });
 
-  // ── /cwd list ───────────────────────────────────────────────────────────────
-
   it('/cwd list — empty registry → replies with empty-state message', async () => {
     mockListKnownCwds.mockReturnValue([]);
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
+    const channel = makeMockChannel();
     registerHandlers({
       bot: bot as any,
       registry: makeStubRegistry(),
       factory: makeMockFactory(),
       globalModel: 'test-model',
       configPath: TEST_CONFIG_PATH,
+      channel,
     } as any);
 
-    const handler = commandHandlers.get('cwd')!;
-    const ctx = makeCwdCtx('list');
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'cwd')!;
+    await handler(GENERAL_CTX, 'list');
 
-    expect(ctx.reply).toHaveBeenCalledOnce();
-    const replyText: string = ctx.reply.mock.calls[0][0];
+    expect(channel.sendMessage).toHaveBeenCalledOnce();
+    const replyText: string = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1];
     expect(replyText.toLowerCase()).toMatch(/no known|no cwd|empty/);
   });
 
@@ -172,133 +144,138 @@ describe('/cwd command group (T6 — awaiting Carter)', () => {
     mockListKnownCwds.mockReturnValue(entries);
     mockLoadConfig.mockResolvedValue({ knownCwds: entries });
 
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
+    const channel = makeMockChannel();
     registerHandlers({
       bot: bot as any,
       registry: makeStubRegistry(),
       factory: makeMockFactory(),
       globalModel: 'test-model',
       configPath: TEST_CONFIG_PATH,
+      channel,
     } as any);
 
-    const ctx = makeCwdCtx('list');
-    await commandHandlers.get('cwd')!(ctx);
+    const handler = getChannelHandler(channel, 'cwd')!;
+    await handler(GENERAL_CTX, 'list');
 
-    expect(ctx.reply).toHaveBeenCalledOnce();
-    const replyText: string = ctx.reply.mock.calls[0][0];
+    expect(channel.sendMessage).toHaveBeenCalledOnce();
+    const replyText: string = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1];
     expect(replyText).toContain('repo-a');
     expect(replyText).toContain('repo-b');
   });
 
-  it('/cwd bare (empty match) → defaults to list behaviour', async () => {
+  it('/cwd bare (empty args) → defaults to list behaviour', async () => {
     mockListKnownCwds.mockReturnValue([]);
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
+    const channel = makeMockChannel();
     registerHandlers({
       bot: bot as any,
       registry: makeStubRegistry(),
       factory: makeMockFactory(),
       globalModel: 'test-model',
       configPath: TEST_CONFIG_PATH,
+      channel,
     } as any);
 
-    const ctx = makeCwdCtx(''); // ctx.match = ''
-    await commandHandlers.get('cwd')!(ctx);
+    const handler = getChannelHandler(channel, 'cwd')!;
+    await handler(GENERAL_CTX, '');
 
-    // Should produce a list reply (empty state), NOT an error about unknown subcommand
-    expect(ctx.reply).toHaveBeenCalledOnce();
+    expect(channel.sendMessage).toHaveBeenCalledOnce();
   });
-
-  // ── /cwd add ────────────────────────────────────────────────────────────────
 
   it('/cwd add <alias> <path> happy path → validates, persists, replies success', async () => {
     const newConfig = { knownCwds: [makeKnownEntry()] };
     mockAddKnownCwd.mockReturnValue(newConfig);
 
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
+    const channel = makeMockChannel();
     registerHandlers({
       bot: bot as any,
       registry: makeStubRegistry(),
       factory: makeMockFactory(),
       globalModel: 'test-model',
       configPath: TEST_CONFIG_PATH,
+      channel,
     } as any);
 
-    const ctx = makeCwdCtx(`add ${ALIAS} ${CWD_PATH}`);
-    await commandHandlers.get('cwd')!(ctx);
+    const handler = getChannelHandler(channel, 'cwd')!;
+    await handler(GENERAL_CTX, `add ${ALIAS} ${CWD_PATH}`);
 
     expect(mockValidateAlias).toHaveBeenCalledWith(ALIAS);
     expect(mockValidatePath).toHaveBeenCalledWith(CWD_PATH);
     expect(mockSaveConfig).toHaveBeenCalledWith(TEST_CONFIG_PATH, newConfig);
-    expect(ctx.reply).toHaveBeenCalledOnce();
-    expect(ctx.reply.mock.calls[0][0]).toMatch(/✅|added|success/i);
+    expect(channel.sendMessage).toHaveBeenCalledOnce();
+    expect((channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1]).toMatch(/✅|added|success/i);
   });
 
   it('/cwd add — invalid alias → friendly error, saveConfig NOT called', async () => {
     mockValidateAlias.mockReturnValue({ ok: false, reason: 'starts with hyphen' });
 
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
+    const channel = makeMockChannel();
     registerHandlers({
       bot: bot as any,
       registry: makeStubRegistry(),
       factory: makeMockFactory(),
       globalModel: 'test-model',
       configPath: TEST_CONFIG_PATH,
+      channel,
     } as any);
 
-    const ctx = makeCwdCtx(`add -bad ${CWD_PATH}`);
-    await commandHandlers.get('cwd')!(ctx);
+    const handler = getChannelHandler(channel, 'cwd')!;
+    await handler(GENERAL_CTX, `add -bad ${CWD_PATH}`);
 
     expect(mockSaveConfig).not.toHaveBeenCalled();
-    expect(ctx.reply.mock.calls[0][0]).toMatch(/❌|error|invalid/i);
+    expect((channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1]).toMatch(/❌|error|invalid/i);
   });
 
   it('/cwd add — invalid path → friendly error, saveConfig NOT called', async () => {
     mockValidatePath.mockResolvedValue({ ok: false, reason: 'Path does not exist' });
 
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
+    const channel = makeMockChannel();
     registerHandlers({
       bot: bot as any,
       registry: makeStubRegistry(),
       factory: makeMockFactory(),
       globalModel: 'test-model',
       configPath: TEST_CONFIG_PATH,
+      channel,
     } as any);
 
-    const ctx = makeCwdCtx(`add ${ALIAS} ${CWD_PATH}`);
-    await commandHandlers.get('cwd')!(ctx);
+    const handler = getChannelHandler(channel, 'cwd')!;
+    await handler(GENERAL_CTX, `add ${ALIAS} ${CWD_PATH}`);
 
     expect(mockSaveConfig).not.toHaveBeenCalled();
-    expect(ctx.reply.mock.calls[0][0]).toMatch(/❌|error|not exist/i);
+    expect((channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1]).toMatch(/❌|error|not exist/i);
   });
 
   it('/cwd add — alias collision → friendly error, saveConfig NOT called', async () => {
     const existingEntry = makeKnownEntry();
     mockLoadConfig.mockResolvedValue({ knownCwds: [existingEntry] });
-    // If Carter checks via getKnownCwdByAlias first:
     mockGetKnownCwdByAlias.mockReturnValue(existingEntry);
-    // If Carter calls addKnownCwd which throws:
     mockAddKnownCwd.mockImplementation(() => {
       throw new Error(`Alias "${ALIAS}" already exists in knownCwds`);
     });
 
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
+    const channel = makeMockChannel();
     registerHandlers({
       bot: bot as any,
       registry: makeStubRegistry(),
       factory: makeMockFactory(),
       globalModel: 'test-model',
       configPath: TEST_CONFIG_PATH,
+      channel,
     } as any);
 
-    const ctx = makeCwdCtx(`add ${ALIAS} ${CWD_PATH}`);
-    await commandHandlers.get('cwd')!(ctx);
+    const handler = getChannelHandler(channel, 'cwd')!;
+    await handler(GENERAL_CTX, `add ${ALIAS} ${CWD_PATH}`);
 
     expect(mockSaveConfig).not.toHaveBeenCalled();
-    const replyText: string = ctx.reply.mock.calls[0][0];
+    const replyText: string = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1];
     expect(replyText).toMatch(/❌|error|already|collision/i);
   });
-
-  // ── /cwd remove ─────────────────────────────────────────────────────────────
 
   it('/cwd remove <alias> — alias exists → removes, persists, replies success', async () => {
     const existingEntry = makeKnownEntry();
@@ -307,107 +284,109 @@ describe('/cwd command group (T6 — awaiting Carter)', () => {
     const newConfig = { knownCwds: [] };
     mockRemoveKnownCwd.mockReturnValue(newConfig);
 
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
+    const channel = makeMockChannel();
     registerHandlers({
       bot: bot as any,
       registry: makeStubRegistry(),
       factory: makeMockFactory(),
       globalModel: 'test-model',
       configPath: TEST_CONFIG_PATH,
+      channel,
     } as any);
 
-    const ctx = makeCwdCtx(`remove ${ALIAS}`);
-    await commandHandlers.get('cwd')!(ctx);
+    const handler = getChannelHandler(channel, 'cwd')!;
+    await handler(GENERAL_CTX, `remove ${ALIAS}`);
 
     expect(mockSaveConfig).toHaveBeenCalledWith(TEST_CONFIG_PATH, newConfig);
-    expect(ctx.reply.mock.calls[0][0]).toMatch(/✅|removed|success/i);
+    expect((channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1]).toMatch(/✅|removed|success/i);
   });
 
   it('/cwd remove <alias> — alias missing → friendly "not found" error, saveConfig NOT called', async () => {
     mockLoadConfig.mockResolvedValue({ knownCwds: [] });
     mockGetKnownCwdByAlias.mockReturnValue(undefined);
 
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
+    const channel = makeMockChannel();
     registerHandlers({
       bot: bot as any,
       registry: makeStubRegistry(),
       factory: makeMockFactory(),
       globalModel: 'test-model',
       configPath: TEST_CONFIG_PATH,
+      channel,
     } as any);
 
-    const ctx = makeCwdCtx(`remove ${ALIAS}`);
-    await commandHandlers.get('cwd')!(ctx);
+    const handler = getChannelHandler(channel, 'cwd')!;
+    await handler(GENERAL_CTX, `remove ${ALIAS}`);
 
     expect(mockSaveConfig).not.toHaveBeenCalled();
-    expect(ctx.reply.mock.calls[0][0]).toMatch(/❌|not found|unknown/i);
+    expect((channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1]).toMatch(/❌|not found|unknown/i);
   });
 
-  // ── unknown subcommand ───────────────────────────────────────────────────────
-
   it('/cwd unknownsub → usage reply, no state change', async () => {
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
+    const channel = makeMockChannel();
     registerHandlers({
       bot: bot as any,
       registry: makeStubRegistry(),
       factory: makeMockFactory(),
       globalModel: 'test-model',
       configPath: TEST_CONFIG_PATH,
+      channel,
     } as any);
 
-    const ctx = makeCwdCtx('unknownsub');
-    await commandHandlers.get('cwd')!(ctx);
+    const handler = getChannelHandler(channel, 'cwd')!;
+    await handler(GENERAL_CTX, 'unknownsub');
 
     expect(mockSaveConfig).not.toHaveBeenCalled();
-    expect(ctx.reply).toHaveBeenCalledOnce();
-    // Should mention valid subcommands or be a usage string
-    const replyText: string = ctx.reply.mock.calls[0][0];
+    expect(channel.sendMessage).toHaveBeenCalledOnce();
+    const replyText: string = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1];
     expect(replyText).toMatch(/usage|list|add|remove|❌/i);
   });
 
-  // ── general-topic-only guard ─────────────────────────────────────────────────
-
   it('general-topic-only: /cwd in a session topic → friendly refusal, no state change', async () => {
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
+    const channel = makeMockChannel();
     registerHandlers({
       bot: bot as any,
       registry: makeStubRegistry(),
       factory: makeMockFactory(),
       globalModel: 'test-model',
       configPath: TEST_CONFIG_PATH,
+      channel,
     } as any);
 
-    const ctx = makeCwdCtx('list', /* inSessionTopic */ true);
-    await commandHandlers.get('cwd')!(ctx);
+    const handler = getChannelHandler(channel, 'cwd')!;
+    await handler(TOPIC_CTX, 'list');
 
-    // Config must not be touched
     expect(mockLoadConfig).not.toHaveBeenCalled();
     expect(mockSaveConfig).not.toHaveBeenCalled();
-    expect(ctx.reply).toHaveBeenCalledOnce();
-    const replyText: string = ctx.reply.mock.calls[0][0];
+    expect(channel.sendMessage).toHaveBeenCalledOnce();
+    const replyText: string = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1];
     expect(replyText).toMatch(/general|topic|❌/i);
   });
-
-  // ── relativeTime guards (PR #10 cycle 11) ────────────────────────────────────
 
   it('relativeTime: invalid timestamp string → reply contains "unknown", never "NaN"', async () => {
     const entries = [{ alias: 'bad', path: CWD_PATH, addedAt: NOW, lastUsedAt: 'not-a-date' }];
     mockListKnownCwds.mockReturnValue(entries);
     mockLoadConfig.mockResolvedValue({ knownCwds: entries });
 
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
+    const channel = makeMockChannel();
     registerHandlers({
       bot: bot as any,
       registry: makeStubRegistry(),
       factory: makeMockFactory(),
       globalModel: 'test-model',
       configPath: TEST_CONFIG_PATH,
+      channel,
     } as any);
 
-    const ctx = makeCwdCtx('list');
-    await commandHandlers.get('cwd')!(ctx);
+    const handler = getChannelHandler(channel, 'cwd')!;
+    await handler(GENERAL_CTX, 'list');
 
-    const replyText: string = ctx.reply.mock.calls[0][0];
+    const replyText: string = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1];
     expect(replyText).not.toMatch(/NaN/);
     expect(replyText).toContain('unknown');
   });
@@ -418,19 +397,21 @@ describe('/cwd command group (T6 — awaiting Carter)', () => {
     mockListKnownCwds.mockReturnValue(entries);
     mockLoadConfig.mockResolvedValue({ knownCwds: entries });
 
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
+    const channel = makeMockChannel();
     registerHandlers({
       bot: bot as any,
       registry: makeStubRegistry(),
       factory: makeMockFactory(),
       globalModel: 'test-model',
       configPath: TEST_CONFIG_PATH,
+      channel,
     } as any);
 
-    const ctx = makeCwdCtx('list');
-    await commandHandlers.get('cwd')!(ctx);
+    const handler = getChannelHandler(channel, 'cwd')!;
+    await handler(GENERAL_CTX, 'list');
 
-    const replyText: string = ctx.reply.mock.calls[0][0];
+    const replyText: string = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1];
     expect(replyText).not.toMatch(/-\d/);
     expect(replyText).toContain('just now');
   });
@@ -440,19 +421,21 @@ describe('/cwd command group (T6 — awaiting Carter)', () => {
     mockListKnownCwds.mockReturnValue(entries);
     mockLoadConfig.mockResolvedValue({ knownCwds: entries });
 
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
+    const channel = makeMockChannel();
     registerHandlers({
       bot: bot as any,
       registry: makeStubRegistry(),
       factory: makeMockFactory(),
       globalModel: 'test-model',
       configPath: TEST_CONFIG_PATH,
+      channel,
     } as any);
 
-    const ctx = makeCwdCtx('list');
-    await commandHandlers.get('cwd')!(ctx);
+    const handler = getChannelHandler(channel, 'cwd')!;
+    await handler(GENERAL_CTX, 'list');
 
-    const replyText: string = ctx.reply.mock.calls[0][0];
+    const replyText: string = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1];
     expect(replyText).toContain('just now');
   });
 
@@ -462,27 +445,25 @@ describe('/cwd command group (T6 — awaiting Carter)', () => {
     mockListKnownCwds.mockReturnValue(entries);
     mockLoadConfig.mockResolvedValue({ knownCwds: entries });
 
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
+    const channel = makeMockChannel();
     registerHandlers({
       bot: bot as any,
       registry: makeStubRegistry(),
       factory: makeMockFactory(),
       globalModel: 'test-model',
       configPath: TEST_CONFIG_PATH,
+      channel,
     } as any);
 
-    const ctx = makeCwdCtx('list');
-    await commandHandlers.get('cwd')!(ctx);
+    const handler = getChannelHandler(channel, 'cwd')!;
+    await handler(GENERAL_CTX, 'list');
 
-    const replyText: string = ctx.reply.mock.calls[0][0];
+    const replyText: string = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1];
     expect(replyText).toContain('2d ago');
   });
 
-  // ── removing alias for an active session's cwd ───────────────────────────────
-
   it('removing alias for an active session cwd — succeeds; session itself is unaffected', async () => {
-    // The registry still has the session entry (session keeps running).
-    // The cwd registry entry simply disappears from config.
     const existingEntry = makeKnownEntry();
     mockLoadConfig.mockResolvedValue({ knownCwds: [existingEntry] });
     mockGetKnownCwdByAlias.mockReturnValue(existingEntry);
@@ -490,25 +471,26 @@ describe('/cwd command group (T6 — awaiting Carter)', () => {
 
     const sessionEntry: SessionEntry = {
       sessionName: 'active-session',
-      topicId: 99,
-      chatId: -1001234567890,
+      threadId: '99',
+      channelId: '-1001234567890',
       createdAt: NOW,
       cwd: CWD_PATH,
     };
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
+    const channel = makeMockChannel();
     registerHandlers({
       bot: bot as any,
       registry: makeStubRegistry([sessionEntry]),
       factory: makeMockFactory(),
       globalModel: 'test-model',
       configPath: TEST_CONFIG_PATH,
+      channel,
     } as any);
 
-    const ctx = makeCwdCtx(`remove ${ALIAS}`);
-    await commandHandlers.get('cwd')!(ctx);
+    const handler = getChannelHandler(channel, 'cwd')!;
+    await handler(GENERAL_CTX, `remove ${ALIAS}`);
 
-    // The remove still persists without error; the running session is untouched
     expect(mockSaveConfig).toHaveBeenCalledOnce();
-    expect(ctx.reply.mock.calls[0][0]).toMatch(/✅|removed|success/i);
+    expect((channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1]).toMatch(/✅|removed|success/i);
   });
 });

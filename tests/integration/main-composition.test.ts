@@ -1,34 +1,11 @@
 /**
  * A8 + N3 — Composition root integration harness for main().
- *
- * Verifies two branches of main() in isolation:
- *
- *   A8a — Pairing-mode early-return: when isPairingMode is true, main()
- *         calls runPairingMode() and returns without starting any servers,
- *         registries, or bridge connections.
- *
- *   A8b — Normal-mode wiring: when a chatId is known (from config-file or env),
- *         main() wires all dependencies and starts the grammY bot.
- *
- *   N3  — Config-file allowedUserIdSet end-to-end: when parseEnv() returns an
- *         allowedUserIdSet sourced from config.json (not env var), main() passes
- *         it through to AfkModeController. Complements the unit-level coverage
- *         in tests/config/env.test.ts (M5-4) which already tests the parseEnv()
- *         config-file branch in isolation.
- *
- * All external module boundaries are mocked; no real network, file I/O, or
- * process.exit. vi.hoisted() is used so mock instances are accessible inside
- * vi.mock() factory functions AND in test assertions.
  */
 
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import type { EnvConfig } from '../../src/config/env.js';
 
-// ── Hoisted mock instances ────────────────────────────────────────────────────
-// These are created before vi.mock factories run, so factories can close over them.
-
 const {
-  mockBotStart,
   mockBotStop,
   mockBridgeStart,
   mockBridgeStop,
@@ -37,8 +14,11 @@ const {
   mockRegisterHandlers,
   mockGeneratePipeAuth,
   mockCleanupPipeAuth,
+  mockChannelStart,
+  mockChannelStop,
+  mockSetMessageInterceptor,
+  mockTelegramBot,
 } = vi.hoisted(() => {
-  const mockBotStart = vi.fn<[], Promise<void>>().mockResolvedValue(undefined);
   const mockBotStop = vi.fn<[], Promise<void>>().mockResolvedValue(undefined);
   const mockBridgeStart = vi.fn<[], Promise<void>>().mockResolvedValue(undefined);
   const mockBridgeStop = vi.fn<[], Promise<void>>().mockResolvedValue(undefined);
@@ -48,12 +28,15 @@ const {
   const mockRegisterHandlers = vi.fn().mockReturnValue({ dispose: mockRelayDispose });
   const mockGeneratePipeAuth = vi.fn().mockResolvedValue({
     pipeName: 'reach-bridge-test',
-    pipePath: '\\\\.\\pipe\\reach-bridge-test',
+    pipePath: '\\.\pipe\reach-bridge-test',
     token: 'aabbcc',
   });
   const mockCleanupPipeAuth = vi.fn<[], Promise<void>>().mockResolvedValue(undefined);
+  const mockChannelStart = vi.fn<[], Promise<void>>().mockResolvedValue(undefined);
+  const mockChannelStop = vi.fn<[], Promise<void>>().mockResolvedValue(undefined);
+  const mockSetMessageInterceptor = vi.fn();
+  const mockTelegramBot = { stop: mockBotStop };
   return {
-    mockBotStart,
     mockBotStop,
     mockBridgeStart,
     mockBridgeStop,
@@ -62,17 +45,21 @@ const {
     mockRegisterHandlers,
     mockGeneratePipeAuth,
     mockCleanupPipeAuth,
+    mockChannelStart,
+    mockChannelStop,
+    mockSetMessageInterceptor,
+    mockTelegramBot,
   };
 });
 
-// ── Module mocks ──────────────────────────────────────────────────────────────
-
 vi.mock('dotenv/config', () => ({}));
-vi.mock('../../src/channel/telegram/index.js', () => ({})); // suppress side-effect registration
+vi.mock('../../src/channel/telegram/index.js', () => ({ TelegramChannel: class {} }));
 vi.mock('../../src/channel/registry.js', () => ({
   createChannel: vi.fn().mockReturnValue({
-    start: vi.fn(),
-    stop: vi.fn(),
+    bot: mockTelegramBot,
+    start: mockChannelStart,
+    stop: mockChannelStop,
+    setMessageInterceptor: mockSetMessageInterceptor,
     sendMessage: vi.fn(),
     editMessage: vi.fn(),
     splitMessage: vi.fn((text: string) => [text]),
@@ -105,13 +92,6 @@ vi.mock('../../src/bridge/extensionBridge.js', () => ({
   })),
 }));
 
-vi.mock('../../src/bot/index.js', () => ({
-  createBot: vi.fn().mockImplementation(() => ({
-    start: mockBotStart,
-    stop: mockBotStop,
-  })),
-}));
-
 vi.mock('../../src/bot/handlers.js', () => ({
   registerHandlers: mockRegisterHandlers,
 }));
@@ -140,19 +120,15 @@ vi.mock('../../src/bot/afkMode.js', () => ({
   AfkModeController: MockAfkModeController,
 }));
 
-// ── Imports (after mocks) ─────────────────────────────────────────────────────
-
 import { main } from '../../src/main.js';
+import { createChannel } from '../../src/channel/registry.js';
 import { parseEnv } from '../../src/config/env.js';
 import { runPairingMode } from '../../src/bot/pairing.js';
 import { ExtensionBridge } from '../../src/bridge/extensionBridge.js';
-import { createBot } from '../../src/bot/index.js';
 import { SessionRegistry } from '../../src/sessions/registry.js';
 import { CopilotClientImpl } from '../../src/copilot/impl.js';
 import { BridgeSessionFactory } from '../../src/bridge/bridgeSessionFactory.js';
 import { CompositeSessionFactory } from '../../src/bridge/compositeSessionFactory.js';
-
-// ── Fixture helpers ───────────────────────────────────────────────────────────
 
 function makePairingConfig(): EnvConfig {
   return {
@@ -183,37 +159,42 @@ function makeNormalConfig(overrides: { allowedUserIdSet?: ReadonlySet<number> } 
   };
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
 describe('Integration: main() composition root (A8 + N3)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    // vi.restoreAllMocks() in afterEach clears the `implementation` closure of every
-    // vi.fn() (including hoisted ones). Re-establish ALL implementations here so each
-    // test starts with a fully-functional mock graph.
-    mockBotStart.mockResolvedValue(undefined);
     mockBotStop.mockResolvedValue(undefined);
     mockBridgeStart.mockResolvedValue(undefined);
     mockBridgeStop.mockResolvedValue(undefined);
     mockRegistryLoad.mockResolvedValue(undefined);
     mockGeneratePipeAuth.mockResolvedValue({
       pipeName: 'reach-bridge-test',
-      pipePath: '\\\\.\\pipe\\reach-bridge-test',
+      pipePath: '\\.\pipe\reach-bridge-test',
       token: 'aabbcc',
     });
     mockCleanupPipeAuth.mockResolvedValue(undefined);
+    mockChannelStart.mockResolvedValue(undefined);
+    mockChannelStop.mockResolvedValue(undefined);
     MockAfkModeController.mockImplementation(() => ({}));
     mockRegisterHandlers.mockReturnValue({ dispose: vi.fn() });
-
-    // Re-establish inline mock implementations (also cleared by restoreAllMocks).
     vi.mocked(ExtensionBridge).mockImplementation(() => ({
       start: mockBridgeStart,
       stop: mockBridgeStop,
     }));
-    vi.mocked(createBot).mockImplementation(() => ({
-      start: mockBotStart,
-      stop: mockBotStop,
-    }));
+    vi.mocked(createChannel).mockReturnValue({
+      bot: mockTelegramBot,
+      start: mockChannelStart,
+      stop: mockChannelStop,
+      setMessageInterceptor: mockSetMessageInterceptor,
+      sendMessage: vi.fn(),
+      editMessage: vi.fn(),
+      splitMessage: vi.fn((text: string) => [text]),
+      formatForTransport: vi.fn((text: string) => text),
+      createThread: vi.fn(),
+      onMessage: vi.fn(),
+      onCommand: vi.fn(),
+      promptUser: vi.fn(),
+      capabilities: { supportsMessageEdit: true, supportsThreadCreation: true, supportsInteractivePrompts: true, supportsStreaming: true, maxMessageLength: 4096 },
+    } as any);
     vi.mocked(SessionRegistry).mockImplementation(() => ({
       load: mockRegistryLoad,
     }));
@@ -234,16 +215,14 @@ describe('Integration: main() composition root (A8 + N3)', () => {
     process.removeAllListeners('SIGTERM');
   });
 
-  // ── A8a: Pairing-mode early-return ──────────────────────────────────────────
-
   describe('A8a — pairing-mode early-return path', () => {
-    it('calls runPairingMode() and returns without starting the bot', async () => {
+    it('calls runPairingMode() and returns without starting the channel', async () => {
       vi.mocked(parseEnv).mockResolvedValue(makePairingConfig());
 
       await main();
 
       expect(runPairingMode).toHaveBeenCalledOnce();
-      expect(mockBotStart).not.toHaveBeenCalled();
+      expect(mockChannelStart).not.toHaveBeenCalled();
     });
 
     it('passes the resolved config to runPairingMode()', async () => {
@@ -267,10 +246,8 @@ describe('Integration: main() composition root (A8 + N3)', () => {
     });
   });
 
-  // ── A8b: Config-file env resolution (normal mode) ───────────────────────────
-
   describe('A8b — config-file env resolution (normal mode)', () => {
-    it('wires all dependencies and starts the bot when bridge is available', async () => {
+    it('wires all dependencies and starts the channel when bridge is available', async () => {
       vi.mocked(parseEnv).mockResolvedValue(makeNormalConfig());
 
       await main();
@@ -280,9 +257,9 @@ describe('Integration: main() composition root (A8 + N3)', () => {
       expect(mockBridgeStart).toHaveBeenCalledOnce();
       expect(CopilotClientImpl).toHaveBeenCalledOnce();
       expect(mockRegistryLoad).toHaveBeenCalledOnce();
-      expect(createBot).toHaveBeenCalledWith('test-token', 12345);
       expect(mockRegisterHandlers).toHaveBeenCalledOnce();
-      expect(mockBotStart).toHaveBeenCalledOnce();
+      expect(mockSetMessageInterceptor).toHaveBeenCalledOnce();
+      expect(mockChannelStart).toHaveBeenCalledOnce();
     });
 
     it('falls back to sdk-only factory and skips AfkModeController when bridge is unavailable', async () => {
@@ -291,14 +268,11 @@ describe('Integration: main() composition root (A8 + N3)', () => {
 
       await main();
 
-      // Bot still starts despite bridge failure
-      expect(mockBotStart).toHaveBeenCalledOnce();
-      // AfkModeController requires a bridge — must not be constructed
+      expect(mockChannelStart).toHaveBeenCalledOnce();
       expect(MockAfkModeController).not.toHaveBeenCalled();
+      expect(mockSetMessageInterceptor).not.toHaveBeenCalled();
     });
   });
-
-  // ── N3: Config-file allowedUserIdSet wired into AfkModeController ───────────
 
   describe('N3 — config-file allowedUserIdSet wired through main()', () => {
     it('passes config-file allowedUserIdSet to AfkModeController options (bridge available)', async () => {
@@ -308,7 +282,6 @@ describe('Integration: main() composition root (A8 + N3)', () => {
       await main();
 
       expect(MockAfkModeController).toHaveBeenCalledOnce();
-      // arg index 5 = AfkModeOptions; must contain the allowedUserIds from config
       const ctorOptions = MockAfkModeController.mock.calls[0][5] as { allowedUserIds?: ReadonlySet<number> };
       expect(ctorOptions).toMatchObject({ allowedUserIds: configAllowedIds });
     });

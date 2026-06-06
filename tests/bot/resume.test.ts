@@ -2,34 +2,23 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { registerHandlers } from '../../src/bot/handlers.js';
 import type { SessionEntry } from '../../src/types.js';
 import type { ISessionRegistry } from '../../src/sessions/registry.js';
-import type { ChannelPort } from '../../src/channel/port.js';
+import type { ChannelPort, ChannelContext, CommandHandler } from '../../src/channel/port.js';
 import { makeMockFactory } from '../mocks/sdk.js';
 
-// ─── helpers ──────────────────────────────────────────────────────────────────
-
-type HandlerFn = (ctx: any) => Promise<void>;
-
 function makeMockBot() {
-  const commandHandlers = new Map<string, HandlerFn>();
-  const onHandlers = new Map<string, HandlerFn>();
-
   const bot = {
-    command: vi.fn((name: string, handler: HandlerFn) => {
-      commandHandlers.set(name, handler);
-    }),
-    on: vi.fn((event: string, handler: HandlerFn) => {
-      onHandlers.set(event, handler);
-    }),
+    command: vi.fn(),
+    on: vi.fn(),
     catch: vi.fn(),
   };
 
-  return { bot, commandHandlers, onHandlers };
+  return { bot };
 }
 
 function makeMockChannel(): ChannelPort {
   return {
-    start: vi.fn(),
-    stop: vi.fn(),
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue({ id: '100' }),
     editMessage: vi.fn().mockResolvedValue(undefined),
     splitMessage: vi.fn((text: string) => [text]),
@@ -48,11 +37,11 @@ function makeMockChannel(): ChannelPort {
   } as unknown as ChannelPort;
 }
 
-/**
- * Stub registry extended with findByName, which Kat will add to ISessionRegistry.
- * The stub implements the same scanning logic as the planned implementation:
- * linear search over entries by sessionName.
- */
+function getChannelHandler(channel: ChannelPort, command: string): CommandHandler | undefined {
+  const calls = (channel.onCommand as ReturnType<typeof vi.fn>).mock.calls as [string, CommandHandler][];
+  return calls.find(([cmd]) => cmd === command)?.[1];
+}
+
 function makeResumeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry & { findByName: ReturnType<typeof vi.fn>; findAllByName: ReturnType<typeof vi.fn>; move: ReturnType<typeof vi.fn> } {
   const map = new Map(entries.map((e) => [e.threadId, e]));
   const nameMap = new Map(entries.map((e) => [e.sessionName, e]));
@@ -101,25 +90,9 @@ function makeResumeStubRegistry(entries: SessionEntry[] = []): ISessionRegistry 
   return registry;
 }
 
-function makeMockCtx(overrides: Record<string, unknown> = {}) {
-  return {
-    message: { message_thread_id: 10, text: '/resume my-session' },
-    match: 'my-session',
-    chat: { id: -1001234567890 },
-    reply: vi.fn().mockResolvedValue({
-      message_id: 200,
-      chat: { id: -1001234567890 },
-    }),
-    api: {
-      editMessageText: vi.fn().mockResolvedValue({ ok: true }),
-    },
-    ...overrides,
-  };
-}
+const CHANNEL_CTX: ChannelContext = { threadId: '10', channelId: '-1001234567890' };
+const NO_TOPIC_CTX: ChannelContext = { threadId: '', channelId: '-1001234567890' };
 
-// ─── shared fixtures ───────────────────────────────────────────────────────────
-
-/** A session bound to thread '99' (not the default thread '10'). */
 const REMOTE_ENTRY: SessionEntry = {
   sessionName: 'my-session',
   threadId: '99',
@@ -127,7 +100,6 @@ const REMOTE_ENTRY: SessionEntry = {
   createdAt: '2026-01-01T00:00:00.000Z',
 };
 
-/** A different session also bound to thread '99'. */
 const OTHER_ENTRY: SessionEntry = {
   sessionName: 'other-session',
   threadId: '99',
@@ -135,15 +107,12 @@ const OTHER_ENTRY: SessionEntry = {
   createdAt: '2026-01-01T00:00:00.000Z',
 };
 
-/** A session already bound to thread '10' (the "current" topic in ctx). */
 const LOCAL_ENTRY: SessionEntry = {
   sessionName: 'my-session',
   threadId: '10',
   channelId: '-1001234567890',
   createdAt: '2026-01-01T00:00:00.000Z',
 };
-
-// ─── tests ────────────────────────────────────────────────────────────────────
 
 describe('/resume command', () => {
   beforeEach(() => {
@@ -155,85 +124,80 @@ describe('/resume command', () => {
     vi.restoreAllMocks();
   });
 
-  // ── registration ──────────────────────────────────────────────────────────
-
   it('registers a /resume command handler', () => {
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry();
     const factory = makeMockFactory();
+    const channel = makeMockChannel();
 
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
-    expect(commandHandlers.has('resume')).toBe(true);
+    const registeredCommands = (channel.onCommand as ReturnType<typeof vi.fn>).mock.calls.map(([cmd]: [string]) => cmd);
+    expect(registeredCommands).toContain('resume');
   });
 
-  // ── usage / argument validation ───────────────────────────────────────────
-
   it('replies with a usage hint when no session name is provided', async () => {
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry();
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
-    const handler = commandHandlers.get('resume')!;
-    const ctx = makeMockCtx({ match: '' });
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'resume')!;
+    await handler(CHANNEL_CTX, '');
 
-    expect(ctx.reply).toHaveBeenCalledWith(
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      CHANNEL_CTX,
       expect.stringMatching(/[Uu]sage|\/resume/),
-      expect.objectContaining({ message_thread_id: 10 }),
     );
     expect(registry.register).not.toHaveBeenCalled();
   });
 
   it('replies with a usage hint when match is undefined (no args)', async () => {
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry();
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
-    const handler = commandHandlers.get('resume')!;
-    const ctx = makeMockCtx({ match: undefined });
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'resume')!;
+    await handler(CHANNEL_CTX, '');
 
     expect(registry.register).not.toHaveBeenCalled();
-    expect(ctx.reply).toHaveBeenCalled();
+    expect(channel.sendMessage).toHaveBeenCalled();
   });
 
   it('rejects when used outside a forum topic (no message_thread_id)', async () => {
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry([REMOTE_ENTRY]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
-    const handler = commandHandlers.get('resume')!;
-    const ctx = makeMockCtx({
-      message: { text: '/resume my-session' }, // no message_thread_id
-    });
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'resume')!;
+    await handler(NO_TOPIC_CTX, 'my-session');
 
     expect(registry.register).not.toHaveBeenCalled();
-    expect(ctx.reply).toHaveBeenCalledWith(
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      NO_TOPIC_CTX,
       expect.stringMatching(/forum topic|[Uu]sage|\/resume/),
     );
   });
 
-  // ── unknown session name ───────────────────────────────────────────────────
-
   it('errors when session name is not found in the registry', async () => {
-    const { bot, commandHandlers } = makeMockBot();
-    const registry = makeResumeStubRegistry([]); // empty registry
+    const { bot } = makeMockBot();
+    const registry = makeResumeStubRegistry([]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
-    const handler = commandHandlers.get('resume')!;
-    const ctx = makeMockCtx({ match: 'unknown-session' });
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'resume')!;
+    await handler(CHANNEL_CTX, 'unknown-session');
 
     expect(registry.register).not.toHaveBeenCalled();
-    expect(ctx.reply).toHaveBeenCalledWith(
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      CHANNEL_CTX,
       expect.stringContaining('unknown-session'),
-      expect.anything(),
     );
   });
 
@@ -244,54 +208,45 @@ describe('/resume command', () => {
       channelId: '-100',
       createdAt: '2026-01-01T00:00:00.000Z',
     };
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry([existing]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
-    const handler = commandHandlers.get('resume')!;
-    const ctx = makeMockCtx({ match: 'no-such-session' });
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'resume')!;
+    await handler(CHANNEL_CTX, 'no-such-session');
 
-    const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
-    // Error must tell the user HOW to find available sessions (/list hint or direct listing)
+    const replyText = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
     expect(replyText).toMatch(/\/list|available|session/i);
   });
 
-  // ── already bound here (no-op) ─────────────────────────────────────────────
-
   it('replies with "already bound here" when session is already linked to this topic', async () => {
-    // LOCAL_ENTRY: my-session is already bound to thread '10' (the current topic)
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry([LOCAL_ENTRY]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
-    const handler = commandHandlers.get('resume')!;
-    const ctx = makeMockCtx({ match: 'my-session' }); // topicId = 10
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'resume')!;
+    await handler(CHANNEL_CTX, 'my-session');
 
     expect(registry.register).not.toHaveBeenCalled();
     expect(registry.remove).not.toHaveBeenCalled();
-    // Should reply with a friendly "already bound" message (success tone, no error)
-    const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const replyText = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
     expect(replyText.toLowerCase()).toMatch(/already|bound|here/);
   });
 
-  // ── MOVE semantics: session bound to a different topic ─────────────────────
-
   it('moves session from old topic to current topic via atomic move()', async () => {
-    // REMOTE_ENTRY: my-session is bound to thread '99'; we want to move it to thread '10'
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry([REMOTE_ENTRY]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
-    const handler = commandHandlers.get('resume')!;
-    const ctx = makeMockCtx({ match: 'my-session' }); // current topic = 10
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'resume')!;
+    await handler(CHANNEL_CTX, 'my-session');
 
-    // Must use atomic move — not separate remove + register
     expect(registry.move).toHaveBeenCalledWith('99', '10');
     expect(registry.remove).not.toHaveBeenCalled();
     expect(registry.register).not.toHaveBeenCalled();
@@ -302,150 +257,133 @@ describe('/resume command', () => {
       ...REMOTE_ENTRY,
       model: 'claude-opus-4.5',
     };
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry([entryWithModel]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
-    const handler = commandHandlers.get('resume')!;
-    const ctx = makeMockCtx({ match: 'my-session' });
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'resume')!;
+    await handler(CHANNEL_CTX, 'my-session');
 
-    // move() is identity-preserving — model is carried forward from the stored entry
     expect(registry.move).toHaveBeenCalledWith('99', '10');
   });
 
   it('confirms move with a success message mentioning the old topic ID', async () => {
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry([REMOTE_ENTRY]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
-    const handler = commandHandlers.get('resume')!;
-    const ctx = makeMockCtx({ match: 'my-session' }); // moved FROM thread '99'
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'resume')!;
+    await handler(CHANNEL_CTX, 'my-session');
 
-    const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
-    // Success indicator (✅) and the session name must appear
+    const replyText = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
     expect(replyText).toContain('my-session');
-    // Old thread ID should be mentioned (user needs to know what was unbound)
     expect(replyText).toContain('99');
   });
 
-  // ── current topic already has a DIFFERENT session ─────────────────────────
-
   it('rejects move when current topic is already linked to a different session', async () => {
-    // thread '10' has "other-session"; we try to /resume "my-session" (bound at thread '99')
     const currentTopicEntry: SessionEntry = {
       sessionName: 'other-session',
       threadId: '10',
       channelId: '-1001234567890',
       createdAt: '2026-01-01T00:00:00.000Z',
     };
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry([currentTopicEntry, REMOTE_ENTRY]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
-    const handler = commandHandlers.get('resume')!;
-    const ctx = makeMockCtx({ match: 'my-session' }); // current topic 10 has other-session
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'resume')!;
+    await handler(CHANNEL_CTX, 'my-session');
 
     expect(registry.remove).not.toHaveBeenCalled();
     expect(registry.register).not.toHaveBeenCalled();
-    const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const replyText = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
     expect(replyText).toMatch(/already linked|\/remove/i);
     expect(replyText).toContain('other-session');
   });
 
-  // ── persistence triggered ──────────────────────────────────────────────────
-
   it('triggers registry persistence on a successful move (move is called once atomically)', async () => {
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry([REMOTE_ENTRY]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
-    const handler = commandHandlers.get('resume')!;
-    const ctx = makeMockCtx({ match: 'my-session' });
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'resume')!;
+    await handler(CHANNEL_CTX, 'my-session');
 
-    // Exactly one atomic move — no separate remove/register calls
     expect(registry.move).toHaveBeenCalledTimes(1);
     expect(registry.remove).not.toHaveBeenCalled();
     expect(registry.register).not.toHaveBeenCalled();
   });
 
-  // /help includes /resume ─────────────────────────────────────────────────
-
   it('/help text includes /resume', async () => {
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry();
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
-    const handler = commandHandlers.get('help')!;
-    const ctx = makeMockCtx();
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'help')!;
+    await handler(CHANNEL_CTX, '');
 
-    const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const replyText = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
     expect(replyText).toContain('/resume');
   });
 
-  // ── H-A: cache rekey after successful move ───────────────────────────────────
-
   it('calls relay.rekeySession(oldThreadId, newThreadId) after a successful move', async () => {
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry([REMOTE_ENTRY]);
     const factory = makeMockFactory();
-    const relay = registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    const relay = registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
     const rekeySpy = vi.spyOn(relay, 'rekeySession');
 
-    const handler = commandHandlers.get('resume')!;
-    const ctx = makeMockCtx({ match: 'my-session' }); // current topic = 10, session was at thread '99'
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'resume')!;
+    await handler(CHANNEL_CTX, 'my-session');
 
-    // REMOTE_ENTRY.threadId = '99', ctx topic = 10
     expect(rekeySpy).toHaveBeenCalledWith('99', '10');
   });
 
   it('does not call relay.rekeySession when move() throws', async () => {
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry([REMOTE_ENTRY]);
     registry.move.mockRejectedValueOnce(new Error('Destination topic 10 is already bound to "other"'));
     const factory = makeMockFactory();
-    const relay = registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    const relay = registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
     const rekeySpy = vi.spyOn(relay, 'rekeySession');
 
-    const handler = commandHandlers.get('resume')!;
-    const ctx = makeMockCtx({ match: 'my-session' });
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'resume')!;
+    await handler(CHANNEL_CTX, 'my-session');
 
     expect(rekeySpy).not.toHaveBeenCalled();
   });
-
-  // ── F-B: legacy duplicate names ───────────────────────────────────────────
 
   it('refuses with disambiguation list when legacy duplicates share the same name', async () => {
     const dup1: SessionEntry = { sessionName: 'my-session', threadId: '42', channelId: '-100', createdAt: '2026-01-01T00:00:00.000Z' };
     const dup2: SessionEntry = { sessionName: 'my-session', threadId: '99', channelId: '-100', createdAt: '2026-01-01T00:00:00.000Z' };
 
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry([dup1, dup2]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
-    const handler = commandHandlers.get('resume')!;
-    // ctx.message.message_thread_id = 10, distinct from both '42' and '99'
-    const ctx = makeMockCtx({ match: 'my-session' });
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'resume')!;
+    await handler(CHANNEL_CTX, 'my-session');
 
     expect(registry.move).not.toHaveBeenCalled();
     expect(registry.register).not.toHaveBeenCalled();
 
-    const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const replyText = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
     expect(replyText).toMatch(/[Mm]ultiple|duplicate/i);
     expect(replyText).toContain('my-session');
     expect(replyText).toContain('42');
@@ -456,38 +394,34 @@ describe('/resume command', () => {
     const dup1: SessionEntry = { sessionName: 'my-session', threadId: '42', channelId: '-100', createdAt: '2026-01-01T00:00:00.000Z' };
     const dup2: SessionEntry = { sessionName: 'my-session', threadId: '99', channelId: '-100', createdAt: '2026-01-01T00:00:00.000Z' };
 
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry([dup1, dup2]);
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
-    const handler = commandHandlers.get('resume')!;
-    const ctx = makeMockCtx({ match: 'my-session' });
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'resume')!;
+    await handler(CHANNEL_CTX, 'my-session');
 
-    const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const replyText = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
     expect(replyText).toContain('/remove');
     expect(replyText).not.toContain('/rename');
   });
 
-  // ── F-C: move() destination-bound error surfaced cleanly ─────────────────
-
   it('surfaces the move() destination-bound error with a clean ⚠️ message, not a generic failure', async () => {
-    const { bot, commandHandlers } = makeMockBot();
+    const { bot } = makeMockBot();
     const registry = makeResumeStubRegistry([REMOTE_ENTRY]);
-    // Simulate a concurrent bind that slips past our UX pre-check
     registry.move.mockRejectedValueOnce(
       new Error('Destination topic 10 is already bound to "other-session"'),
     );
     const factory = makeMockFactory();
-    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel: makeMockChannel() });
+    const channel = makeMockChannel();
+    registerHandlers({ bot: bot as any, registry, factory, globalModel: 'test-model', channel });
 
-    const handler = commandHandlers.get('resume')!;
-    // resolve('10') returns undefined → pre-check passes; move() then throws
-    const ctx = makeMockCtx({ match: 'my-session' });
-    await handler(ctx);
+    const handler = getChannelHandler(channel, 'resume')!;
+    await handler(CHANNEL_CTX, 'my-session');
 
-    const replyText = (ctx.reply as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    const replyText = (channel.sendMessage as ReturnType<typeof vi.fn>).mock.calls[0][1] as string;
     expect(replyText).not.toMatch(/[Ff]ailed to resume/);
     expect(replyText).toMatch(/already|linked|bound/i);
     expect(replyText).toMatch(/[Rr]emove|\/remove/);

@@ -203,10 +203,9 @@ describe('N2 — cleanupPipeAuth() removes auth file on daemon shutdown', () => 
   it('removes the auth file after generatePipeAuth writes it', async () => {
     // Write a real auth file to a temp location.
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'reach-test-'));
-    const authFilePath = path.join(tempDir, 'bridge-auth.json');
 
-    // Stub getAuthFilePath to return the temp path.
-    vi.stubEnv('LOCALAPPDATA', tempDir);
+    // Redirect getReachDataDir() (and thus getAuthFilePath()) to tempDir.
+    vi.stubEnv('REACH_DATA_DIR', tempDir);
 
     try {
       const config = await generatePipeAuth();
@@ -225,7 +224,7 @@ describe('N2 — cleanupPipeAuth() removes auth file on daemon shutdown', () => 
 
   it('cleanupPipeAuth is a no-op when auth file is already gone (ENOENT)', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'reach-test-'));
-    vi.stubEnv('LOCALAPPDATA', tempDir);
+    vi.stubEnv('REACH_DATA_DIR', tempDir);
 
     try {
       const config = await generatePipeAuth();
@@ -237,5 +236,50 @@ describe('N2 — cleanupPipeAuth() removes auth file on daemon shutdown', () => 
       vi.unstubAllEnvs();
       await fs.rm(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ─── N3: Path alignment — daemon getAuthFilePath() matches extension logic ────
+//
+// The extension replicates getReachDataDir() in standalone JS (no TS imports).
+// These tests pin the daemon's getAuthFilePath() contract so any drift between
+// src/config/config.ts and extension.mjs getAuthFilePath() is caught here.
+// See: .squad/decisions/inbox/carter-pr10-cycle14.md
+//
+// NOTE: extension.mjs getAuthFilePath() is NOT exported and cannot be unit-tested
+// directly from this TS harness — only the daemon side is asserted here.
+// The extension logic mirrors the daemon exactly (REACH_DATA_DIR override →
+// path.resolve(); fallback → os.homedir()/.reach/). Manual review required for
+// extension-side path changes.
+
+describe('N3 — getAuthFilePath() path contract (daemon ↔ extension alignment)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('default (no REACH_DATA_DIR) → ~/.reach/bridge-auth.json', () => {
+    vi.stubEnv('REACH_DATA_DIR', '');
+    const expected = path.join(os.homedir(), '.reach', 'bridge-auth.json');
+    expect(getAuthFilePath()).toBe(expected);
+  });
+
+  it('REACH_DATA_DIR set to absolute path → resolves under that directory', () => {
+    const customDir = path.join(os.tmpdir(), 'reach-custom-test');
+    vi.stubEnv('REACH_DATA_DIR', customDir);
+    const expected = path.join(path.resolve(customDir), 'bridge-auth.json');
+    expect(getAuthFilePath()).toBe(expected);
+  });
+
+  it('REACH_DATA_DIR with surrounding whitespace → trimmed before resolving', () => {
+    const customDir = path.join(os.tmpdir(), 'reach-trim-test');
+    vi.stubEnv('REACH_DATA_DIR', `  ${customDir}  `);
+    const expected = path.join(path.resolve(customDir.trim()), 'bridge-auth.json');
+    expect(getAuthFilePath()).toBe(expected);
+  });
+
+  it('REACH_DATA_DIR set to whitespace-only string → treated as unset, falls back to ~/.reach', () => {
+    vi.stubEnv('REACH_DATA_DIR', '   ');
+    const expected = path.join(os.homedir(), '.reach', 'bridge-auth.json');
+    expect(getAuthFilePath()).toBe(expected);
   });
 });

@@ -14,7 +14,10 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "service:install": "node dist/service/install.js install",
-    "service:uninstall": "node dist/service/install.js uninstall"
+    "service:uninstall": "node dist/service/install.js uninstall",
+    "install:extension": "node dist/install/copyExtension.js",
+    "init": "node dist/install/index.js",
+    "uninstall": "node dist/install/uninstall.js"
   },
   "dependencies": {
     "@github/copilot-sdk": "^0.2.2",

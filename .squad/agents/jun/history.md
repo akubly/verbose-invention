@@ -1,142 +1,145 @@
-# Jun — History
+# Jun — History (Summarized 2026-05-30 → Phase 9 complete)
 
-## Core Context
+## Identity & Role
 
-- **Project:** Reach — a TypeScript daemon bridging Telegram to GitHub Copilot CLI sessions.
-- **Role:** Test Engineer
+- **Agent:** Jun (Test Engineer, Sonnet 4.6)
+- **Project:** Reach — TypeScript daemon bridging Telegram to GitHub Copilot CLI
+- **Domain:** Test infrastructure, integration test harnesses, contract validation, anticipatory TDD
 - **Joined:** 2026-04-12
 
 ## Current Status
 
-**Phase 6 Days 3–4 complete:** Shipped 20 bridge adapter tests (BridgeSession, factory, relay-integration). Test suite: 316 passed / 4 skipped / 0 failed ✅.
+**Phase 9 COMPLETE.** Shipped 163 new tests total:
+- Item 2 tests (80): isBotCommand (66+1 todo), afkMode.slashGuard (15), handlers.slashGuard (25)
+- Item 3 tests (83): knownCwds helpers (60), /cwd commands (12), /new --cwd flag (11)
 
-**2026-05-24 Dogfooding Kickoff:** I3 drift-detection tests + I8 FakeDaemon reconciliation merged into canonical decisions. Jun's 32 vitest scenarios unblocked per Kat reconciliation.
+Suite: 720 passed / 4 skipped / 1 todo. +150 net tests (Phase 8.5 → Phase 9). All green.
 
----
+**Phase 9 Persona Review (2026-05-30):** F-8 helpers extraction completed (makeStubRegistry, makeMockBot consolidated). Anticipatory RED regression tests added (7 tests). Cycle 1 fix wave: 725→771 tests. Cycle 2 fix wave (C2-I2 stub migration): 771→783 tests. Branch user/aaron/phase9, all green, ready for merge.
 
-## Phase 5 (2026-05-01–2026-05-02) — Summary
+**Phase 8.5 COMPLETE.** Install story tests shipped (copyExtension 14, uninstall 6, index 13 = 33 new). Suite 570 passed / 4 skipped.
 
-Wrote contract-locking test suites for three features:
-- **MarkdownV2 escaping:** 22 tests (escapeMarkdownV2 contract)
-- **Message splitting:** 21 tests (splitForTelegram contract with boundary preferences, code block protection, two-pass numbering)
-- **/resume command:** 13 tests (forum topic requirement, name validation, move semantics, model carry-forward)
-
-Total: 56 new tests. All MarkdownV2 + /resume GREEN ✅. Message splitter tests RED (waiting for implementation).
-
-**Key learning:** TDD approach (write tests before implementation) locked contracts with clarity and reduced implementation ambiguity.
-
-See `history-archive.md` for full Phase 1–5 test infrastructure details.
+**Phase 8 COMPLETE.** Integration harness + config env tests (A8, N2, N3 validation). Phase 7 ADR-11 contract tests (T1–T8). Test infrastructure stabilized.
 
 ---
 
-## Phase 6 Days 1–2 (2026-05-19–2026-05-20) — Summary
+## Recent Phases Summary
 
-**Day 1:** Built `FakeDaemon.ts` and `FakeExtensionClient.ts` test doubles to support bridge testing. Passed smoke tests (296 green → all maintained).
+### Phase 9 (2026-05-30) — Anticipatory Tests + Item 3 Suite
 
-**Day 2:** Added `SessionEventMessage` to `FakeDaemon` for forward compatibility with ADR-8 canonical schema. Baseline maintained. Full details archived in `history-archive.md`.
+**Item 2 — Slash Pass-Through (80 tests):**
+- `isBotCommand.test.ts` — Guard contract (case-insensitive, @botname handling, extraction regex)
+- `afkMode.slashGuard.test.ts` — Pass-through validation
+- `handlers.slashGuard.test.ts` — Relay target changes
 
-**Key learning:** Synchronous transport in PassThrough streams requires careful timer registration order to avoid race conditions. Fake-timer scope must exclude `setImmediate` to preserve readline.
+**Item 3 — CWD Registry (83 tests):**
+- `knownCwds.test.ts` — 8 helpers (validate, list, lookup, add, remove, touch, path-compare)
+- `cwdCommand.test.ts` — /cwd group commands (list, add, remove, topic enforcement)
+- `newCwdFlag.test.ts` — Position-independent flag parser, path vs alias disambiguation
+
+**Pattern:** Mock architecture (vi.hoisted + vi.mock), fake timers for deterministic timestamps.
+
+**Key learning:** Anticipatory tests written before implementation matched Carter's code exactly on first run — no import path adjustments needed. Indicates strong design convergence.
+
+### Phase 8.5 (2026-05-29) — Install Story Tests
+
+- `copyExtension.test.ts` — 14 tests (APPDATA validation, reach/ mkdir, copy, junction mode)
+- `uninstall.test.ts` — 6 tests (removal, --wipe flag)
+- `index.test.ts` — 13 tests (orchestrator + wizard wiring)
+- `extension-protocol-drift.test.ts` — 4 regression tests (Issue #8 SDK fix)
+
+### Phase 8 (2026-05-27–2026-05-28)
+
+- `main-composition.test.ts` — 7 tests (A8 pairing-mode, N3 config guard)
+- A6-6 fleet compensation validation (Kat, Jun collab)
+
+### Phase 7 (2026-05-25) — ADR-11 Contract Tests
+
+- `afk-mode.contract.test.ts` — T1–T8 integration suite (30/31 green)
+- `FakeDaemon` + `FakeExtensionClient` extensions for ADR-11 protocol
 
 ---
 
-## Phase 6 Days 3–4 (2026-05-22) — Bridge Adapter Testing (Summary)
+## Architectural Patterns
 
-**Deliverables:**
-- `tests/helpers/FakeBridge.ts` — BridgeEmitter double with on/off tracking for cleanup assertions
-- `tests/bridge/bridgeSession.test.ts` — 10 unit tests (J1)
-- `tests/bridge/relay-with-bridge.test.ts` — 4 relay-integration tests (J2, scoped from 1 complex throttle test to 4 content+bound tests)
-- `tests/bridge/bridgeSessionFactory.test.ts` — 6 factory tests (J3)
-
-**Key learning:** `vi.useFakeTimers()` without `now` option freezes `Date.now()` at the real epoch (large number), not 0. Relay throttle fires on first chunk, blocks on subsequent chunks, fires again on completion → exactly 2 edits. Tests assuming `Date.now() = 0` were incorrect. Full details archived in `history-archive.md`.
+- **Mock setup:** vi.hoisted() → vi.mock() → imports after mocks
+- **Test double cleanup:** restoreAllMocks() pairs with full re-establishment in beforeEach (not clearAllMocks alone)
+- **Fake timers:** vi.useFakeTimers({ now: ISO-8601 }) for deterministic timestamps
+- **vi.fn() rules:** Always reset inline mocks in beforeEach if using restoreAllMocks() afterEach
 
 ---
 
-## Phase 6 Day 5 (2026-05-22) — ADR-9 Scenario Catalog & Implementation Reconciliation (Summary)
+## Phase 9 Sprint — 2026-05-30
 
-Drafted and revised ADR-9 test scenarios (29 → 32 scenarios). Key learning: timeout decision reversal requires design flip in Category 2 tests. New patterns: no-timer regression assertion, Friday-Monday durability test, per-session store isolation test. **Reconciliation:** Kat's K1–K6 implementation complete; 3 assumptions verified (AbortController injection, per-session store, named exports). Test generation unblocked. Full details archived in `history-archive.md`.
+**Sprint shipped.** All 3 Aaron dogfood feedback items addressed:
+1. Orientation message + /status command (Kat, afkMode + handlers)
+2. Slash pass-through via isBotCommand allowlist (Carter Items 2)
+3. /cwd registry + /new --cwd flag (Carter Items 3 + Kat config schema)
 
----
+**Suite:** 720 passed / 4 skipped / 1 todo. +150 net tests.
 
-Earlier learnings (Phases 1–5, Phase 6 Spike methodology) in `history-archive.md`.
-**[2026-05-24] Scribe log entry:** Test coverage audit merged into decisions. 8 high-value test scenarios identified for /afk→topic→/back flow. Blockers from protocol decisions cleared.
+**Known Phase 10 follow-up:** Cross-platform path detection in /new --cwd (Unix `/` startsWith check deferred).
 
-## Phase 7 (2026-05-24T23:19:14-07:00) — ADR-11 AFK Contract Tests
+## Phase 9 Review Wave (2026-05-30) — Test-Quality Blockers + Anticipatory Regression Tests
 
-**Deliverables:** Wrote `tests/integration/afk-mode.contract.test.ts` with T1–T8 coverage, extended `FakeDaemon` and `FakeExtensionClient` for ADR-11 protocol messages, and added `tests/helpers/afkContract.ts` for Telegram API spies, relay-target assertions, and SessionEntry fixtures.
+**Sprint:** Phase 9 review blockers (B2, I7) + helpers extraction (F-8) + anticipatory tests for B1/B3/I3+I4/I10/I11.
 
-**Protocol corrections locked into tests:** T4 is now a negative test because ADR-11 §2 makes `/back` CLI-only and not honored from Telegram. T6 now asserts immediate daemon-unreachable error with no retry/backoff timers per ADR-11 §10.
+### B2 — Fixed vacuous `/new` assertion
 
-**Verification:** `npx tsc --noEmit` GREEN. `npm run lint` GREEN. `npx vitest run tests/helpers/fakePipe.smoke.test.ts --reporter=dot` GREEN (18 passed). `npx vitest run tests/integration/ --reporter=dot` produced 30 passed / 1 failed: T4 red because Telegram `/back` is currently mirrored to CLI by the AFK controller path, while ADR-11 §2 expects it to be ignored with no relay re-target.
+`handlers.slashGuard.test.ts` had a vacuously true assertion: the ctx passed to the handler and the ctx used in `expect()` were two different objects created by separate `makeMockCtx()` calls. Fixed by capturing ctx before the handler call. **Key lesson:** always capture the exact ctx reference and assert on THAT reference.
 
-**Key learning:** Contract tests for parallel implementation work need an adapter seam over the production controller so tests can bind to live code without making production API names part of ADR. Failure-mode assertions are sharper when they distinguish protocol gaps (T1/T8) from harness/load failures.
+### I7 — extension-back-banner.test.ts rewrite (source-analysis)
 
-## 2026-05-25T06:19:14Z — Phase 7 Orchestration Complete
+Option (a) — direct import — failed: handlers are not exported, and extension.mjs has top-level side effects (reads env vars, imports SDK). Chose source-analysis (same pattern as extension-protocol-drift.test.ts): parse extension.mjs with `readFileSync`, extract function bodies via brace-balancing, assert structural properties (unconditional call in handleBackConfirmed, guarded call in handleModeChanged).
 
-**Session:** Phase 7 implementation kickoff (Carter-4 + Kat-3 + Jun-1)
+### F-8 — Helpers extraction
 
-**Outcome:** 8 test cases (T1–T8) written + extended FakeDaemon/FakeExtensionClient for ADR-11. Typecheck/lint clean; 30/31 integration green. Orchestration log: `.squad/orchestration-log/2026-05-25T06-19-14Z-jun-1.md`.
+Extracted `makeMockBot` + `makeMockCtx` → `tests/helpers/botMocks.ts` and `makeStubRegistry` → `tests/helpers/registryMocks.ts`. Key finding: `afkMode.slashGuard.test.ts` had a DIFFERENT `makeMockBot` (AfkModeController API shape, not grammY) — kept that one local; only `makeStubRegistry` was extracted from that file.
 
-**Decisions merged to `.squad/decisions.md`:** `jun-phase7-test-cases.md` — T4 negative test (Telegram /back ignore), T6 no-retry (daemon unreachable), protocol clarifications.
+### Anticipatory tests — what was pre-landed vs genuinely anticipatory
 
-**Convergence signal:** T4 red is expected; Telegram /back filter should land in Kat's daemon integration. All fixtures ready for full suite + integration tests once filter lands.
+- **I10 (validatePath warning):** Kat already shipped this in `src/config/knownCwds.ts`. Tests went GREEN immediately — confirms design convergence.
+- **B1 (isBotCommand digit fix):** 3 tests RED (expected). Current regex `/[a-z_]+/` extracts "new" from "/new123" → true (bug). Tests: `/new123`→false, `/list1`→false, `/status42`→false (all fail until Carter fixes regex). Note: "status" IS in BOT_COMMANDS currently (surprise!).
+- **B3 (prod-over-dev junction):** TC15 RED (expected). `lstatSync` mock infrastructure added to copyExtension.test.ts.
+- **I11 (redactSecrets):** 3 tests RED. Module exists at `src/bot/redactSecrets.ts` but implementation is partial — ENV-style assignments and high-entropy strings not yet redacted.
+- **I3+I4 (flag parser):** Collection error (module not found). `src/bot/newFlagParser.ts` doesn't exist yet.
 
-## Phase 8 P1 Sprint (2026-05-27T23:48:20-07:00) — A8 + N2-env-var + N3
+### Final suite state (Phase 9 review wave)
 
-**Deliverables:**
-- `tests/integration/main-composition.test.ts` — 7-test A8 + N3 integration harness for `main()`:
-  - A8a (3 tests): pairing-mode early-return — verifies `runPairingMode` is called, bot/bridge/registry never constructed
-  - A8b (2 tests): normal-mode wiring — verifies bridge + all deps wired, graceful fallback when bridge unavailable
-  - N3 (2 tests): config-file `allowedUserIdSet` end-to-end — verifies `AfkModeController` receives the set from config, and omits it when undefined
-- `tests/config/env.test.ts` — 1 new test (N2 env-var variant):
-  - `TELEGRAM_ALLOWED_USER_IDS=,` (comma-only → all tokens empty after split → fatal) — distinct from Kat's N2 guard test for `telegramAllowedUserIds: []`
+- tsc: GREEN (exit 0)
+- vitest: 7 failed (all anticipated RED) / 746 passed / 4 skipped / 1 todo
+- Failing: B1 (3) + I11 partial (3) + B3 TC15 (1). Collection error: newFlagParser.test.ts.
 
-**Harness pattern used:** `vi.hoisted()` for shared mock instances → `vi.mock()` factories reference hoisted values → imports after mocks → `beforeEach` re-establishes ALL implementations (including inline `vi.fn()` mocks). `vi.restoreAllMocks()` in `afterEach` for console spy cleanup; all re-setup handled in `beforeEach`.
+### Learnings
 
-**Key learning:** `vi.restoreAllMocks()` sets `implementation = void 0` on EVERY tracked `vi.fn()`, including pure mock functions created in `vi.mock()` factories. This silently breaks subsequent tests if any inline `vi.fn()` (e.g., `ExtensionBridge` constructor mock) is not re-established in `beforeEach`. Symptoms appear as "Cannot read properties of undefined" — the real cause is the inline constructor mock returning `{}` (no-implementation path), then the bridge's `start()` method being absent. Pattern fix: always pair `vi.restoreAllMocks()` with a full re-establishment sweep in `beforeEach`, OR switch to `vi.clearAllMocks()` only (no restore).
+1. **Source-analysis tests require brace-balancing parsers** — a simple regex won't reliably extract function bodies. The brace-counter approach from extension-protocol-drift.test.ts is the established pattern for this project.
+2. **Always verify "RED" expectations by checking what the current impl returns** — I10 tests went GREEN because Kat had already shipped. Don't assume all anticipatory tests will be red.
+3. **`process.platform` is configurable via `vi.spyOn` getter mock** — works reliably to test platform-specific code paths without actually running on that OS.
+4. **Check BOT_COMMANDS membership before writing anticipatory tests** — "status" was unexpectedly in BOT_COMMANDS, which changed which B1 tests would be red.
+5. **afkMode's `makeMockBot` is NOT the grammY bot mock** — its shape is `{api: {editMessageText, sendMessage}}` for AfkModeController. The two mocks are not interchangeable.
 
-**A8 closure status:** CLOSED. Composition-root branches verified. Phase 8 regression risk for wiring changes is now covered.
 
-**Verification:** `npx tsc --noEmit` GREEN. `npx vitest run` — 515 passed / 4 skipped / 0 failed (39 files). `npm run lint` — 0 warnings.
 
-## Learnings
+## Cycle 2 Cleanup — handlers.test.ts migration (2026-05-30)
 
-### 2026-05-28T10:00:30-07:00 — A6-6 Fleet Compensation Verdict
+**Task:** Replace local `makeStubRegistry` in `tests/bot/handlers.test.ts` with the shared helper from `tests/helpers/registryMocks.ts`.
 
-**Task:** Resolve A6-6 architect watch (compensatePartialActivation parallel close
-burst at N>15 under 429 pressure).
+**Investigation findings:**
+- Local stub was missing `upsert` (masked by `as unknown as ISessionRegistry` cast)
+- Local stub's `findByName` was a functional linear-search; no test in the file asserted on `findByName` behavior → straight migration, no need to extend shared helper with `findByName` override
+- **Craft reviewer's GOTCHA was not triggered** — no name-collision tests exist
 
-**Approach:** Created `tests/integration/afk-mode-fleet-compensation.test.ts` with
-two fleet-scale tests exercising the public AfkMode surface only. Activation is
-forced to fail at `postGeneralSummary` (called after all N topics are created),
-so compensation runs over the full fleet.
+**Behavioral gap discovered during validation:**
+- Local `remove: vi.fn(async (topicId) => map.delete(topicId))` returned `true` on success
+- Shared `remove: vi.fn()` returned `undefined` (falsy) → "removes the session and confirms" test failed
+- Fix: updated shared helper to `remove: vi.fn().mockResolvedValue(true)` as default. Tests that need falsy (e.g. "no session linked") already call `.mockResolvedValue(false)` explicitly. No other consumers were affected.
 
-**Mocking pattern:**
-- `sendMessage` mock: throw when `options?.parse_mode === 'MarkdownV2'` (unique
-  to the general summary call). Per-topic messages use `message_thread_id`
-  instead and are not affected.
-- `closeForumTopic` 429 mock: pre-calculate target topic IDs from the mock's
-  deterministic `nextTopicId` counter (starts at 9001, increments per call). Use
-  `Object.assign(new Error(), { error_code: 429, parameters: { retry_after: 1 } })`
-  to match the `retryAfterMs()` detection shape.
-- `delay: async () => undefined` (no-op) so `withRateLimitRetry` retries complete
-  as microtasks without real clock advancement.
-- `vi.useFakeTimers` prevents the `COMPENSATION_TIMEOUT_MS` race timer from
-  firing; `vi.getTimerCount() === FLEET_SIZE` after compensation confirms all
-  closes completed before the 7 s cap.
+**Cast situation:** `as unknown as ISessionRegistry` lives inside the shared helper's implementation — consumers always receive `ISessionRegistry` from the function signature. No consumer-visible casts were introduced.
 
-**Key flush insight:** With `vi.useFakeTimers` and a no-op `delay`, the entire
-activation + compensation chain (including all N topic creates, sends, and closes)
-completes in the microtask drain that happens BEFORE the `setImmediate` in
-`handleAfkRequest`. A single `drainAsync()` (or even just the `await
-driver.handleAfkRequest(...)` call itself) is sufficient.
+**Learnings:**
+1. **Check all vi.fn() return values, not just types** — a no-op `vi.fn()` returning `undefined` is behaviorally different from a stub that returns `true` even when the TS interface says `Promise<boolean>`. Type check passes; runtime test fails.
+2. **Successful-default principle for stubs** — mutating stubs (`remove`, `register`, etc.) should default to "success" semantics (`mockResolvedValue(true)`) so that "happy path" tests require no extra setup. Override to failure only when the test specifically exercises the failure branch.
+3. **Review all test assertions before assuming straight migration** — even when no test directly calls `expect(registry.findByName)`, a mock's side-effects (return value) can still flow through the SUT and affect other assertions.
 
-**Verdict:** ✅ CLOSED — safe at N=20+. `COMPENSATION_TIMEOUT_MS = 7 s` caps
-per-close wall time (so `Promise.all` wall clock = MAX not SUM), `MAX_RETRIES = 4`
-prevents infinite thrash. All 20 topics close cleanly with or without 429 pressure.
-
-**Files produced:**
-- `tests/integration/afk-mode-fleet-compensation.test.ts` — TC-A6-6-1, TC-A6-6-2
-- `.squad/decisions/inbox/jun-a66-verdict.md` — verdict + evidence
-- `.squad/skills/fleet-simulation/SKILL.md` — reusable fleet-simulation pattern
-- `.squad/decisions/inbox/phase-8-backlog.md` — A6-6 updated to RESOLVED
+Phases 1–6, Phase 7 detailed learnings, Phase 8 P1 analysis → `history-archive.md`.
 

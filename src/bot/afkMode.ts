@@ -3,16 +3,25 @@ import type { ISessionRegistry } from '../sessions/registry.js';
 import { ERROR_CODES, type BridgeSessionInfo, type ModeState, type RegistrationExtras } from '../bridge/protocol.js';
 import type { AfkBridgePort } from './afkBridgePort.js';
 import { AfkStreamRouter } from './afkStreamRouter.js';
+import { isBotCommand } from './commands.js';
+import { redactSecrets } from './redactSecrets.js';
+
+/** Maximum stored length for lastAssistantExcerpt; matches the wire-protocol truncation documented in AfkRequestMessage. */
+const MAX_EXCERPT_LENGTH = 500;
 
 export interface TopicBinding extends BridgeSessionInfo {
   topicId: number;
   topicUrl: string;
+  /** True once the orientation message has been sent for this AFK cycle. */
+  orientationSent?: boolean;
 }
 
 
 export interface AfkModeOptions {
   allowedUserIds?: ReadonlySet<number>;
   allowTelegramInput?: boolean;
+  /** Global model fallback for orientation messages. Shown when a session has no per-session model. */
+  globalModel?: string;
 }
 
 export interface AfkModeControllerDeps {
@@ -93,6 +102,8 @@ export class AfkModeController {
   /** Deduplication gate: sessionId → in-flight ensureTopic promise. Prevents concurrent calls
    *  from creating multiple topics for the same session (B7-1 sub-claim A). */
   private readonly pendingTopicEnsures = new Map<string, Promise<TopicBinding>>();
+  /** Last known assistant message excerpt per session, populated from afk.request payloads. */
+  private readonly lastKnownExcerpts = new Map<string, string>();
 
   constructor(
     private readonly bot: Bot<Context>,
@@ -108,7 +119,19 @@ export class AfkModeController {
       bot: this.bot,
       chatId: this.chatId,
     });
-    this.bridge.on('afk.request', (sessionId) => {
+    this.bridge.on('afk.request', (sessionId, lastAssistantExcerpt) => {
+      // Always reflect the current snapshot: set when present and non-empty, delete when absent
+      // or empty. An omitted/empty excerpt means "no assistant turn yet at this activation" —
+      // keeping a stale value from a prior activation would show outdated context in /status.
+      // Empty string is treated the same as absent because redaction can produce ''.
+      if (lastAssistantExcerpt !== undefined && lastAssistantExcerpt !== '') {
+        const bounded = lastAssistantExcerpt.length > MAX_EXCERPT_LENGTH
+          ? lastAssistantExcerpt.slice(0, MAX_EXCERPT_LENGTH - 1) + '…'
+          : lastAssistantExcerpt;
+        this.lastKnownExcerpts.set(sessionId, bounded);
+      } else {
+        this.lastKnownExcerpts.delete(sessionId);
+      }
       this.activate(sessionId).catch((err) => { console.error('[afk] activate failed (session %s):', sessionId, errorText(err)); });
     });
     this.bridge.on('back.request', (sessionId) => {
@@ -148,7 +171,7 @@ export class AfkModeController {
     const topicId = ctx.message?.message_thread_id;
     const text = ctx.message?.text;
     if (!topicId || !text) return false;
-    if (text.startsWith('/')) return false;
+    if (isBotCommand(text)) return false;
 
     const sessionId = this.topicSessions.get(topicId);
     if (!sessionId) return false;
@@ -221,6 +244,9 @@ export class AfkModeController {
       if (info && !this.sessionTopics.has(requestingSessionId)) {
         const binding = await this.ensureTopic(info);
         this.sendAfkActivated(binding);
+        if (!binding.orientationSent) {
+          await this.sendOrientationMessage(binding);
+        }
       }
       return;
     }
@@ -281,10 +307,9 @@ export class AfkModeController {
       const binding = await this.ensureTopic(session);
       this.sendAfkActivated(binding);
       notified.push({ sessionId: binding.sessionId, topicId: binding.topicId });
-      await this.safeSendMessage(
-        `📡 AFK mode active. Telegram mirror ready for ${binding.sessionName} (${binding.sessionId}).`,
-        binding.topicId,
-      );
+      if (!binding.orientationSent) {
+        await this.sendOrientationMessage(binding);
+      }
     }
 
     await this.postGeneralSummary();
@@ -394,6 +419,7 @@ export class AfkModeController {
     this.streamRouter.reset();
     this.mirrorRates.clear();
     this.globalMirrorRate = { windowStartMs: 0, count: 0 };
+    this.lastKnownExcerpts.clear();
 
     for (const session of this.bridge.listSessions()) {
       this.bridge.sendToSession(session.sessionId, { type: 'back.confirmed', sessionId: session.sessionId });
@@ -514,6 +540,67 @@ export class AfkModeController {
       topicId: binding.topicId,
       topicUrl: binding.topicUrl,
     });
+  }
+
+  /** Build the orientation message text for a session topic. Plain text — no parse_mode. */
+  private formatOrientationMessage(binding: TopicBinding): string {
+    const entry = this.resolveBindingEntry(binding);
+    const model = entry?.model ?? this.options.globalModel ?? 'unknown';
+    const since = (this.mode.since?.slice(11, 16) ?? '??:??') + ' UTC';
+    const lines = [
+      '📍 Session active',
+      '━━━━━━━━━━━━━━━━━━',
+      `🆔 ${binding.sessionId}`,
+      `📂 ${binding.cwd}`,
+      `🤖 ${model}`,
+      `🎚️ Mode: AFK (since ${since})`,
+    ];
+    const rawExcerpt = this.lastKnownExcerpts.get(binding.sessionId);
+    if (rawExcerpt) {
+      const excerpt = redactSecrets(rawExcerpt);
+      lines.push('');
+      lines.push(`💬 Last from ${model}:`);
+      lines.push(`> ${excerpt}`);
+    }
+    return lines.join('\n');
+  }
+
+  /** Send orientation message to the topic and mark the binding as oriented. */
+  private async sendOrientationMessage(binding: TopicBinding): Promise<void> {
+    // Set the flag BEFORE awaiting so that a second concurrent call that
+    // passes the !binding.orientationSent check before this resolves will
+    // see the flag and skip sending. We keep orientationSent=true even on
+    // send failure — a persistent error should not cause spam on retry.
+    binding.orientationSent = true;
+    await this.safeSendMessage(this.formatOrientationMessage(binding), binding.topicId);
+  }
+
+  /**
+   * Handle the /status bot command in a session topic.
+   * Sends the current orientation message regardless of whether one has been sent before.
+   * Only works inside AFK-active session topics.
+   */
+  async handleStatusCommand(ctx: Context): Promise<void> {
+    const topicId = ctx.message?.message_thread_id;
+    if (!topicId) {
+      await ctx.reply('⚠️ /status must be used inside a session topic.');
+      return;
+    }
+    if (!this.mode.active) {
+      await ctx.reply('ℹ️ AFK mode is not active.', { message_thread_id: topicId });
+      return;
+    }
+    const sessionId = this.topicSessions.get(topicId);
+    if (!sessionId) {
+      await ctx.reply('⚠️ No AFK session is bound to this topic.', { message_thread_id: topicId });
+      return;
+    }
+    const binding = this.sessionTopics.get(sessionId);
+    if (!binding) {
+      await ctx.reply('⚠️ Session binding not found.', { message_thread_id: topicId });
+      return;
+    }
+    await this.safeSendMessage(this.formatOrientationMessage(binding), topicId);
   }
 
   private async postGeneralSummary(): Promise<void> {

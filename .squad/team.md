@@ -12,7 +12,7 @@
 
 | Name | Role | Charter | Status |
 |------|------|---------|--------|
-| Noble Six | Lead | `.squad/agents/noble six/charter.md` | ✅ Active |
+| Noble Six | Lead | `.squad/agents/noble-six/charter.md` | ✅ Active |
 | Carter | Bridge Dev | `.squad/agents/carter/charter.md` | ✅ Active |
 | Kat | Bot Dev | `.squad/agents/kat/charter.md` | ✅ Active |
 | Jun | Tester | `.squad/agents/jun/charter.md` | ✅ Active |

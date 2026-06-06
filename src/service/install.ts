@@ -323,29 +323,80 @@ export async function install(): Promise<void> {
   svc.install();
 }
 
-export function uninstall(): void {
-  const svc = createService();
+const UNINSTALL_TIMEOUT_MS = 60_000;
 
-  svc.on('uninstall', () => {
-    console.log('[reach] Service uninstalled successfully.');
-    process.exit(0);
-  });
+/**
+ * Composable Promise-based service uninstaller.
+ *
+ * Wraps the node-windows event-emitter in a Promise so the caller can await
+ * the result and accumulate it into a step-summary before deciding on a final
+ * exit code. Uses a `settled` guard to handle duplicate event fires and a
+ * 60-second timeout so the orchestrator is never left hanging.
+ *
+ * Does NOT call process.exit(). The caller is responsible for exit codes.
+ */
+export function uninstallService(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const svc = createService();
+    let settled = false;
 
-  svc.on('alreadyuninstalled', () => {
-    console.log('[reach] Service is not installed. Nothing to uninstall.');
-    process.exit(0);
-  });
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(new Error(`Service uninstall timed out after ${UNINSTALL_TIMEOUT_MS / 1000} s — uninstall event never fired`));
+    }, UNINSTALL_TIMEOUT_MS);
 
-  svc.on('error', (err: Error) => {
-    console.error('[reach] Service uninstallation error:', err.message);
-    if (err.message.includes('Permission')) {
-      console.error('[reach] HINT: Run this command as Administrator (elevated privileges required).');
+    const finish = (err?: Error) => {
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolve();
+    };
+
+    svc.on('uninstall', () => {
+      if (settled) return;
+      settled = true;
+      console.log('[reach] Service uninstalled successfully.');
+      finish();
+    });
+
+    svc.on('alreadyuninstalled', () => {
+      if (settled) return;
+      settled = true;
+      console.log('[reach] Service is not installed. Nothing to uninstall.');
+      finish();
+    });
+
+    svc.on('error', (err: Error) => {
+      if (settled) return;
+      settled = true;
+      console.error('[reach] Service uninstallation error:', err.message);
+      if (err.message.includes('Permission')) {
+        console.error('[reach] HINT: Run this command as Administrator (elevated privileges required).');
+      }
+      finish(err);
+    });
+
+    console.log('[reach] Uninstalling Reach Windows Service...');
+    try {
+      svc.uninstall();
+    } catch (err) {
+      if (!settled) {
+        settled = true;
+        finish(err instanceof Error ? err : new Error(String(err)));
+      }
     }
-    process.exit(1);
   });
+}
 
-  console.log('[reach] Uninstalling Reach Windows Service...');
-  svc.uninstall();
+/** CLI shim — calls uninstallService() and exits with the appropriate code. */
+export function uninstall(): void {
+  uninstallService()
+    .then(() => { process.exit(0); })
+    .catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[reach] Service uninstall failed: ${msg}`);
+      process.exit(1);
+    });
 }
 
 export async function main(): Promise<void> {
@@ -360,7 +411,14 @@ export async function main(): Promise<void> {
   if (command === 'install') {
     await install();
   } else if (command === 'uninstall') {
-    uninstall();
+    try {
+      await uninstallService();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[reach] Service uninstall failed: ${msg}`);
+      process.exit(1);
+    }
+    process.exit(0);
   }
 }
 

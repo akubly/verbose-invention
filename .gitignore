@@ -16,3 +16,7 @@ build/
 .squad/sessions/
 # Squad: SubSquad activation file (local to this machine)
 .squad-workstream
+
+# Test debris from MemoryAfkRegistry tests
+.registry-test-*
+

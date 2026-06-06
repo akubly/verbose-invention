@@ -15,148 +15,189 @@ Reach runs as a Windows daemon that connects Telegram ↔ GitHub Copilot CLI. Ea
 - **Telegram supergroup with forum topics enabled** — Create a supergroup, enable Topics (in group settings), add your bot as admin
 - **GitHub Copilot CLI access** — Requires an active GitHub Copilot subscription with access to `@github/copilot-sdk`
 
-## Setup
-
-### 1. Clone the repository
+## Quick Start
 
 ```powershell
 git clone https://github.com/akubly/verbose-invention.git
 cd verbose-invention
-```
-
-### 2. Install dependencies
-
-```powershell
 npm install
-```
-
-### 3. Create `.env` file
-
-Create a `.env` file in the project root with the following variables:
-
-```env
-# Required
-TELEGRAM_BOT_TOKEN=<your bot token from @BotFather>
-
-# Optional — provide chat ID here, or use /pair <code> at runtime
-TELEGRAM_CHAT_ID=<your supergroup chat ID>
-
-# Optional
-REACH_MODEL=claude-sonnet-4
-IDLE_TIMEOUT_MS=300000
-```
-
-**How to set your chat ID (choose one):**
-
-- **Environment variable** — Set `TELEGRAM_CHAT_ID` in `.env`. To find the ID, forward any message from your supergroup to [@userinfobot](https://t.me/userinfobot); it replies with a negative number like `-1001234567890`.
-- **Config file** — Reach also reads the chat ID from its persistent `config.json` (written automatically after pairing).
-- **Pairing mode** — If neither env var nor config file contains a chat ID, Reach starts in pairing mode. Send `/pair <code>` from your supergroup to link it. The chat ID is saved to `config.json` for future runs.
-
-### 4. Build
-
-```powershell
 npm run build
+npm run init
 ```
 
-### 5. Run
+The `npm run init` command orchestrates the full setup: configuration wizard → extension install → Windows Service install. It requires your TELEGRAM_BOT_TOKEN and prompts for other credentials if needed.
 
-**Foreground (for testing):**
+## Installation
+
+### What `npm run init` Does
+
+1. **Config wizard** — Checks for required environment variables. Prompts for `TELEGRAM_BOT_TOKEN` if missing; recommends `TELEGRAM_ALLOWED_USER_IDS` to restrict access and `TELEGRAM_CHAT_ID` for direct linking.
+2. **Extension install** — Copies `extension.mjs` to `%APPDATA%\GitHub Copilot\User\extensions\reach\` so the Copilot CLI can load the Reach extension.
+3. **Service install** — Registers Reach as a Windows Service under your user account. Prompts for your Windows password once (required for service registration; not stored by Reach).
+4. **Next steps** — Prints instructions for configuring Telegram and creating your first session.
+
+### Configuration
+
+**Required:**
+
+- `TELEGRAM_BOT_TOKEN` — Bot token from [@BotFather](https://t.me/BotFather)
+
+**Strongly Recommended:**
+
+- `TELEGRAM_ALLOWED_USER_IDS` — Your Telegram numeric user ID (restricts who can control the daemon). Find it by messaging [@userinfobot](https://t.me/userinfobot) in Telegram; it replies with your ID. **If not set, ANY user in the configured Telegram chat can control the daemon.** Set this to your own numeric user ID to restrict access.
+
+**Optional:**
+
+- `TELEGRAM_CHAT_ID` — Your supergroup chat ID (e.g., `-1001234567890`). If not set, Reach starts in pairing mode — send `/pair <code>` from your supergroup to link it.
+- `REACH_MODEL` — Default Copilot model for new sessions (default: `claude-sonnet-4`)
+- `IDLE_TIMEOUT_MS` — In-memory session eviction timeout in ms (default: `300000` / 5 min)
+- `REACH_PERMISSION_POLICY` — Tool approval policy (default: `approveAll`). Options: `approveAll` (daemon acts without approval — suitable for AFK usage), `denyAll` (daemon refuses tool use), or `interactiveDestructive` (daemon prompts for approval on destructive tools). Note: when `approveAll` is active, Telegram mirror input is blocked for safety.
+
+The config wizard will write required variables to `.env` on first run. You can edit `.env` anytime to adjust settings.
+
+**Data directory location:**
+
+Reach stores daemon state (configuration, session registry, bridge auth) under `~/.reach/` by default. Set `REACH_DATA_DIR` to override this location (for corporate environments with redirected home directories, or when you want state on a different drive).
+
+### Windows Service Details
+
+Reach runs as a Windows Service under your user account.
+
+- **Service name:** Reach
+- **Auto-restart:** Enabled (restarts on crash)
+- **Event logging:** Logs to Windows Event Viewer
+- **State preservation:** Reach stores all daemon state under `~/.reach/` (resolves to `C:\Users\<you>\.reach\` on Windows). This directory contains `config.json` (settings, known cwds), `registry.json` (session history), and `bridge-auth.json` (regenerated each daemon start).
+
+At startup, the daemon creates a randomized named pipe and writes auth credentials to `~/.reach/bridge-auth.json` (user-only ACL).
+
+## Using Reach
+
+### Telegram Commands
+
+**Session management:**
+
+- `/new <name> [--model <model>] [--cwd <alias-or-path>]` — Create a session in this topic. Optionally specify a Copilot model or working directory alias.
+- `/list` — Show all active sessions with their topic IDs and models.
+- `/resume <session-name>` — Resume a named session by re-linking it to the current topic.
+- `/remove` — Unlink this topic from its session. Session history persists.
+
+**CWD registry (General Topic only):**
+
+- `/cwd list` — Show all known directory aliases with last-used times.
+- `/cwd add <alias> <path>` — Register a directory alias (e.g., `/cwd add myrepo C:\src\myrepo`).
+- `/cwd remove <alias>` — Remove an alias.
+
+**Other:**
+
+- `/status` — Show session orientation (session ID, CWD, model, AFK mode start time, and last assistant message excerpt).
+- `/help` — List all bot commands.
+- `/pair <code>` — Pair Reach to a Telegram supergroup (used during setup if `TELEGRAM_CHAT_ID` is not configured).
+
+### CLI Commands Pass-Through
+
+Any command not in the list above is forwarded verbatim to your Copilot CLI session. This includes core CLI commands like `/clear`, `/agent`, `/model`, `/exit`, and any extensions you've installed in the Copilot CLI. Same UX as typing in the terminal.
+
+### Orientation Message
+
+When you first activate AFK mode in a topic (or after restarting the Reach daemon), an orientation message is sent once per session:
+
+```
+📍 Session active
+━━━━━━━━━━━━━━━━━━
+🆔 my-session
+📂 C:\src\myproject
+🤖 claude-sonnet-4
+🎚️ Mode: AFK (since 14:23 UTC)
+
+💬 Last from claude-sonnet-4:
+> Here's the implementation for the config parser. I added validation for the schema fields and included unit tests in tests/config/...
+```
+
+Use `/status` to refresh this manually. The last assistant message excerpt is cached from the most recent CLI response, truncated to 500 characters.
+
+### Getting Started: CWD Registry Example
+
+```
+/cwd add myrepo C:\src\myrepo
+/cwd add scratch D:\scratch
+/cwd list
+/new my-session --cwd myrepo
+```
+
+### Platform Note
+
+Path arguments accept Windows-style absolute paths (e.g., `C:\path`). UNC paths (`\\server\share`) are not currently supported and will be rejected with an error.
+
+## Development Workflow
+
+**Fast extension iteration:**
+
+Set `NODE_ENV=development` when installing the extension. Instead of copying, it creates a junction (Windows directory link) so your `extension.mjs` edits apply immediately without re-running the installer.
 
 ```powershell
-npm start
+$env:NODE_ENV='development'
+npm run install:extension
 ```
 
-**Windows Service (recommended):**
+Then edit `extension.mjs` and restart the Copilot CLI to pick up changes.
 
-Install and start as a Windows Service (requires admin):
+**Manual extension reinstall:**
 
 ```powershell
-npm run service:install
+npm run install:extension
 ```
 
-The service auto-restarts on failure and runs in the background. To uninstall:
+This re-copies the extension without running the full setup wizard or service install.
+
+## Upgrading
+
+Pull the latest changes and rebuild:
 
 ```powershell
-npm run service:uninstall
+git pull
+npm run build
+npm run install:extension
 ```
 
-## Usage
+Or to re-run the full setup (e.g., to update configuration):
 
-### Create a session
-
-1. Open your Telegram supergroup
-2. Create a new forum topic (any name)
-3. In the topic, send: `/new my-session`
-4. Start chatting — all messages are relayed to your Copilot session
-
-**With a specific model:**
-
-```
-/new my-session --model claude-opus-4.5
+```powershell
+npm run init
 ```
 
-Available models: `claude-sonnet-4`, `claude-opus-4.5`, `claude-haiku-4`, etc. (any model supported by Copilot CLI). If `--model` is not specified, uses the `REACH_MODEL` environment variable (default: `claude-sonnet-4`).
+## Uninstall
 
-### List sessions
+**Preserve state (default):**
 
-```
-/list
-```
-
-Shows all active sessions with their topic IDs and models.
-
-### Remove a session
-
-In the topic you want to unlink:
-
-```
-/remove
+```powershell
+npm run uninstall
 ```
 
-This unlinks the session from the topic. The Copilot session history persists (you can resume it later with `/new <same-name>`).
+Removes the Windows Service and extension. Your configuration and session registry remain in `~/.reach/` so you can reinstall later without reconfiguring.
 
-### Help
+**Full reset:**
 
+```powershell
+npm run uninstall -- --wipe
 ```
-/help
-```
+
+`npm run uninstall -- --wipe` also removes `~/.reach/`, deleting all configuration, session history, and bridge auth. Without `--wipe`, only the extension and Windows service are removed; daemon state survives.
+
+## Platform Support
+
+**Windows-only for Phase 8.5–9.** Cross-platform support (macOS launchd, Linux systemd) is planned for a future release.
 
 ## Environment Variables
 
 | Variable | Required | Description | Default |
 |----------|----------|-------------|---------|
 | `TELEGRAM_BOT_TOKEN` | Yes | Bot token from @BotFather | — |
+| `TELEGRAM_ALLOWED_USER_IDS` | No | Comma-separated Telegram user IDs allowed to control the daemon (e.g., `123456789,987654321`). If not set, any user in the configured chat can control the daemon. Find your ID by messaging @userinfobot in Telegram. | — |
 | `TELEGRAM_CHAT_ID` | No | Supergroup chat ID (numeric, e.g. `-1001234567890`). Resolved in order: env var → `config.json` → pairing mode (`/pair <code>`) | — |
 | `REACH_MODEL` | No | Default Copilot model for new sessions | `claude-sonnet-4` |
 | `IDLE_TIMEOUT_MS` | No | In-memory session eviction timeout (ms) | `300000` (5 min) |
-| `REACH_PERMISSION_POLICY` | No | Tool approval policy: `approveAll` (default), `denyAll`, or `interactiveDestructive` (prompt for coarse-grained destructive tools) | `approveAll` |
-
-## Windows Service
-
-The service installer uses `node-windows` to register Reach as a native Windows Service.
-
-- **Service name:** Reach
-- **Logon account:** Your currently logged-in Windows user account (ADR-5)
-- **Auto-restart:** Enabled (restarts automatically on crash)
-- **Event logging:** Logs to Windows Event Viewer
-
-At install time, the installer resolves your username automatically (`os.userInfo()`) and prompts for your Windows account password once. The password is passed directly to the Windows Service Control Manager and is not stored by Reach.
-
-> **Note:** The daemon runs as a Windows Service under your user account — services run independently of interactive sessions, so it keeps running across logoff and persists until the machine shuts down or you uninstall it. At startup the daemon creates a randomized named pipe (`reach-bridge-<suffix>`) and writes the pipe path and an access token to `%LOCALAPPDATA%\reach\bridge-auth.json` (user-only ACL). The extension reads that file on every connect attempt.
-
-**Install:**
-
-```powershell
-npm run service:install
-```
-
-**Uninstall:**
-
-```powershell
-npm run service:uninstall
-```
-
-Both commands require administrator privileges (run PowerShell as admin).
+| `REACH_PERMISSION_POLICY` | No | Tool approval policy: `approveAll` (daemon acts without approval — AFK-safe), `denyAll` (refuses tool use), or `interactiveDestructive` (prompts for destructive tools). When `approveAll` is active, Telegram mirror input is blocked for safety. | `approveAll` |
+| `REACH_DATA_DIR` | No | Override the default state directory (normally `~/.reach/`). Useful for corporate machines with redirected home directories. | — |
 
 ## Development
 

@@ -71,7 +71,7 @@ let savedIsTTY: boolean | undefined;
 
 // ─── Import the REAL module under test ───────────────────────────────────────
 
-import { install, uninstall, createService, main, promptPassword } from '../../src/service/install.js';
+import { install, uninstall, uninstallService, createService, main, promptPassword } from '../../src/service/install.js';
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -389,6 +389,94 @@ describe('Service installer', () => {
       expect(constructedConfig).toBeDefined();
       expect(constructedConfig!.name).toBe('Reach');
     });
+
+    it('SH1 logs error and exits 1 when uninstallService rejects', async () => {
+      mockSvcUninstall.mockImplementation(() => { throw new Error('connection timed out'); });
+      // One-shot non-throwing exit so the .catch() callback completes without
+      // creating an unhandled rejection in the fire-and-forget promise chain.
+      mockExit.mockImplementationOnce(() => { return undefined as never; });
+
+      uninstall();
+      // Flush the microtask queue so the .catch() callback executes.
+      await new Promise<void>(resolve => setTimeout(resolve, 0));
+
+      expect(mockConsoleError).toHaveBeenCalledWith(
+        expect.stringContaining('Service uninstall failed: connection timed out'),
+      );
+      expect(mockExit).toHaveBeenCalledWith(1);
+    });
+  });
+
+  // ── uninstallService() ────────────────────────────────────────────────────
+
+  describe('uninstallService()', () => {
+    afterEach(() => {
+      // Reset throw implementations so they don't leak into subsequent tests
+      // (outer beforeEach only calls clearAllMocks, which preserves implementations).
+      mockSvcUninstall.mockReset();
+    });
+
+    it('SU1 sync throw: rejects with the thrown error', async () => {
+      const boom = new Error('node-windows: unsupported platform');
+      mockSvcUninstall.mockImplementation(() => { throw boom; });
+
+      await expect(uninstallService()).rejects.toThrow('node-windows: unsupported platform');
+    });
+
+    it('SU2 sync throw: clears the 60s timeout on rejection', async () => {
+      const clearTimeoutSpy = vi.spyOn(global, 'clearTimeout');
+      mockSvcUninstall.mockImplementation(() => { throw new Error('sync fail'); });
+
+      await expect(uninstallService()).rejects.toThrow('sync fail');
+      expect(clearTimeoutSpy).toHaveBeenCalled();
+      clearTimeoutSpy.mockRestore();
+    });
+
+    it('SU4 timeout: rejects with message that does NOT contain [reach] prefix', async () => {
+      // Use fake timers so we can advance time without waiting 60 seconds.
+      vi.useFakeTimers();
+      // svc.uninstall() completes synchronously but the 'uninstall' event never fires.
+      mockSvcUninstall.mockImplementation(() => { /* no event fired */ });
+
+      const p = uninstallService();
+      vi.advanceTimersByTime(60_001);
+      const err = await p.catch((e: Error) => e);
+
+      vi.useRealTimers();
+
+      expect(err).toBeInstanceOf(Error);
+      expect(err.message).not.toContain('[reach]');
+      expect(err.message).toContain('timed out');
+    });
+
+    it('SU5 timeout: call-site logger adds exactly one [reach] prefix', async () => {
+      vi.useFakeTimers();
+      mockSvcUninstall.mockImplementation(() => { /* no event fired */ });
+
+      const p = uninstallService();
+      vi.advanceTimersByTime(60_001);
+      const err = await p.catch((e: Error) => e);
+
+      vi.useRealTimers();
+
+      // Simulate what uninstall() / main() do when they catch the error
+      const logLine = `[reach] Service uninstall failed: ${err.message}`;
+      const matches = (logLine.match(/\[reach\]/g) ?? []).length;
+      expect(matches).toBe(1);
+    });
+
+    it('SU3 sync throw: settled guard prevents double-resolution if async event also fires', async () => {
+      const syncErr = new Error('sync fail');
+      mockSvcUninstall.mockImplementation(() => { throw syncErr; });
+
+      const p = uninstallService();
+      // Fire the error handler as node-windows might do asynchronously
+      const errorHandler = eventHandlers.get('error');
+      errorHandler?.(new Error('async error that should be ignored'));
+
+      // Only the sync error wins; no second rejection
+      await expect(p).rejects.toThrow('sync fail');
+    });
   });
 
   // ── createService() ───────────────────────────────────────────────────────
@@ -509,6 +597,18 @@ describe('Service installer', () => {
       main();
 
       expect(mockSvcUninstall).toHaveBeenCalledOnce();
+    });
+
+    it('M-U1 uninstall: logs error and exits 1 when uninstallService rejects', async () => {
+      process.argv = ['node', 'install.js', 'uninstall'];
+      mockSvcUninstall.mockImplementation(() => { throw new Error('access denied'); });
+
+      await expect(main()).rejects.toThrow('process.exit(1)');
+
+      expect(mockConsoleError).toHaveBeenCalledWith(
+        expect.stringContaining('Service uninstall failed: access denied'),
+      );
+      expect(mockExit).toHaveBeenCalledWith(1);
     });
   });
 });

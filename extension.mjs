@@ -61,7 +61,7 @@ import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, basename, resolve } from 'node:path';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -138,12 +138,17 @@ const SESSION_ID = process.env['SESSION_ID'] ?? '';
 
 /**
  * Human-readable session name. Read from SESSION_NAME env var if set by the CLI;
- * fall back to SESSION_ID so the field is always a non-empty string (ADR-8 §3).
+ * fall back to the working-directory basename so the topic title is meaningful
+ * even when the CLI does not export SESSION_NAME. SESSION_ID is the last resort
+ * so the field is always a non-empty string (ADR-8 §3).
  */
-const SESSION_NAME = process.env['SESSION_NAME'] || SESSION_ID;
+const SESSION_NAME = process.env['SESSION_NAME'] || basename(process.cwd()) || SESSION_ID;
 
 /** Copilot SDK session handle (set on first successful joinSession). */
 let sdkSession = null;
+
+/** Serializes streamSdkResponse calls to prevent listener cross-wiring on sdkSession. */
+let streamQueue = Promise.resolve();
 
 /** Current pipe socket. null when disconnected. */
 let pipeSocket = null;
@@ -181,6 +186,14 @@ const pendingPermissions = new Map();
  * @type {Set<string>}
  */
 const activeInjectIds = new Set();
+
+/**
+ * Most recent completed assistant message text, cached for AFK orientation (Phase 9 Item 1).
+ * Updated by the `assistant.message` SDK event. Reset to '' on extension reload.
+ *
+ * @type {string}
+ */
+let lastAssistantMessage = '';
 
 /**
  * Returns the requestId of the most recently started inject still in flight,
@@ -359,48 +372,149 @@ function handleMessage(msg) {
   }
 }
 
+/** SDK v0.2.2: send() returns Promise<string> (message ID); streaming arrives via event emitters. */
+const STREAM_TIMEOUT_MS = 5 * 60 * 1000;
+
+/**
+ * Write one frame to the daemon pipe and wait for drain when backpressure is signaled.
+ *
+ * Races drain against close/error so that a socket destroyed while we are
+ * waiting for backpressure to clear still resolves the promise.  Resolving
+ * (not rejecting) on close/error means the next writeFrame call sees
+ * `socket.destroyed === true` and exits immediately — keeps error propagation
+ * at the natural boundary and avoids a spurious turn-failure when the real
+ * failure was upstream.
+ *
+ * @param {import('node:net').Socket} socket
+ * @param {string} frame
+ * @returns {Promise<void>}
+ */
+async function writeFrame(socket, frame) {
+  if (socket.destroyed) return;
+  const ok = socket.write(frame, 'utf-8');
+  if (ok) return;
+  await new Promise((resolve) => {
+    const cleanup = () => {
+      socket.off('drain', onDrain);
+      socket.off('close', onSettle);
+      socket.off('error', onSettle);
+    };
+    const onDrain = () => { cleanup(); resolve(); };
+    const onSettle = () => { cleanup(); resolve(); };
+    socket.once('drain', onDrain);
+    socket.once('close', onSettle);
+    socket.once('error', onSettle);
+  });
+}
+
 /**
  * Run text through the SDK session and stream the assistant response back to the daemon.
+ *
+ * SDK v0.2.2 contract (Issue #8 fix): send() is fire-and-forget; chunks arrive via
+ * 'assistant.message_delta' events; 'session.idle' signals completion.
+ * Previous code used `for-await-of sdkSession.send(text)` which assumed
+ * an async-iterable return — that was valid against an older SDK version but breaks on v0.2.2.
  *
  * @param {string} text
  * @param {string} requestId
  * @param {string} label
  */
 async function streamSdkResponse(text, requestId, label) {
-  activeInjectIds.add(requestId);
-
+  let releaseLock;
+  let socket = null; // captured at stream-start; reconnects swap pipeSocket but not this ref
+  const gate = streamQueue;
+  streamQueue = new Promise((resolve) => {
+    releaseLock = resolve;
+  });
   try {
+    await gate;
+    socket = pipeSocket; // capture now — any reconnect after this point replaces pipeSocket
+    activeInjectIds.add(requestId);
     let chunkCount = 0;
-    for await (const chunk of sdkSession.send(text)) {
-      const frame = JSON.stringify({
-        type: 'stream',
-        sessionId: SESSION_ID,
-        requestId,
-        chunk: String(chunk),
-        done: false,
-      }) + '\n';
-      if (pipeSocket !== null && !pipeSocket.destroyed) {
-        const canWriteMore = pipeSocket.write(frame, 'utf-8');
-        if (!canWriteMore) {
-          await new Promise((resolve) => {
-            if (pipeSocket !== null) {
-              pipeSocket.once('drain', resolve);
-            } else {
-              resolve(undefined);
-            }
-          });
-        }
+    let writeQueue = Promise.resolve();
+
+    const enqueueFrame = (frame) => {
+      if (socket === null || socket.destroyed) return;
+      writeQueue = writeQueue.then(() => {
+        // Drop if stale: a reconnect replaced pipeSocket, or our socket was destroyed.
+        // Old-stream frames must never land on a new connection.
+        if (socket !== pipeSocket || socket.destroyed) return;
+        return writeFrame(socket, frame);
+      });
+    };
+
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      let timeoutId;
+      let unsubs = [];
+
+      function cleanup() {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        for (const unsub of unsubs) unsub();
       }
-      chunkCount++;
+
+      unsubs = [
+        sdkSession.on('assistant.message_delta', (event) => {
+          if (settled) return;
+          const chunk = String(event?.data?.deltaContent ?? '');
+          const frame = JSON.stringify({
+            type: 'stream',
+            sessionId: SESSION_ID,
+            requestId,
+            chunk,
+            done: false,
+          }) + '\n';
+          enqueueFrame(frame);
+          writeQueue.catch((err) => {
+            if (settled) return;
+            cleanup();
+            reject(err instanceof Error ? err : new Error(String(err)));
+          });
+          chunkCount++;
+        }),
+        sdkSession.on('session.idle', () => {
+          cleanup();
+          resolve(undefined);
+        }),
+        sdkSession.on('session.error', (event) => {
+          cleanup();
+          reject(new Error(event?.data?.message ?? 'session error'));
+        }),
+      ];
+
+      timeoutId = setTimeout(() => {
+        cleanup();
+        reject(new Error('Stream timeout: no response from SDK'));
+      }, STREAM_TIMEOUT_MS);
+
+      // Fire-and-forget: chunks arrive via event listeners above
+      sdkSession.send({ prompt: text }).catch((err) => {
+        cleanup();
+        reject(err instanceof Error ? err : new Error(String(err)));
+      });
+    });
+    await writeQueue;
+
+    // Guard: only send done if still on the same connection. If a reconnect
+    // swapped pipeSocket, this stream's done frame must not land on the new connection.
+    if (socket !== null && !socket.destroyed && socket === pipeSocket) {
+      sendToDaemon({ type: 'stream', sessionId: SESSION_ID, requestId, chunk: '', done: true });
     }
-    sendToDaemon({ type: 'stream', sessionId: SESSION_ID, requestId, chunk: '', done: true });
     log('info', `${label} complete: requestId=${requestId} chunks=${chunkCount}`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log('error', `${label} error: ${message}`);
-    sendToDaemon({ type: 'stream.error', sessionId: SESSION_ID, requestId, error: message });
+    // Guard: if socket is null (error before stream started) fall through to
+    // sendToDaemon's own guard; if socket is set, only notify on the same connection.
+    const canNotify = socket === null || (!socket.destroyed && socket === pipeSocket);
+    if (canNotify) {
+      sendToDaemon({ type: 'stream.error', sessionId: SESSION_ID, requestId, error: message });
+    }
   } finally {
     activeInjectIds.delete(requestId);
+    if (typeof releaseLock === 'function') releaseLock();
   }
 }
 
@@ -468,7 +582,14 @@ function handleBackConfirmed(_msg) {
  * @param {{ active?: boolean, since?: string }} msg
  */
 function handleModeChanged(msg) {
-  showCliMessage(msg.active === true ? '🛰️ AFK mode active' : '🖥️ Back at desk');
+  // `back.confirmed` is also sent to every session on deactivation and already
+  // shows the "Back at desk" banner via handleBackConfirmed.  Showing it here
+  // too would produce a duplicate.  Mode-changed is a data event: only the
+  // AFK-activated side needs a user-visible banner because afk.activated is
+  // session-scoped whereas mode.changed is broadcast.
+  if (msg.active === true) {
+    showCliMessage('🛰️ AFK mode active');
+  }
   if (typeof msg.since === 'string') {
     log('info', `mode.changed since=${msg.since}`);
   }
@@ -569,6 +690,15 @@ function abortPendingPermissions() {
 function wireSessionEvents(session) {
   log('info', 'Session event forwarding wired (ADR-9 permission hook active)');
 
+  // Phase 9 Item 1: cache last completed assistant message for AFK orientation.
+  if (typeof session.on === 'function') {
+    session.on('assistant.message', (event) => {
+      if (event?.data?.content) {
+        lastAssistantMessage = String(event.data.content);
+      }
+    });
+  }
+
   // ADR-9 §5: Extension classifies tool risk and forwards only destructive tools.
   // The daemon routes permission.request to the user via Telegram inline keyboard.
   if (typeof session.onPermissionRequest === 'function') {
@@ -629,14 +759,24 @@ function wireSessionEvents(session) {
 
 /**
  * Returns the path to the bridge-auth.json file written by the daemon.
- * Uses %LOCALAPPDATA% on Windows (matches pipeAuth.ts on the daemon side).
+ *
+ * Mirrors getReachDataDir() in src/config/config.ts exactly:
+ *   - Honors REACH_DATA_DIR if set (trimmed, resolved to absolute path)
+ *   - Falls back to ~/.reach/
+ *
+ * LOCKSTEP: any change to getReachDataDir() in src/config/config.ts MUST be
+ * mirrored here. The daemon and extension resolve the path independently (TS
+ * vs standalone .mjs runtime boundary); they must stay in sync or the
+ * extension will fail to discover the pipe after daemon startup.
  *
  * @returns {string}
  */
 function getAuthFilePath() {
-  const localAppData =
-    process.env['LOCALAPPDATA'] ?? join(homedir(), 'AppData', 'Local');
-  return join(localAppData, 'reach', 'bridge-auth.json');
+  const override = process.env['REACH_DATA_DIR'];
+  const dataDir = (override && override.trim() !== '')
+    ? resolve(override.trim())
+    : join(homedir(), '.reach');
+  return join(dataDir, 'bridge-auth.json');
 }
 
 /**
@@ -799,7 +939,14 @@ async function runConnectionLoop() {
  */
 function sendModeRequest(type) {
   try {
-    const sent = sendToDaemon({ type, sessionId: SESSION_ID });
+    const msg = { type, sessionId: SESSION_ID };
+    if (type === 'afk.request' && lastAssistantMessage.length > 0) {
+      // Truncate to 500 chars for orientation message (Phase 9 Item 1).
+      msg.lastAssistantExcerpt = lastAssistantMessage.length > 500
+        ? lastAssistantMessage.slice(0, 499) + '…'
+        : lastAssistantMessage;
+    }
+    const sent = sendToDaemon(msg);
     if (!sent) {
       showCliMessage('⚠ Reach daemon not running — start it first.', 'warning');
     }
@@ -851,6 +998,7 @@ async function main() {
 
   try {
     sdkSession = await joinSession({ commands: createReachCommands() });
+    streamQueue = Promise.resolve();
     log('info', `SDK session joined (id: ${SESSION_ID})`);
     wireSessionEvents(sdkSession);
   } catch (err) {

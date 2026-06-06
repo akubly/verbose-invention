@@ -1,135 +1,114 @@
 ---
-updated_at: 2026-05-30T06:15:44Z
-focus_area: Phase 8.5 — Reach install story. Design complete. 5-task micro-sprint to make npm run install work.
+updated_at: 2026-05-31T00:25:54Z
+focus_area: Phase 9 review CYCLE 3 complete. Branch user/aaron/phase9 (9 commits ahead). 783 tests stable. Ready for PR — no further review cycles. Phase 10 backlog unchanged.
 active_issues:
-  - "#8 (CRITICAL): mirror.input SDK API drift — extension expects async iterable, SDK 0.2.2 returns Promise. Blocker for dogfood. Phase 8.5 scope."
-  - "#9 (HIGH): Telegram message echo in CLI — likely resolves with #8 fix. Re-verify after #8 closed."
+  - "Phase 10 follow-up: /status live-refresh design (bridge event for assistant.summary.updated)"
+  - "Phase 10 follow-up: cross-platform path detection in /new --cwd (currently Windows-only)"
+  - "Phase 10 follow-up: auto-capture of cwds (currently manual-only)"
+  - "Phase 10 follow-up: env hardening + parser polish + redactSecrets over-redaction (minor items)"
+branch_state: user/aaron/phase9 (9 commits: dc76dce → ... → 41a584e). All .squad/ files staged. Phase 9 review cycles 1+2+3 complete. Ready for PR merge.
 ---
 
-# Session Handoff — 2026-05-30T06:15:44Z (Phase 8.5 Ready to Launch)
+# Phase 9 Persona Review Cycle 3 Complete — 2026-05-31 (9 Commits, 783 Tests)
 
-## What Just Happened (This Session)
+## What Just Happened (Phase 9 Persona Review — Complete ✅)
 
-**Dogfood Prep + Phase 8.5 Design Handoff (COMPLETE ✅)**
+**Comprehensive 2-cycle persona review executed 2026-05-30. All findings addressed. 783 tests passing.**
 
-### Phase 8 Recap
-- ✅ **P1 Sprint:** 4 hardening items (A7, A8, N2, N3) shipped 2026-05-27
-- ✅ **Watch Sweep:** F4 (stream router extraction) + A6-6 (fleet compensation) complete 2026-05-28
-- ✅ **Dogfood Prep:** Aaron ran `/afk` integration test → found 4 bugs, 2 critical
+### Cycle 1: 7 Personas in Parallel
 
-### Bugs Found & Disposition
+| Reviewer | Model | Blocking | Important | Minor | Status |
+|----------|-------|----------|-----------|-------|--------|
+| Correctness | Opus | 0 | 3 | 3 | ✅ |
+| Skeptic | gpt-5.3-codex | 1* | 4 | 2 | ✅ |
+| Craft | Sonnet | 2 | 8 | 7 | ✅ |
+| Compliance | Haiku | 0 | 2 | 3 | ✅ |
+| Security | Opus | 0 | 2 | 5 | ✅ |
+| Architect | gpt-5.3-codex | 0 | 3 | 0 | ✅ |
+| Platform | Sonnet | 1** | 2 | 4 | ✅ |
 
-| Bug | Severity | Root Cause | Status |
-|-----|----------|------------|--------|
-| #1: mirror.input crash | **CRITICAL** | SDK 0.2.2 API drift (Promise vs async iterable) | 🔴 Open — Phase 8.5 scope (issue #8) |
-| #2: Telegram message echo | HIGH | Likely cascades from #1 | 🟡 Inconclusive — re-verify after #8 (issue #9) |
-| #3: duplicate `/back` banner | ✅ FIXED | Both `back.confirmed` + `mode.changed` emitted | ✅ Branch `user/aaron/dogfood-bugs-3-4` (f78ccd6) |
-| #4: sessionId dupe in title | ✅ FIXED | `SESSION_NAME` fallback collision | ✅ Same branch |
+*Downgraded by Aaron; **Resolved by Aaron's decision
 
-**Branch:** `user/aaron/dogfood-bugs-3-4` (f78ccd6, pushed, awaiting PR merge with Phase 8.5 work)
+**Consolidated Cycle 1:** 3 BLOCKING + 14 IMPORTANT + 20 MINOR
 
-### Phase 8.5 Design (LOCKED ✅)
+**Cycle 1 Fix Wave (1d9955b):** Carter (I1+I2+I3+I4+I6+I8+I9+B1+B3+minors), Kat (I10+I11), Jun (F-8 helpers + 7 RED anticipatory tests). Result: 725 → 771 tests (+46 net).
 
-**Primary Artifact:** `.copilot/reach-install-handoff.md` (340 LOC design doc)
+### Cycle 2: 4 Personas (Leaner Re-Review)
 
-**Recommendation:** Option C — single `npm run install` orchestrator
-```
-npm run install
-  ├─ Config wizard (token validation, allowed-users prompt)
-  ├─ Extension copy → %APPDATA%\GitHub Copilot\User\extensions\reach\
-  └─ Service install (unchanged, existing script)
+| Reviewer | Model | Blocking | Important | Minor | Delta |
+|----------|-------|----------|-----------|-------|-------|
+| Correctness | Opus | 0 | 1 | 0 | NEW drain hang advisory |
+| Skeptic | gpt-5.3-codex | 1* | 0 | 1 | SAME drain hang + escape gap |
+| Craft | Sonnet | 0 | 1 | 5 | NEW handlers stub + JSDoc |
+| Security | Opus | 0 | 1 | 1 | NEW AWS keys gap + ProgramData |
 
-npm run install:extension     # extension copy only (immediate dogfood unblock)
-npm run uninstall            # cleanup both daemon + extension
-```
+*Advisory per skill rule; treated as actionable by consensus
 
-**Scope:** Windows-only Phase 8.5; cross-platform deferred Phase 9
+**Consolidated Cycle 2:** 1 real bug (drain hang) + 1 security gap (AWS keys) + 2 important + 5 minor
 
-**5 Task Sprint (Recommended):**
-1. **Carter:** `src/install/copyExtension.ts` — Unblocks dogfood immediately
-2. **Kat/Carter:** `src/install/index.ts` + wizard + uninstall — Full install UX
-3. **Jun:** Tests for copyExtension — Baseline coverage
-4. **Scribe:** README install section update — Docs complete
-5. **Parallel:** Resolve #8 (mirror.input SDK fix) — Phase 8.5 blocker
+**Cycle 2 Fix Wave (07358fe):** Carter (C2-B1 drain race, C2-I1 AWS keys patterns, escape consistency, multi-word session name, ProgramData, JSDoc), Jun (C2-I2 handlers.test.ts stub migration). Result: 771 → 783 tests (+12 net).
 
-**Open for Aaron:** 5 UX preference questions in handoff doc (script naming, wizard hard-block behavior, dev symlink vs copy, --wipe flag, prompt for allowed IDs). No blockers — proceed with defaults if needed.
+### Test Suite Growth (Entire Phase 9 Progression)
 
-### Scribe Housekeeping (COMPLETE ✅)
+| Phase | Tests | Delta | Notes |
+|-------|-------|-------|-------|
+| Phase 8.5 baseline | 570 | — | End of Phase 8.5 |
+| Phase 9 start (anticipatory) | 725 | +155 | Jun wrote 7 RED tests + 150 other anticipatory |
+| After Cycle 1 fix wave | 771 | +46 | Carter + Kat + Jun implementations |
+| After Cycle 2 fix wave | 783 | +12 | Carter + Jun cleanup |
+| **Total Phase 9 gain** | **783** | **+213 (+37%)** | — |
 
-- ✅ Drained inbox: 6 files merged (kat-dogfood-bugs-3-4 + kat-pr7-cycle{1-4} + noble-six-install-story), deleted
-- ✅ Archived decisions.md: Pre-2026-05-22 entries → decisions-archive-2026-05-29.md (3254 lines)
-- ✅ Wrote 6 orchestration logs (agent work inventory for Phase 8.5 sprint)
-- ✅ Wrote session log (`.squad/log/2026-05-30-dogfood-prep-and-phase85-handoff.md`)
-- ✅ Updated this file (now.md) with Phase 8.5 focus
-- ✅ Git ready: All Scribe files staged for commit
+### Key Cycle 1 Findings & Fixes
 
-**Current HEAD:** origin/main. Ready to push after commit.
+**I1+I2 — Streaming Serialization Queue** (Carter)  
+Per-session queue in extension.mjs (Noble Six Option A). Drain-aware writeFrame + per-request writeQueue. Prevents concurrent stream cross-wiring and enforces backpressure compliance.
 
-## What's Pending
+**I3+I4 — Quote-Aware Flag Parser** (Carter)  
+parseNewFlags tokenizer in src/bot/newFlagParser.ts. Single/double quote support. Backslash literal (Windows UNC safety).
 
-**PHASE 8.5 SPRINT (Next Session)**
+**I6 — Shared Command Registry** (Carter)  
+BOT_COMMAND_NAMES in src/bot/commands.ts. Startup drift check prevents hard-coded registrations from diverging.
 
-**Quick-Start (Read First):**
-1. Open `.copilot/reach-install-handoff.md` — 340 LOC design doc, all decisions locked
-2. Jump to **Quick-Start** section in handoff doc
-3. Execute **Task 1 (Carter)** first: write `src/install/copyExtension.ts` — unblocks dogfood
-4. Resolve **Issue #8** (mirror.input SDK fix) in parallel or immediately after Task 1
+**I8+I9 — /cwd Extraction** (Carter)  
+handleCwdCommand in src/bot/cwdCommand.ts. Structured logging. Surfaces validatePath().warning to user.
 
-**Task Pipeline:**
-- **Task 1 (IMMEDIATE):** Carter → `src/install/copyExtension.ts` — Extension copy to %APPDATA%
-- **Task 2 (HIGH):** Kat/Carter → `src/install/index.ts` + config wizard + uninstall commands
-- **Task 3 (HIGH):** Jun → Tests for copyExtension (baseline coverage)
-- **Task 4 (MEDIUM):** Scribe → README install section update
-- **Parallel:** Issue #8 (mirror.input) — CRITICAL blocker for Phase 9 dogfood
+**I10 — Sensitive-Directory Warning** (Kat)  
+validatePath extended return type with optional warning field. Windows-only sensitive-prefix detection (WINDIR, Program Files, other users). Caller surfaces warning before adding entry (warn-not-block per Aaron).
 
-**Decision Inputs Needed from Aaron:**
-- Q1: Script naming (`install` vs `setup` vs other)
-- Q2: Wizard hard-block on empty allowed-user-IDs (yes/no/maybe-with-flag)
-- Q3: Dev symlink vs hard copy (flexibility for contributors)
-- Q4: `--wipe` flag for uninstall (aggressive vs safe)
-- Q5: Should wizard prompt for allowed IDs if not set? (skip vs require)
+**I11 — Secret Redaction Module** (Kat)  
+src/bot/redactSecrets.ts: Daemon-side regex engine (3 patterns: keyword-adjacent, high-entropy base64, URL-embedded). Over-redaction bias. Called before Telegram delivery.
 
-**Branch to Merge:** `user/aaron/dogfood-bugs-3-4` (f78ccd6) — bugs #3, #4 fixed, awaiting PR merge with Phase 8.5 work
+**F-8 — Helpers Extraction** (Jun)  
+makeStubRegistry consolidated (4 sources → tests/helpers/registryMocks.ts). makeMockBot consolidated (3 sources → tests/helpers/botMocks.ts). makeMockCtx moved to shared helpers.
 
-**Open Issues (Squad Label):**
-- [#8](https://github.com/reach/copilot-cli/issues/8) — CRITICAL: mirror.input SDK API drift
-- [#9](https://github.com/reach/copilot-cli/issues/9) — HIGH: Telegram message echo (re-verify after #8)
+### Key Cycle 2 Findings & Fixes
 
-## No Blockers
+**C2-B1 — writeFrame Drain Race** (Carter)  
+Resolve-not-reject on socket close. Error responsibility shifted to next frame check. Matches Node.js core stream pattern. Regression test added.
 
-- Phase 8 P1 shipped
-- Phase 8 watch sweep complete
-- Phase 8.5 install design locked
-- Bugs #3, #4 fixed in branch (awaiting merge)
-- Bugs #1, #2 diagnosed, issues filed
-- Dogfood plan ready (16 scenarios, ~45–90 min)
-- All tests green (538 passed / 4 skipped)
-- Code ready for Phase 8.5 sprint
+**C2-I1 — AWS Secret Key Leakage** (Carter & Security)  
+Missing `/` and `+` in HIGH_ENTROPY_PATTERN charset was silently leaking base64-encoded AWS keys. Added charset + extended ENV_ASSIGNMENT_PATTERN for ACCESS_KEY(?:_ID)?. Docstring "40+" → "39+".
 
-## Latest Artifacts
+**C2 — Escape Consistency** (Carter)  
+Removed `\\` → `\` and `\"` → `"` escape sequences from double-quoted tokenizer. Backslash now always literal (symmetric with single quotes, Windows-safe).
 
-- **Decisions:** `.squad/decisions.md` (archived old entries; Phase 8+ current)
-- **Install Handoff:** `.copilot/reach-install-handoff.md` (primary Phase 8.5 artifact)
-- **Dogfood Plan:** `.copilot/reach-dogfood-plan-phase8.md` (16 scenarios, ready for execution)
-- **Orchestration:** 6 new agent logs (`.squad/orchestration-log/*`)
-- **Session Log:** `.squad/log/2026-05-30-dogfood-prep-and-phase85-handoff.md`
-- **Branch:** `user/aaron/dogfood-bugs-3-4` (f78ccd6, bugs #3, #4 fixed)
-- **Issues:** #8 (CRITICAL mirror.input), #9 (echo, re-verify after #8)
-- **Git:** origin/main current, ready to push
+**C2-I2 — handlers.test.ts Stub Migration** (Jun)  
+Cycle 1 F-8 helpers extraction missed handlers.test.ts local stub (masked by unsafe cast). Migrated to shared makeStubRegistry. Updated shared helper's remove default to .mockResolvedValue(true).
 
----
+### Aaron's Locked Decisions
 
-## Closing Notes (Phase 8)
+**Cycle 1:**
+- All 3 blockers + 14 important + minors → fix (I14 /status live-refresh deferred to Phase 10)
+- I10 sensitive paths → warn not block
+- I11 secret redaction → regex patterns daemon-side
+- I3+I4 → rewrite parser quote-aware
+- I6 → shared registry refactor
+- I8+I9 → extract + structured logging
+- I7 → rewrite back-banner test to import
 
-✅ **Phase 8 Complete (2026-05-27 to 2026-05-29)**
-- All P1 items resolved (A7, A8, N2, N3)
-- All fired watches resolved (F4, A6-6)
-- Remaining P2/dormant watches deferred per triage
-- Dogfood prep revealed 4 bugs; 2 fixed immediately, 2 identified for Phase 8.5
-- Fleet compensation validated at N=20+, no cascades
+**Cycle 2:**
+- fix_three_plus_minors → fix everything cycle 2 surfaced
 
-**Phase 8.5 Ready to Launch**
-- Design locked (install orchestrator, 5-task sprint)
-- All dependencies identified
-- No architectural blockers
-- Aaron has all context needed
+## What's Next (Phase 10 Backlog)
+
+

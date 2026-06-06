@@ -61,7 +61,7 @@ import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, basename } from 'node:path';
+import { join, basename, resolve } from 'node:path';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -421,21 +421,25 @@ async function writeFrame(socket, frame) {
  */
 async function streamSdkResponse(text, requestId, label) {
   let releaseLock;
+  let socket = null; // captured at stream-start; reconnects swap pipeSocket but not this ref
   const gate = streamQueue;
   streamQueue = new Promise((resolve) => {
     releaseLock = resolve;
   });
   try {
     await gate;
+    socket = pipeSocket; // capture now — any reconnect after this point replaces pipeSocket
     activeInjectIds.add(requestId);
     let chunkCount = 0;
     let writeQueue = Promise.resolve();
 
     const enqueueFrame = (frame) => {
-      if (pipeSocket === null || pipeSocket.destroyed) return;
+      if (socket === null || socket.destroyed) return;
       writeQueue = writeQueue.then(() => {
-        if (pipeSocket === null || pipeSocket.destroyed) return;
-        return writeFrame(pipeSocket, frame);
+        // Drop if stale: a reconnect replaced pipeSocket, or our socket was destroyed.
+        // Old-stream frames must never land on a new connection.
+        if (socket !== pipeSocket || socket.destroyed) return;
+        return writeFrame(socket, frame);
       });
     };
 
@@ -493,12 +497,21 @@ async function streamSdkResponse(text, requestId, label) {
     });
     await writeQueue;
 
-    sendToDaemon({ type: 'stream', sessionId: SESSION_ID, requestId, chunk: '', done: true });
+    // Guard: only send done if still on the same connection. If a reconnect
+    // swapped pipeSocket, this stream's done frame must not land on the new connection.
+    if (socket !== null && !socket.destroyed && socket === pipeSocket) {
+      sendToDaemon({ type: 'stream', sessionId: SESSION_ID, requestId, chunk: '', done: true });
+    }
     log('info', `${label} complete: requestId=${requestId} chunks=${chunkCount}`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log('error', `${label} error: ${message}`);
-    sendToDaemon({ type: 'stream.error', sessionId: SESSION_ID, requestId, error: message });
+    // Guard: if socket is null (error before stream started) fall through to
+    // sendToDaemon's own guard; if socket is set, only notify on the same connection.
+    const canNotify = socket === null || (!socket.destroyed && socket === pipeSocket);
+    if (canNotify) {
+      sendToDaemon({ type: 'stream.error', sessionId: SESSION_ID, requestId, error: message });
+    }
   } finally {
     activeInjectIds.delete(requestId);
     if (typeof releaseLock === 'function') releaseLock();
@@ -746,14 +759,24 @@ function wireSessionEvents(session) {
 
 /**
  * Returns the path to the bridge-auth.json file written by the daemon.
- * Uses %LOCALAPPDATA% on Windows (matches pipeAuth.ts on the daemon side).
+ *
+ * Mirrors getReachDataDir() in src/config/config.ts exactly:
+ *   - Honors REACH_DATA_DIR if set (trimmed, resolved to absolute path)
+ *   - Falls back to ~/.reach/
+ *
+ * LOCKSTEP: any change to getReachDataDir() in src/config/config.ts MUST be
+ * mirrored here. The daemon and extension resolve the path independently (TS
+ * vs standalone .mjs runtime boundary); they must stay in sync or the
+ * extension will fail to discover the pipe after daemon startup.
  *
  * @returns {string}
  */
 function getAuthFilePath() {
-  const localAppData =
-    process.env['LOCALAPPDATA'] ?? join(homedir(), 'AppData', 'Local');
-  return join(localAppData, 'reach', 'bridge-auth.json');
+  const override = process.env['REACH_DATA_DIR'];
+  const dataDir = (override && override.trim() !== '')
+    ? resolve(override.trim())
+    : join(homedir(), '.reach');
+  return join(dataDir, 'bridge-auth.json');
 }
 
 /**

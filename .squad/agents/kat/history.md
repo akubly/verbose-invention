@@ -1,5 +1,11 @@
 # Kat — History (Summarized 2026-05-30 → Phase 9 complete)
 
+---
+
+**CROSS-AGENT NOTE (2026-06-06):** Noble Six's ADR-DRAFT for comms-channel abstraction (Teams support) is now in decisions.md under "Proposed / Pending Approval." Phase 1 task breakdown (P1-4 and P1-5) routes work to Kat for TelegramChannel adapter creation and handler refactoring. Also P2-4 (Adaptive Card formatting for Teams). Awaiting Aaron's approval gate before Phase 1 implementation.
+
+---
+
 ## Identity & Role
 
 - **Agent:** Kat (Backend Dev, AFK Mode Implementation, Config & Secrets, README Docs)

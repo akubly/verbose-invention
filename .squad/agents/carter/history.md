@@ -1,4 +1,11 @@
 # Carter — History (PR #10 squash-merged 2026-06-06, commit 692e770)
+
+---
+
+**CROSS-AGENT NOTE (2026-06-06):** Noble Six's ADR-DRAFT for comms-channel abstraction (Teams support) is now in decisions.md under "Proposed / Pending Approval." Phase 1 task breakdown (P1-2 through P1-5) routes work to Carter for session-registry generalization and relay re-targeting. Awaiting Aaron's approval gate before Phase 1 implementation. Reference: `carter-teams-channel-inventory.md` in orchestration-log/.
+
+---
+
 # Carter — History (Summarized 2026-05-30 → Phase 9 complete)
 # Carter — History (Summarized 2026-05-28 → Phase 8.5 complete 2026-05-30)
 
@@ -269,4 +276,50 @@ land a feature, check whether Jun's anticipatory tests are failing silently.
 **Suite:** 720 passed / 4 skipped / 1 todo. +150 net tests.
 
 **Known Phase 10 follow-up:** Cross-platform path detection in /new --cwd (Unix `/` startsWith check deferred).
+
+---
+
+## Learnings: Telegram/grammY Coupling Inventory (2026-06-06)
+
+**Task:** Map the depth of Telegram/grammY coupling in Reach to scope Microsoft Teams generalization. No code changes; read-only inventory only.
+
+**Key Files & Coupling Hotspots:**
+
+1. **Direct grammY imports** (7 files): `src/bot/index.ts`, `handlers.ts`, `relay.ts`, `afkMode.ts`, `afkStreamRouter.ts`, `pairing.ts`, `prompt.ts`.
+
+2. **Telegram-specific coupling** (19+ files reference `message_thread_id`, `parse_mode`, forum topics, chat IDs, user IDs, 4096-char limits, MarkdownV2 escaping).
+
+3. **Message/Session Relay Flow:**
+   - **Inbound:** Telegram polling (main.ts:98) → grammY handler → relay.relay(ctx) → extract topicId + userText → factory.resume/create → session.send() → stream chunks
+   - **Outbound:** ctx.reply() placeholder → throttled edits (800ms) → splitForTelegram() respecting 4096 limit → MarkdownV2 escape or plain-text fallback → ctx.api.editMessageText() + follow-up ctx.reply() for chunks
+
+4. **Telegram-Specific Constants & Limits:**
+   - TELEGRAM_MAX_TEXT = 4096, TELEGRAM_MAX_DISPLAY = 4000, MARKDOWN_ESCAPE_EFFECTIVE_MAX = 2048
+   - STREAM_EDIT_THROTTLE_MS = 800, MAX_MIRROR_TEXT_LENGTH = 4096, MAX_RATE_LIMIT_DELAY_MS = 30_000 (capped Telegram retry_after)
+   - Smart chunk boundaries: paragraph > line > word > hard cut
+
+5. **Config/Env Surface:**
+   - TELEGRAM_BOT_TOKEN (required), TELEGRAM_CHAT_ID (optional, triggers pairing), TELEGRAM_ALLOWED_USER_IDS (optional)
+   - config.json: telegramChatId, telegramAllowedUserIds
+
+6. **Abstraction Seams (Ready for Generalization):**
+   - ✅ relay/ports.ts (SessionLookup, PermissionPrompter) — relay doesn't know Telegram
+   - ✅ escapeMarkdownV2(), splitForTelegram() — pure functions, no platform state
+   - ✅ ISessionRegistry interface — contract-driven, implementation-agnostic
+
+7. **Tangled Coupling (Rework Required for Teams):**
+   - ❌ Bot handlers (handlers.ts:62-300+) — all 8 commands hardcoded to ctx.reply() with Telegram options
+   - ❌ SessionEntry.topicId = Telegram forum topic ID (types.ts, registry.ts) — assumes forum topic concept
+   - ❌ MarkdownV2 hardcoding (relay.ts:254, 280) — Teams uses different markdown
+   - ❌ AfkModeController (afkMode.ts) — 300+ lines tightly coupled to grammY Bot + Telegram topics + retry_after parsing
+   - ❌ Mirror input path (afkMode.ts:161-210) — Telegram-specific rate limiting, user ID extraction, source='telegram' label
+   - ❌ Retry-after error handling (afkMode.ts:74-81) — Telegram error shape (error_code, parameters.retry_after)
+   - ❌ Command router (handlers.ts + commands.ts) — COMMAND_NAMES shared, but each handler takes grammY Context
+
+**Effort Estimate for Teams Support:**
+- High: Bot handlers (8 commands duplication), AFK mode (300+ lines), relay send paths (MarkdownV2 branch)
+- Medium: Topic ID abstraction (SessionEntry.topicId → channelId), error handling
+- Low: Message splitter (already generic), session registry (swappable key)
+
+**Full inventory:** `.squad/decisions/inbox/carter-teams-channel-inventory.md` (Part 1-6 breakdown with file:line citations, flow diagrams, data shape assumptions, abstraction evaluation).
 

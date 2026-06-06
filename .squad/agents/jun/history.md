@@ -1,5 +1,11 @@
 # Jun — History (Summarized 2026-05-30 → Phase 9 complete)
 
+---
+
+**CROSS-AGENT NOTE (2026-06-06):** Noble Six's ADR-DRAFT for comms-channel abstraction (Teams support) is now in decisions.md under "Proposed / Pending Approval." Phase 1 task breakdown (P1-7 and P1-8) routes work to Jun for contract tests and regression suite. Awaiting Aaron's approval gate before Phase 1 implementation.
+
+---
+
 ## Identity & Role
 
 - **Agent:** Jun (Test Engineer, Sonnet 4.6)

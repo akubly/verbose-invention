@@ -2755,3 +2755,65 @@ Regardless of which option is chosen:
 ---
 
 Full design doc: `.copilot/reach-state-storage-design.md`
+
+---
+
+## Proposed / Pending Approval
+
+> ⚠️ **These entries are DRAFT proposals awaiting Aaron's decision-gate approval. Do NOT treat as accepted decisions until explicitly approved.**
+
+---
+
+### PROPOSED ADR-DRAFT: Communications Channel Abstraction & Microsoft Teams Transport
+
+**Status:** DRAFT — Pending Aaron's approval  
+**Author:** Noble Six (Lead/Architect)  
+**Date:** 2026-06-06  
+**Inbox Reference:** `.squad/decisions/inbox/noble-six-comms-channel-abstraction-adr.md`
+
+**Summary:** Proposes a phased approach to generalize Reach's hard-coupled Telegram integration:
+- **Phase 1 (Open Repo):** Extract `ChannelPort` interface; refactor existing Telegram code into a `TelegramChannel` adapter. Zero behavior change.
+- **Phase 2 (Corp Fork):** Implement `TeamsChannel` adapter using Microsoft Graph REST API. Developed in corp environment with corp Azure AD access.
+
+**Key Decisions in Draft (requires Aaron approval):**
+1. **Architecture:** Recommend Option A (Minimal Port Interface) for channel abstraction
+2. **Teams Transport:** Recommend Graph REST API as primary (simpler, no HTTP server needed)
+3. **Single Binary vs. Separate Builds:** Recommend single binary with `REACH_CHANNEL=telegram|teams` env var
+4. **Formatting Ownership:** Recommend Option (a) — transport owns all formatting
+
+**Open Questions for Aaron:**
+- Graph API vs. Bot Framework as primary Teams transport?
+- Single binary with channel switch or separate builds?
+- How aggressively to generalize formatting?
+- Can the corp fork `npm install` from the public GitHub repo?
+- Is a publicly reachable webhook endpoint feasible in the corp environment?
+- Does your corp tenant require admin consent for application permissions?
+- Is AFK mode in scope for Teams Phase 2?
+- Pairing flow for Teams?
+
+**Full Document:** See `.squad/decisions/inbox/noble-six-comms-channel-abstraction-adr.md` (to be archived after approval).
+
+---
+
+### REFERENCE: Telegram/grammY Coupling Inventory for Teams Generalization
+
+**Status:** Read-only reference  
+**Author:** Carter (Bridge Dev)  
+**Date:** 2026-06-06  
+**Inbox Reference:** `.squad/decisions/inbox/carter-teams-channel-inventory.md`
+
+**Summary:** Comprehensive file-by-file coupling map documenting:
+- Direct grammY/Telegram imports across the codebase
+- Telegram-specific concepts baked into message relay flow
+- Session/topic ID assumptions (1:1 forum topic → session mapping)
+- Config surface (env vars, config.json fields)
+- Abstraction seams (where Teams adapter can plug in)
+- Tangled coupling hotspots (requiring refactor for Teams support)
+
+**Key Findings:**
+- ✅ Good seams: Relay ports layer already abstracted; message formatting utils are pure functions
+- ❌ Tangled coupling: Bot handlers (8 commands), AFK mode (300+ lines), session registry key type, MarkdownV2 hardcoding
+
+**Reference Value:** This inventory is input to Noble Six's Phase 1 task breakdown (P1-2 through P1-5 in the ADR).
+
+**Full Document:** See `.squad/decisions/inbox/carter-teams-channel-inventory.md` (reference archive).

@@ -1,20 +1,12 @@
 /**
  * Pure unit tests for isBotCommand() and BOT_COMMANDS.
  *
- * Anticipatory tests (Phase 9 Item 2) — RED until Carter lands src/bot/commands.ts.
- * Expected import failure: "Cannot find module '../../src/bot/commands.js'"
- *
- * Carter's contract (per Q2-1 = centralize, design doc §Item 2):
+ * Phase 9 Item 2 — src/bot/commands.ts is now live. These tests verify:
  *   export const BOT_COMMANDS: ReadonlySet<string>   — the canonical bot command set
  *   export function isBotCommand(text: string): boolean
  *     Returns true iff text starts with '/' AND the extracted command word is in BOT_COMMANDS.
  *     Extraction regex: /^\/([a-zA-Z_][a-zA-Z0-9_]*)/ — case-insensitive (lookup via .toLowerCase()),
  *     digit-aware (digits allowed after first char, stops at first non-[a-zA-Z0-9_] char).
- *     NOTE: Prior comment described pre-cycle-1 behavior (/^\/([a-z_]+)/, case-sensitive) — no longer accurate.
- *
- * Import path assumption: src/bot/commands.ts (most likely for a new centralized module).
- * If Carter exports from handlers.ts instead, update the import below.
- * See .squad/decisions/inbox/jun-phase9-item2-tests.md for full rationale.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -207,15 +199,13 @@ describe('isBotCommand — Telegram @botname suffix', () => {
 
 // ── isBotCommand — B1: digit in command position ────────────────────────────
 //
-// Carter's fix changes extraction regex from /^\/([a-z_]+)/ to
+// Carter changed the extraction regex from /^\/([a-z_]+)/ to
 // /^\/([a-zA-Z_][a-zA-Z0-9_]*)/ (digits allowed after first char).
 //
 // BEFORE the fix: /new123 → regex stops at '1', extracts "new" → true  (BUG!)
 // AFTER the fix:  /new123 → extracts "new123" → not in BOT_COMMANDS → false ✓
-//
-// RED until Carter lands the regex change.
 
-describe('isBotCommand — B1: digit handling (anticipatory)', () => {
+describe('isBotCommand — B1: digit handling', () => {
   it('/new123 → false (digit suffix not in BOT_COMMANDS)', () => {
     // Before fix: /^\/([a-z_]+)/ extracts "new" → true (wrong).
     // After fix:  /^\/([a-zA-Z_][a-zA-Z0-9_]*)/ extracts "new123" → false.

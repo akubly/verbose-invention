@@ -1,18 +1,18 @@
 /**
  * AfkModeController — slash guard behaviour (Phase 9 Item 2).
  *
- * Anticipatory tests for the guard change in src/bot/afkMode.ts:
- *   BEFORE Carter:  if (text.startsWith('/')) return false;
- *   AFTER Carter:   if (isBotCommand(text)) return false;
+ * Verifies that AfkModeController.handleTelegramMessage() uses isBotCommand()
+ * to distinguish bot commands from CLI pass-through commands:
  *
- * RED tests (awaiting Carter):
- *   - CLI commands (/clear, /agent, /model) currently return false;
- *     after Carter they must return true and reach mirror.input.
- *   - /unknowncommand currently returns false; after Carter it must pass through.
+ *   - Bot commands (/new, /list, /help, /remove, /resume, …) → returns false;
+ *     the AFK controller yields to the bot's dedicated command handlers.
+ *   - CLI commands (/clear, /agent, /model, /unknowncommand, …) → isBotCommand()
+ *     returns false → AFK controller consumes the message, forwards via
+ *     mirror.input, and returns true.
+ *   - Plain text → always consumed and forwarded (regression coverage).
  *
- * GREEN tests (stable before and after Carter):
- *   - Bot commands (/new, /list, /help) must always return false.
- *   - Plain text must always reach mirror.input.
+ * The blanket `startsWith('/')` guard that blocked all slash messages in the
+ * AFK path was replaced by `isBotCommand()` in this PR (Phase 9 Item 2).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -138,17 +138,15 @@ describe('AfkModeController.handleTelegramMessage — slash guard', () => {
     expect(bridge.sendToSession).not.toHaveBeenCalled();
   });
 
-  // ── CLI commands → return true and forward via mirror.input (RED until Carter) ──
+  // ── CLI commands → return true and forward via mirror.input ──────────────
 
   it('CLI command /clear → AFK handler consumes and returns true', async () => {
-    // RED until Carter: currently the blanket / guard returns false for /clear.
-    // After Carter: isBotCommand('/clear') = false → does NOT return false → processes → returns true.
+    // isBotCommand('/clear') = false → does NOT return false → processes → returns true.
     const result = await controller.handleTelegramMessage(makeCtx('/clear') as any);
     expect(result).toBe(true);
   });
 
   it('/clear is forwarded verbatim as mirror.input text', async () => {
-    // RED until Carter.
     await controller.handleTelegramMessage(makeCtx('/clear') as any);
     expect(bridge.sendToSession).toHaveBeenCalledWith(
       SESSION_ID,
@@ -162,7 +160,6 @@ describe('AfkModeController.handleTelegramMessage — slash guard', () => {
   });
 
   it('CLI command /agent → consumes and returns true', async () => {
-    // RED until Carter.
     const result = await controller.handleTelegramMessage(makeCtx('/agent') as any);
     expect(result).toBe(true);
     expect(bridge.sendToSession).toHaveBeenCalledWith(
@@ -172,7 +169,6 @@ describe('AfkModeController.handleTelegramMessage — slash guard', () => {
   });
 
   it('CLI command /model → consumes and returns true', async () => {
-    // RED until Carter.
     const result = await controller.handleTelegramMessage(makeCtx('/model') as any);
     expect(result).toBe(true);
     expect(bridge.sendToSession).toHaveBeenCalledWith(
@@ -182,7 +178,7 @@ describe('AfkModeController.handleTelegramMessage — slash guard', () => {
   });
 
   it('/unknowncommand → consumed and forwarded (unknown = not a bot command = CLI)', async () => {
-    // RED until Carter: currently blocked by blanket /; after Carter passes through.
+    // isBotCommand('/unknowncommand') = false → passes through.
     const result = await controller.handleTelegramMessage(makeCtx('/unknowncommand') as any);
     expect(result).toBe(true);
     expect(bridge.sendToSession).toHaveBeenCalledWith(
@@ -194,7 +190,7 @@ describe('AfkModeController.handleTelegramMessage — slash guard', () => {
   // ── spoofed bot-looking commands → pass through (not exact matches) ─────────
 
   it('/newxyz → consumed and forwarded (not exact match for /new)', async () => {
-    // RED until Carter: currently blocked; after Carter "newxyz" ∉ BOT_COMMANDS → passes through.
+    // "newxyz" ∉ BOT_COMMANDS → passes through.
     const result = await controller.handleTelegramMessage(makeCtx('/newxyz') as any);
     expect(result).toBe(true);
     expect(bridge.sendToSession).toHaveBeenCalledWith(

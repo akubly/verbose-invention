@@ -1,26 +1,19 @@
 /**
  * registerHandlers — slash command guard behaviour (Phase 9 Item 2).
  *
- * Anticipatory tests for the guard change in src/bot/handlers.ts:
- *   BEFORE Carter:  if (ctx.message.text.startsWith('/')) return;
- *   AFTER Carter:   if (isBotCommand(ctx.message.text)) return;
+ * Verifies that the message:text handler in src/bot/handlers.ts uses
+ * isBotCommand() to distinguish bot commands from CLI pass-through commands:
  *
- * RED tests (awaiting Carter):
- *   - CLI commands (/clear, /agent, /model, /unknowncommand) currently cause
- *     the message:text handler to return early; after Carter they must reach relay.
+ *   - Bot commands (/new, /list, /help, …) → message:text exits early; grammY
+ *     routes them to their dedicated command handlers. No relay is triggered.
+ *   - CLI commands (/clear, /agent, /model, /unknowncommand, …) → isBotCommand()
+ *     returns false → message:text proceeds to relay.relay(ctx).
+ *   - Plain text → always reaches relay (regression coverage).
  *
- * GREEN tests (stable before and after Carter):
- *   - Bot commands (/new, /list) must always return early from message:text
- *     (grammY routes them to command handlers — message:text should not relay them).
- *   - Plain text must always reach relay.
- *
- * ⚠️  EXISTING TEST CONFLICT — Carter must update handlers.test.ts:
- *     The test at handlers.test.ts:343 "ignores command messages (starting with /)"
- *     uses text '/unknown-cmd' and asserts ctx.reply is NOT called.
- *     After Carter's fix: '/unknown-cmd' is NOT a bot command → the message:text
- *     handler will relay it → ctx.reply WILL be called → that test will FAIL.
- *     Carter: please update that test to use an actual bot command (e.g. '/new')
- *     when converting the guard.
+ * The blanket `startsWith('/')` guard that blocked all slash messages was
+ * replaced by `isBotCommand()` in this PR (Phase 9 Item 2). handlers.test.ts
+ * was updated in the same PR to use a real bot command (/list) in the
+ * "ignores command messages" test.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -97,11 +90,10 @@ describe('registerHandlers message:text — slash command guard', () => {
     expect(ctx.reply).not.toHaveBeenCalled();
   });
 
-  // ── CLI commands → relay is triggered (RED until Carter) ───────────────────
+  // ── CLI commands → relay is triggered ────────────────────────────────────
 
   it('/clear in topic → relay triggered, placeholder reply sent', async () => {
-    // RED until Carter: currently blocked by startsWith('/') guard.
-    // After Carter: isBotCommand('/clear') = false → relay.relay(ctx) called.
+    // isBotCommand('/clear') = false → relay.relay(ctx) called.
     const session = makeMockSession(['/clear applied']);
     const { bot, onHandlers } = makeMockBot();
     const registry = makeStubRegistry([SESSION_ENTRY]);
@@ -117,7 +109,6 @@ describe('registerHandlers message:text — slash command guard', () => {
   });
 
   it('/agent in topic → relay triggered', async () => {
-    // RED until Carter.
     const { bot, onHandlers } = makeMockBot();
     const registry = makeStubRegistry([SESSION_ENTRY]);
     const factory = makeMockFactory(makeMockSession(['agent info']));
@@ -131,7 +122,6 @@ describe('registerHandlers message:text — slash command guard', () => {
   });
 
   it('/model in topic → relay triggered', async () => {
-    // RED until Carter.
     const { bot, onHandlers } = makeMockBot();
     const registry = makeStubRegistry([SESSION_ENTRY]);
     const factory = makeMockFactory(makeMockSession(['model switched']));
@@ -145,11 +135,10 @@ describe('registerHandlers message:text — slash command guard', () => {
   });
 
   it('/unknowncommand in topic → relay triggered (unknown = not a bot command = CLI)', async () => {
-    // RED until Carter: currently ALL slash messages are blocked.
-    // After Carter: isBotCommand('/unknowncommand') = false → relay proceeds.
+    // isBotCommand('/unknowncommand') = false → relay proceeds.
     //
-    // NOTE: The existing test at handlers.test.ts:343 asserts the opposite for
-    // '/unknown-cmd' — it will break when Carter converts the guard. See file header.
+    // handlers.test.ts was updated in this PR to use '/list' (a real bot command)
+    // in the "ignores command messages" test, resolving the former test conflict.
     const { bot, onHandlers } = makeMockBot();
     const registry = makeStubRegistry([SESSION_ENTRY]);
     const factory = makeMockFactory(makeMockSession(['ok']));
@@ -163,7 +152,6 @@ describe('registerHandlers message:text — slash command guard', () => {
   });
 
   it('/clear with args in topic → relay triggered', async () => {
-    // RED until Carter.
     const { bot, onHandlers } = makeMockBot();
     const registry = makeStubRegistry([SESSION_ENTRY]);
     const factory = makeMockFactory(makeMockSession(['cleared']));

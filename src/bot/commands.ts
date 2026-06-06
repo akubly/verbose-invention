@@ -33,7 +33,6 @@ export const COMMAND_NAMES = [
 export type CommandName = typeof COMMAND_NAMES[number];
 
 export const BOT_COMMANDS: ReadonlySet<string> = new Set(COMMAND_NAMES);
-export const BOT_COMMAND_NAMES = BOT_COMMANDS;
 
 /**
  * Returns true if `text` is a Telegram bot command handled by this daemon.

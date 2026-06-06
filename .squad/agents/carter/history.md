@@ -9,6 +9,8 @@
 
 ## Current Status
 
+**PR #10 Cycle 10 shipped (2026-06-05):** T1 — replaced argv[1]-only save/restore in `isDirectRun.test.ts` with full-array `slice()` snapshot + reference restore. IDR5 uses `splice(1)` which mutates array length; the cycle-6 pattern didn't undo that. Full-array restore is strictly correct and no more complex.
+
 **PR #10 Cycle 9 shipped (2026-06-05):** T1 — partial legacy migration retry (Option B: removed early-return on newRoot-exists, per-dir check now handles re-runs after partial failure, MIG8 test added). T2 — excerpt truncation off-by-one corrected (`slice(0, MAX_EXCERPT_LENGTH - 1) + '…'` = 500 chars, length-assertion added to C8 test).
 
 **Test baseline:** 834 passed / 4 skipped / 1 todo. tsc clean, lint zero warnings.

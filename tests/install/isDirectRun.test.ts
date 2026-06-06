@@ -17,18 +17,14 @@ const MODULE_URL  = import.meta.url;
 const MODULE_FILE = fileURLToPath(MODULE_URL);
 
 describe('isDirectRun()', () => {
-  let savedArgv1: string | undefined;
+  let savedArgv: string[];
 
   beforeEach(() => {
-    savedArgv1 = process.argv[1];
+    savedArgv = process.argv.slice();
   });
 
   afterEach(() => {
-    if (savedArgv1 === undefined) {
-      process.argv.splice(1, 1);
-    } else {
-      process.argv[1] = savedArgv1;
-    }
+    process.argv = savedArgv;
   });
 
   // ── IDR1: Absolute path that matches ─────────────────────────────────────

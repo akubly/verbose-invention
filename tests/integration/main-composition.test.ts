@@ -296,3 +296,222 @@ describe('Integration: main() composition root (A8 + N3)', () => {
     });
   });
 });
+
+// ── B2 — non-Telegram channel boots without AfkModeController ─────────────────
+//
+// In the pre-fix code, main.ts accessed channel.bot and cast to TelegramChannel
+// unconditionally, so any non-Telegram channel would crash at startup.
+// Carter's fix gates AFK wiring behind `channel instanceof TelegramChannel`.
+//
+// These tests verify: AfkModeController is NOT constructed, setMessageInterceptor
+// is NOT called, a warning is logged, and startup completes without throwing.
+//
+// The key technique: createChannel is mocked to return a plain object (NOT an
+// instance of MockTelegramChannelClass, which is TelegramChannel after mocking).
+// So `channel instanceof TelegramChannel` in main.ts evaluates to false.
+
+describe('B2 — non-Telegram channel boots without AfkModeController', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockBotStop.mockResolvedValue(undefined);
+    mockBridgeStart.mockResolvedValue(undefined);
+    mockBridgeStop.mockResolvedValue(undefined);
+    mockRegistryLoad.mockResolvedValue(undefined);
+    mockGeneratePipeAuth.mockResolvedValue({
+      pipeName: 'reach-bridge-test',
+      pipePath: '\\.\pipe\reach-bridge-test',
+      token: 'aabbcc',
+    });
+    mockCleanupPipeAuth.mockResolvedValue(undefined);
+    mockChannelStart.mockResolvedValue(undefined);
+    mockChannelStop.mockResolvedValue(undefined);
+    MockAfkModeController.mockImplementation(() => ({}));
+    mockRegisterHandlers.mockReturnValue({ dispose: vi.fn() });
+    vi.mocked(ExtensionBridge).mockImplementation(() => ({
+      start: mockBridgeStart,
+      stop: mockBridgeStop,
+    }));
+    vi.mocked(SessionRegistry).mockImplementation(() => ({
+      load: mockRegistryLoad,
+    }));
+    vi.mocked(CopilotClientImpl).mockImplementation(() => ({
+      stop: vi.fn().mockResolvedValue(undefined),
+    }));
+    vi.mocked(BridgeSessionFactory).mockImplementation(() => ({}));
+    vi.mocked(CompositeSessionFactory).mockImplementation(() => ({}));
+
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.removeAllListeners('SIGINT');
+    process.removeAllListeners('SIGTERM');
+  });
+
+  it('B2a: AfkModeController is NOT constructed when channel is not a TelegramChannel', async () => {
+    // Plain object — NOT instanceof MockTelegramChannelClass (= TelegramChannel after mock).
+    const mockFakeChannel = {
+      name: 'fake-transport',
+      start: mockChannelStart,
+      stop: mockChannelStop,
+      sendMessage: vi.fn().mockResolvedValue({ id: 'msg-1' }),
+      editMessage: vi.fn().mockResolvedValue(true),
+      splitMessage: vi.fn((text: string) => [text]),
+      formatForTransport: vi.fn((text: string) => text),
+      createThread: vi.fn(),
+      onMessage: vi.fn(),
+      onCommand: vi.fn(),
+      promptUser: vi.fn().mockResolvedValue('approve'),
+      capabilities: {
+        supportsMessageEdit: false,
+        supportsThreadCreation: false,
+        supportsInteractivePrompts: false,
+        supportsStreaming: false,
+        maxMessageLength: 4096,
+      },
+    };
+
+    vi.mocked(createChannel).mockReturnValueOnce(mockFakeChannel as any);
+    vi.mocked(parseEnv).mockResolvedValue({
+      token: undefined,
+      chatId: undefined,
+      isPairingMode: false,
+      model: 'claude-sonnet-4',
+      permissionPolicy: 'interactiveDestructive',
+      allowedUserIdSet: undefined,
+      configPath: 'C:\\fake\\config.json',
+      registryPath: 'C:\\fake\\data\\registry.json',
+      reachChannel: 'fake-transport',
+    });
+
+    await main();
+
+    expect(MockAfkModeController).not.toHaveBeenCalled();
+  });
+
+  it('B2b: setMessageInterceptor is NOT called when channel is not a TelegramChannel', async () => {
+    const mockFakeChannel = {
+      name: 'fake-transport',
+      start: mockChannelStart,
+      stop: mockChannelStop,
+      sendMessage: vi.fn().mockResolvedValue({ id: 'msg-1' }),
+      editMessage: vi.fn().mockResolvedValue(true),
+      splitMessage: vi.fn((text: string) => [text]),
+      formatForTransport: vi.fn((text: string) => text),
+      createThread: vi.fn(),
+      onMessage: vi.fn(),
+      onCommand: vi.fn(),
+      promptUser: vi.fn().mockResolvedValue('approve'),
+      capabilities: {
+        supportsMessageEdit: false,
+        supportsThreadCreation: false,
+        supportsInteractivePrompts: false,
+        supportsStreaming: false,
+        maxMessageLength: 4096,
+      },
+    };
+
+    vi.mocked(createChannel).mockReturnValueOnce(mockFakeChannel as any);
+    vi.mocked(parseEnv).mockResolvedValue({
+      token: undefined,
+      chatId: undefined,
+      isPairingMode: false,
+      model: 'claude-sonnet-4',
+      permissionPolicy: 'interactiveDestructive',
+      allowedUserIdSet: undefined,
+      configPath: 'C:\\fake\\config.json',
+      registryPath: 'C:\\fake\\data\\registry.json',
+      reachChannel: 'fake-transport',
+    });
+
+    await main();
+
+    // mockSetMessageInterceptor is the TelegramChannel's setMessageInterceptor spy.
+    // It must not be called because we never enter the TelegramChannel branch.
+    expect(mockSetMessageInterceptor).not.toHaveBeenCalled();
+  });
+
+  it('B2c: warning containing "AFK mirror currently requires" is logged for non-Telegram channel', async () => {
+    const mockFakeChannel = {
+      name: 'fake-transport',
+      start: mockChannelStart,
+      stop: mockChannelStop,
+      sendMessage: vi.fn().mockResolvedValue({ id: 'msg-1' }),
+      editMessage: vi.fn().mockResolvedValue(true),
+      splitMessage: vi.fn((text: string) => [text]),
+      formatForTransport: vi.fn((text: string) => text),
+      createThread: vi.fn(),
+      onMessage: vi.fn(),
+      onCommand: vi.fn(),
+      promptUser: vi.fn().mockResolvedValue('approve'),
+      capabilities: {
+        supportsMessageEdit: false,
+        supportsThreadCreation: false,
+        supportsInteractivePrompts: false,
+        supportsStreaming: false,
+        maxMessageLength: 4096,
+      },
+    };
+
+    vi.mocked(createChannel).mockReturnValueOnce(mockFakeChannel as any);
+    vi.mocked(parseEnv).mockResolvedValue({
+      token: undefined,
+      chatId: undefined,
+      isPairingMode: false,
+      model: 'claude-sonnet-4',
+      permissionPolicy: 'interactiveDestructive',
+      allowedUserIdSet: undefined,
+      configPath: 'C:\\fake\\config.json',
+      registryPath: 'C:\\fake\\data\\registry.json',
+      reachChannel: 'fake-transport',
+    });
+
+    await main();
+
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('AFK mirror currently requires'),
+    );
+  });
+
+  it('B2d: startup completes without throwing for non-Telegram channel (channel.start() called)', async () => {
+    const mockFakeChannel = {
+      name: 'fake-transport',
+      start: mockChannelStart,
+      stop: mockChannelStop,
+      sendMessage: vi.fn().mockResolvedValue({ id: 'msg-1' }),
+      editMessage: vi.fn().mockResolvedValue(true),
+      splitMessage: vi.fn((text: string) => [text]),
+      formatForTransport: vi.fn((text: string) => text),
+      createThread: vi.fn(),
+      onMessage: vi.fn(),
+      onCommand: vi.fn(),
+      promptUser: vi.fn().mockResolvedValue('approve'),
+      capabilities: {
+        supportsMessageEdit: false,
+        supportsThreadCreation: false,
+        supportsInteractivePrompts: false,
+        supportsStreaming: false,
+        maxMessageLength: 4096,
+      },
+    };
+
+    vi.mocked(createChannel).mockReturnValueOnce(mockFakeChannel as any);
+    vi.mocked(parseEnv).mockResolvedValue({
+      token: undefined,
+      chatId: undefined,
+      isPairingMode: false,
+      model: 'claude-sonnet-4',
+      permissionPolicy: 'interactiveDestructive',
+      allowedUserIdSet: undefined,
+      configPath: 'C:\\fake\\config.json',
+      registryPath: 'C:\\fake\\data\\registry.json',
+      reachChannel: 'fake-transport',
+    });
+
+    await expect(main()).resolves.toBeUndefined();
+    expect(mockChannelStart).toHaveBeenCalledOnce();
+  });
+});

@@ -23,3 +23,15 @@ The `makeSyntheticCtx` helper in `handlers.ts` was deleted entirely.
 The duplicate `bot.catch()` in `handlers.ts` was removed. The single canonical error handler is in `src/channel/telegram/index.ts` `start()` — transport-owned error handling belongs with the transport. Same log format: `[bot] Unhandled error: <message> <error>`.
 
 ---
+
+### B1-adapter / I3 / M1 / M3 — Review cycle 1 adapter fixes (2026-06-06)
+
+**B1 (adapter side):** `TelegramChannel.sendMessage` and `editMessage` are now fully self-sufficient. Both delegate to private helpers `_sendMessageInternal` / `_editMessageInternal` that apply `escapeMarkdownV2` and send with `parse_mode: 'MarkdownV2'`, falling back to plain text on parse-entities errors (same `md2WarnedSessions` dedup logic, same warn format). `sendMessageWithMarkdown` and `editMessageWithMarkdown` are now thin wrappers that call the internal helpers and handle the return-type difference (null vs throw). **Carter's relay change must pass RAW text** to `sendMessage`/`editMessage` — pre-formatting via `formatForTransport` before calling these will double-escape.
+
+**I3:** Removed `bot: Bot<Context>` and `telegramMirror` from `HandlerOptions`. `ensurePromptRegistry` is now exclusively owned by `TelegramChannel.start()`. `registerHandlers` no longer imports `Bot`/`Context` from grammy or `ensurePromptRegistry` from prompt. Main.ts minimal edit: removed `bot` and `telegramMirror` from the options object only. Three tests in the "eager callback_query:data" describe block were rewritten to test the relay-level permission behavior (factory gets callback arg when `permissionPolicy=interactiveDestructive`) instead of the removed bot-level behavior.
+
+**M1:** `/help` heading changed from "Reach — Telegram ↔ Copilot CLI bridge" to "Reach — Copilot CLI bridge".
+
+**M3:** `promptUser` now derives `topicId` conditionally (`ctx.threadId ? Number(...) : undefined`), matching the guard in `sendMessage`. `promptUserForPermission` in `prompt.ts` updated to accept `topicId: number | undefined` and conditionally includes `message_thread_id` in the send options. `sendMessageWithMarkdown` uses `_sendMessageInternal` which already has the guard.
+
+---

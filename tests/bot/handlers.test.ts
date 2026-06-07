@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { registerHandlers } from '../../src/bot/handlers.js';
-import { disposePromptRegistry } from '../../src/bot/prompt.js';
 import type { SessionEntry } from '../../src/types.js';
 import type { ChannelPort, ChannelContext, CommandHandler } from '../../src/channel/port.js';
 import { makeMockFactory, makeMockSession } from '../mocks/sdk.js';
@@ -533,53 +532,12 @@ describe('registerHandlers', () => {
   });
 
   describe('eager callback_query:data listener for interactiveDestructive', () => {
-    it('installs the callback_query:data listener during registerHandlers, before any prompt is invoked', () => {
-      const { bot, onHandlers } = makeMockBot();
-      const registry = makeStubRegistry();
-      const factory = makeMockFactory();
-
-      registerHandlers({
-        bot: bot as any,
-        registry,
-        factory,
-        globalModel: 'test-model',
-        channel: makeMockChannel(),
-        permissionPolicy: 'interactiveDestructive',
-      });
-
-      expect(bot.on).toHaveBeenCalledWith('callback_query:data', expect.any(Function));
-      expect(onHandlers.has('callback_query:data')).toBe(true);
-
-      disposePromptRegistry(bot as any);
-    });
-
-    it('does NOT install callback_query:data listener when permissionPolicy is not interactiveDestructive', () => {
-      const { bot } = makeMockBot();
-      const registry = makeStubRegistry();
-      const factory = makeMockFactory();
-
-      registerHandlers({
-        bot: bot as any,
-        registry,
-        factory,
-        globalModel: 'test-model',
-        channel: makeMockChannel(),
-      });
-
-      const callbackQueryCalls = (bot.on as ReturnType<typeof vi.fn>).mock.calls.filter(
-        ([event]: [string]) => event === 'callback_query:data',
-      );
-      expect(callbackQueryCalls).toHaveLength(0);
-    });
-
-    it('does not call bot.on(callback_query:data) again when promptUserForPermission runs later', async () => {
-      const { bot, onHandlers } = makeMockBot();
+    it('permissionPolicy=interactiveDestructive enables permission prompts in the Relay (callback registration owned by TelegramChannel.start())', async () => {
       const registry = makeStubRegistry([ENTRY]);
       const factory = makeMockFactory(makeMockSession(['ok']));
       const channel = makeMockChannel();
 
       registerHandlers({
-        bot: bot as any,
         registry,
         factory,
         globalModel: 'test-model',
@@ -587,25 +545,53 @@ describe('registerHandlers', () => {
         permissionPolicy: 'interactiveDestructive',
       });
 
-      const callbackQueryCallsAtSetup = (bot.on as ReturnType<typeof vi.fn>).mock.calls.filter(
-        ([event]: [string]) => event === 'callback_query:data',
-      ).length;
-      expect(callbackQueryCallsAtSetup).toBe(1);
+      // When permissionPolicy=interactiveDestructive, the Relay is created with
+      // enablePermissionPrompts=true — factory.resume receives a permission callback.
+      const handler = getMessageHandler(channel)!;
+      await handler(CHANNEL_CTX, 'test message');
+      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', undefined, expect.any(Function));
+    });
 
-      const callbackHandler = onHandlers.get('callback_query:data')!;
-      const fakeCtx = {
-        callbackQuery: { data: 'perm:approve:no-such-id', message: undefined },
-        chat: undefined,
-        answerCallbackQuery: vi.fn().mockResolvedValue(true),
-      };
-      await callbackHandler(fakeCtx);
+    it('does NOT enable permission prompts in Relay when permissionPolicy is not interactiveDestructive', async () => {
+      const registry = makeStubRegistry([ENTRY]);
+      const factory = makeMockFactory(makeMockSession(['ok']));
+      const channel = makeMockChannel();
 
-      const callbackQueryCallsAfterPrompt = (bot.on as ReturnType<typeof vi.fn>).mock.calls.filter(
-        ([event]: [string]) => event === 'callback_query:data',
-      ).length;
-      expect(callbackQueryCallsAfterPrompt).toBe(1);
+      registerHandlers({
+        registry,
+        factory,
+        globalModel: 'test-model',
+        channel,
+      });
 
-      disposePromptRegistry(bot as any);
+      const handler = getMessageHandler(channel)!;
+      await handler(CHANNEL_CTX, 'test message');
+      // Without interactiveDestructive, factory.resume is called WITHOUT a permission callback
+      expect(factory.resume).toHaveBeenCalledWith('reach-myapp', undefined, undefined);
+    });
+
+    it('permission prompts remain enabled across multiple messages (Relay caches session, callback not re-created)', async () => {
+      const session = makeMockSession(['reply1']);
+      const registry = makeStubRegistry([ENTRY]);
+      const factory = makeMockFactory(session);
+      const channel = makeMockChannel();
+
+      registerHandlers({
+        registry,
+        factory,
+        globalModel: 'test-model',
+        channel,
+        permissionPolicy: 'interactiveDestructive',
+      });
+
+      const handler = getMessageHandler(channel)!;
+      await handler(CHANNEL_CTX, 'message 1');
+
+      // Second message reuses the cached session — factory.resume called only once.
+      (session.send as ReturnType<typeof vi.fn>).mockReturnValue((async function* () { yield 'reply2'; })());
+      await handler(CHANNEL_CTX, 'message 2');
+
+      expect(factory.resume).toHaveBeenCalledTimes(1);
     });
   });
 

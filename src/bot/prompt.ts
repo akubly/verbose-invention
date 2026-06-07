@@ -139,7 +139,7 @@ export function disposePromptRegistry(bot: Bot<Context>): void {
 export async function promptUserForPermission(
   bot: Bot<Context>,
   chatId: number,
-  topicId: number,
+  topicId: number | undefined,
   toolName: string,
   args: string,
   signal?: AbortSignal,
@@ -149,7 +149,7 @@ export async function promptUserForPermission(
   const promptText = `⚠️ Tool approval needed\n\nTool: ${toolName}\nArgs: ${truncateArgs(args)}\n\nApprove or deny — waiting for your decision.`;
 
   const promptMessage = await bot.api.sendMessage(chatId, promptText, {
-    message_thread_id: topicId,
+    ...(topicId !== undefined && { message_thread_id: topicId }),
     reply_markup: {
       inline_keyboard: [[
         { text: '✅ Approve', callback_data: `perm:approve:${requestId}` },

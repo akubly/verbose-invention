@@ -1,11 +1,9 @@
-import type { Bot, Context } from 'grammy';
 import type { PermissionPolicy } from '../copilot/impl.js';
 import type { CopilotSessionFactory } from '../copilot/factory.js';
 import type { ISessionRegistry } from '../sessions/registry.js';
 import type { SessionLookup } from '../relay/ports.js';
 import type { ChannelPort, ChannelContext, CommandHandler } from '../channel/port.js';
 import { Relay } from '../relay/relay.js';
-import { ensurePromptRegistry } from './prompt.js';
 import { isBotCommand, COMMAND_NAMES, type CommandName } from './commands.js';
 import { loadConfig, saveConfig } from '../config/config.js';
 import {
@@ -20,14 +18,12 @@ import { handleCwdCommand, type CwdCommandLogger } from './cwdCommand.js';
 export const SESSION_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 export interface HandlerOptions {
-  bot: Bot<Context>;
   registry: ISessionRegistry;
   factory: CopilotSessionFactory;
   globalModel: string;
   /** The active ChannelPort — used to register commands and relay. */
   channel: ChannelPort;
   permissionPolicy?: PermissionPolicy;
-  telegramMirror?: { handleTelegramMessage(ctx: Context): Promise<boolean> };
   statusProvider?: { handleStatusCommand(channelCtx: ChannelContext): Promise<void> };
   /** Absolute path to config.json — required for /cwd commands and /new --cwd flag. */
   configPath?: string;
@@ -62,19 +58,11 @@ function defaultLogger(): CwdCommandLogger {
  *
  * All other text messages in forum topics are relayed to the linked session.
  */
-export function registerHandlers({ bot, registry, factory, globalModel, channel, permissionPolicy, telegramMirror, statusProvider, configPath, logger }: HandlerOptions): Relay {
-  void telegramMirror;
+export function registerHandlers({ registry, factory, globalModel, channel, permissionPolicy, statusProvider, configPath, logger }: HandlerOptions): Relay {
   const cwdLogger = logger ?? defaultLogger();
   const sessionLookup: SessionLookup = { resolve: (threadId) => registry.resolve(threadId) };
 
   const enablePermissionPrompts = permissionPolicy === 'interactiveDestructive';
-  if (enablePermissionPrompts) {
-    // Install the callback_query:data listener EAGERLY here, before bot.start()
-    // begins polling. grammY forbids bot.on() registration from within active
-    // handlers (memory-leak guard), so we must register during the setup phase
-    // alongside the other bot.command() / bot.on() calls.
-    ensurePromptRegistry(bot);
-  }
 
   const relay = new Relay(channel, sessionLookup, factory, globalModel, enablePermissionPrompts);
 
@@ -286,7 +274,7 @@ export function registerHandlers({ bot, registry, factory, globalModel, channel,
 
     // /help — show available commands
     help: async (channelCtx) => {
-      const helpText = `Reach — Telegram ↔ Copilot CLI bridge
+      const helpText = `Reach — Copilot CLI bridge
 
 Commands:
 /new <name> [--model <model>] [--cwd <alias-or-path>] — Create a session in this topic

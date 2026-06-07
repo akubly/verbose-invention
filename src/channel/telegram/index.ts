@@ -103,22 +103,88 @@ export class TelegramChannel implements ChannelPort {
 
   // ── Outbound ───────────────────────────────────────────────────────────────
 
+  /**
+   * Send a new message. Accepts RAW text, applies MarkdownV2 formatting
+   * internally, and falls back to plain text on parse-entities errors.
+   *
+   * CONTRACT: Callers MUST NOT pre-format text (e.g. via formatForTransport).
+   * Transport formatting is owned here. Passing already-escaped text will
+   * cause double-escaping and corrupt the rendered output.
+   */
   async sendMessage(ctx: ChannelContext, text: string): Promise<MessageRef> {
-    const chatId = Number(ctx.channelId);
-    const topicId = ctx.threadId ? Number(ctx.threadId) : undefined;
-    const opts = topicId !== undefined ? { message_thread_id: topicId } : undefined;
-    const sent = await this.bot.api.sendMessage(chatId, text, opts);
-    return { id: String(sent.message_id) };
+    return this._sendMessageInternal(ctx, text, ctx.threadId);
   }
 
+  /**
+   * Edit a previously sent message. Accepts RAW text, applies MarkdownV2
+   * formatting internally, and falls back to plain text on parse-entities errors.
+   *
+   * CONTRACT: Callers MUST NOT pre-format text. See sendMessage contract.
+   */
   async editMessage(ctx: ChannelContext, ref: MessageRef, text: string): Promise<boolean> {
+    return this._editMessageInternal(ctx, ref, text, ctx.threadId);
+  }
+
+  // ── Internal MarkdownV2 helpers ────────────────────────────────────────────
+
+  /**
+   * Core send logic: try MarkdownV2, fall back to plain text on parse errors.
+   * warnKey deduplicates the fallback warning log (keyed to session or thread).
+   */
+  private async _sendMessageInternal(
+    ctx: ChannelContext,
+    text: string,
+    warnKey: string,
+  ): Promise<MessageRef> {
+    const chatId = Number(ctx.channelId);
+    const topicId = ctx.threadId ? Number(ctx.threadId) : undefined;
+    try {
+      const sent = await this.bot.api.sendMessage(chatId, escapeMarkdownV2(text), {
+        ...(topicId !== undefined && { message_thread_id: topicId }),
+        parse_mode: 'MarkdownV2',
+      });
+      return { id: String(sent.message_id) };
+    } catch (err) {
+      if (!isParseEntitiesError(err)) throw err;
+      if (warnKey && !this.md2WarnedSessions.has(warnKey)) {
+        this.md2WarnedSessions.add(warnKey);
+        console.warn(`[telegram] MarkdownV2 rejected for session "${warnKey}" — falling back to plain text`);
+      }
+      const sent = await this.bot.api.sendMessage(chatId, text, {
+        ...(topicId !== undefined && { message_thread_id: topicId }),
+      });
+      return { id: String(sent.message_id) };
+    }
+  }
+
+  /**
+   * Core edit logic: try MarkdownV2, fall back to plain text on parse errors.
+   * warnKey deduplicates the fallback warning log (keyed to session or thread).
+   */
+  private async _editMessageInternal(
+    ctx: ChannelContext,
+    ref: MessageRef,
+    text: string,
+    warnKey: string,
+  ): Promise<boolean> {
     const chatId = Number(ctx.channelId);
     const messageId = Number(ref.id);
     try {
-      await this.bot.api.editMessageText(chatId, messageId, text);
+      try {
+        await this.bot.api.editMessageText(chatId, messageId, escapeMarkdownV2(text), {
+          parse_mode: 'MarkdownV2',
+        });
+      } catch (err) {
+        if (!isParseEntitiesError(err)) throw err;
+        if (warnKey && !this.md2WarnedSessions.has(warnKey)) {
+          this.md2WarnedSessions.add(warnKey);
+          console.warn(`[telegram] MarkdownV2 rejected for session "${warnKey}" — falling back to plain text`);
+        }
+        await this.bot.api.editMessageText(chatId, messageId, text);
+      }
       return true;
-    } catch (err) {
-      console.warn(`[telegram] editMessageText failed (chat=${chatId}, msg=${messageId}):`, err);
+    } catch (editErr) {
+      console.warn(`[telegram] editMessageText failed (chat=${chatId}, msg=${messageId}):`, editErr);
       return false;
     }
   }
@@ -159,7 +225,8 @@ export class TelegramChannel implements ChannelPort {
     signal?: AbortSignal,
   ): Promise<string> {
     const chatId = Number(ctx.channelId);
-    const topicId = Number(ctx.threadId);
+    // M3: omit message_thread_id when threadId is empty (General Topic).
+    const topicId = ctx.threadId ? Number(ctx.threadId) : undefined;
     // Extract tool name from question for the result text (best-effort).
     const toolMatch = /Tool:\s*(\S+)/.exec(question);
     const toolName = toolMatch?.[1] ?? 'unknown';
@@ -203,11 +270,15 @@ export class TelegramChannel implements ChannelPort {
     this.messageInterceptor = fn;
   }
 
-  // ── MarkdownV2 edit with plain-text fallback ───────────────────────────────
+  // ── MarkdownV2 wrappers (relay compat — Carter will remove after relay update) ─
 
   /**
-   * Edit a message, attempting MarkdownV2 first and falling back to plain text
-   * on parse-entities errors. Used by the relay for final (formatted) edits.
+   * Thin wrapper for relay compatibility. Delegates to the self-sufficient
+   * editMessage implementation. relay.ts calls this via duck-type check;
+   * Carter will remove this wrapper and update relay.ts to call editMessage
+   * directly.
+   *
+   * @deprecated Use editMessage directly after relay.ts is updated.
    */
   async editMessageWithMarkdown(
     ctx: ChannelContext,
@@ -215,31 +286,16 @@ export class TelegramChannel implements ChannelPort {
     text: string,
     sessionLabel = '',
   ): Promise<boolean> {
-    const chatId = Number(ctx.channelId);
-    const messageId = Number(ref.id);
-    try {
-      try {
-        await this.bot.api.editMessageText(chatId, messageId, escapeMarkdownV2(text), {
-          parse_mode: 'MarkdownV2',
-        });
-      } catch (err) {
-        if (!isParseEntitiesError(err)) throw err;
-        if (sessionLabel && !this.md2WarnedSessions.has(sessionLabel)) {
-          this.md2WarnedSessions.add(sessionLabel);
-          console.warn(`[telegram] MarkdownV2 rejected for session "${sessionLabel}" — falling back to plain text`);
-        }
-        await this.bot.api.editMessageText(chatId, messageId, text);
-      }
-      return true;
-    } catch (editErr) {
-      console.warn(`[telegram] editMessageText failed (chat=${chatId}, msg=${messageId}):`, editErr);
-      return false;
-    }
+    return this._editMessageInternal(ctx, ref, text, sessionLabel);
   }
 
   /**
-   * Send a message, attempting MarkdownV2 first and falling back to plain text
-   * on parse-entities errors. Used by the relay for follow-up formatted chunks.
+   * Thin wrapper for relay compatibility. Delegates to the self-sufficient
+   * sendMessage implementation. relay.ts calls this via duck-type check;
+   * Carter will remove this wrapper and update relay.ts to call sendMessage
+   * directly.
+   *
+   * @deprecated Use sendMessage directly after relay.ts is updated.
    */
   async sendMessageWithMarkdown(
     ctx: ChannelContext,
@@ -249,23 +305,7 @@ export class TelegramChannel implements ChannelPort {
     const chatId = Number(ctx.channelId);
     const topicId = Number(ctx.threadId);
     try {
-      let sent;
-      try {
-        sent = await this.bot.api.sendMessage(chatId, escapeMarkdownV2(text), {
-          message_thread_id: topicId,
-          parse_mode: 'MarkdownV2',
-        });
-      } catch (err) {
-        if (!isParseEntitiesError(err)) throw err;
-        if (sessionLabel && !this.md2WarnedSessions.has(sessionLabel)) {
-          this.md2WarnedSessions.add(sessionLabel);
-          console.warn(`[telegram] MarkdownV2 rejected for session "${sessionLabel}" — falling back to plain text`);
-        }
-        sent = await this.bot.api.sendMessage(chatId, text, {
-          message_thread_id: topicId,
-        });
-      }
-      return { id: String(sent.message_id) };
+      return await this._sendMessageInternal(ctx, text, sessionLabel);
     } catch (sendErr) {
       console.warn(`[telegram] sendMessage failed (chat=${chatId}, topic=${topicId}):`, sendErr);
       return null;

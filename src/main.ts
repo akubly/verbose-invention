@@ -83,12 +83,12 @@ export async function main(): Promise<void> {
   }
 
   const relay = registerHandlers({
-    bot, registry, factory,
+    registry, factory,
     globalModel: cfg.model,
     channel,
     permissionPolicy: cfg.permissionPolicy,
     configPath: cfg.configPath,
-    ...(afkMode !== undefined && { telegramMirror: afkMode, statusProvider: afkMode }),
+    ...(afkMode !== undefined && { statusProvider: afkMode }),
   });
 
   console.log(`[reach] Channel: ${cfg.reachChannel}`);

@@ -9,7 +9,7 @@
  *
  *   import './channel/telegram/index.js'; // side-effect: registers 'telegram'
  *   import './channel/teams/index.js';    // side-effect: registers 'teams'
- *   const channel = createChannel(process.env.REACH_CHANNEL ?? 'telegram');
+ *   const channel = createChannel(process.env.REACH_CHANNEL ?? 'telegram', cfg);
  *   await channel.start();
  *
  * Adding a new transport:

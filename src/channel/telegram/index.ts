@@ -169,6 +169,7 @@ export class TelegramChannel implements ChannelPort {
   ): Promise<boolean> {
     const chatId = Number(ctx.channelId);
     const messageId = Number(ref.id);
+    // Any unrecoverable error (message deleted, network failure, etc.) -> return false.
     try {
       try {
         await this.bot.api.editMessageText(chatId, messageId, escapeMarkdownV2(text), {

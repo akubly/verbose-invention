@@ -337,7 +337,7 @@ export function runCapabilityFallbackMatrix(): void {
         expect(fake.edits).toHaveLength(0);
       });
 
-      it('core relay path: send-once final message (no editMessage calls)', async () => {
+      it('FakeChannel send-once when supportsMessageEdit=false (adapter contract)', async () => {
         // Simulate what core/relay should do: check capability, then decide send-once.
         const fake = new FakeChannel({ supportsMessageEdit: false });
         const FINAL_TEXT = 'Final assembled response';

@@ -75,40 +75,42 @@ export async function parseEnv(): Promise<EnvConfig> {
   }
 
   let allowedUserIdSet: ReadonlySet<number> | undefined;
-  if (process.env.TELEGRAM_ALLOWED_USER_IDS !== undefined) {
-    const rawAllowedUserIds = process.env.TELEGRAM_ALLOWED_USER_IDS.trim();
-    if (rawAllowedUserIds.length === 0) {
-      console.error(
-        '[reach] Fatal: TELEGRAM_ALLOWED_USER_IDS is set to an empty value — this is a misconfiguration. ' +
-        'Unset the variable to allow all chat members, or provide a comma-separated list of user IDs.',
+  if (reachChannel === 'telegram') {
+    if (process.env.TELEGRAM_ALLOWED_USER_IDS !== undefined) {
+      const rawAllowedUserIds = process.env.TELEGRAM_ALLOWED_USER_IDS.trim();
+      if (rawAllowedUserIds.length === 0) {
+        console.error(
+          '[reach] Fatal: TELEGRAM_ALLOWED_USER_IDS is set to an empty value — this is a misconfiguration. ' +
+          'Unset the variable to allow all chat members, or provide a comma-separated list of user IDs.',
+        );
+        process.exit(1);
+      }
+      const tokens = rawAllowedUserIds.split(',').map((id) => id.trim());
+      const parsedIds = tokens.map((id) => Number(id));
+      if (tokens.some((id) => id.length === 0) || parsedIds.some((id) => !Number.isInteger(id) || id <= 0)) {
+        console.error('[reach] Fatal: TELEGRAM_ALLOWED_USER_IDS must be a comma-separated list of positive integer Telegram user IDs');
+        process.exit(1);
+      }
+      allowedUserIdSet = new Set(parsedIds);
+    } else if (Object.prototype.hasOwnProperty.call(config, 'telegramAllowedUserIds')) {
+      if (!Array.isArray(config.telegramAllowedUserIds) || config.telegramAllowedUserIds.some((id) => !Number.isInteger(id) || id <= 0)) {
+        console.error('[reach] Fatal: telegramAllowedUserIds in config must be an array of positive integer Telegram user IDs');
+        process.exit(1);
+      }
+      allowedUserIdSet = new Set(config.telegramAllowedUserIds);
+    }
+
+    if (allowedUserIdSet !== undefined && allowedUserIdSet.size === 0) {
+      console.error('[reach] Fatal: allowed user list is empty (env var TELEGRAM_ALLOWED_USER_IDS or config telegramAllowedUserIds resolved to size 0) — this would deny all users. Unset to allow all, or provide at least one ID.');
+      process.exit(1);
+    }
+
+    // Warn that all chat members can trigger AFK mirror input (security-relevant; only when chatId is known)
+    if (chatId !== undefined && allowedUserIdSet === undefined) {
+      console.warn(
+        `[reach] ⚠️  TELEGRAM_ALLOWED_USER_IDS is not configured — ALL members of chat ${chatId} can send AFK mirror input to this machine. To restrict, set TELEGRAM_ALLOWED_USER_IDS to a comma-separated list of allowed Telegram user IDs.`,
       );
-      process.exit(1);
     }
-    const tokens = rawAllowedUserIds.split(',').map((id) => id.trim());
-    const parsedIds = tokens.map((id) => Number(id));
-    if (tokens.some((id) => id.length === 0) || parsedIds.some((id) => !Number.isInteger(id) || id <= 0)) {
-      console.error('[reach] Fatal: TELEGRAM_ALLOWED_USER_IDS must be a comma-separated list of positive integer Telegram user IDs');
-      process.exit(1);
-    }
-    allowedUserIdSet = new Set(parsedIds);
-  } else if (Object.prototype.hasOwnProperty.call(config, 'telegramAllowedUserIds')) {
-    if (!Array.isArray(config.telegramAllowedUserIds) || config.telegramAllowedUserIds.some((id) => !Number.isInteger(id) || id <= 0)) {
-      console.error('[reach] Fatal: telegramAllowedUserIds in config must be an array of positive integer Telegram user IDs');
-      process.exit(1);
-    }
-    allowedUserIdSet = new Set(config.telegramAllowedUserIds);
-  }
-
-  if (allowedUserIdSet !== undefined && allowedUserIdSet.size === 0) {
-    console.error('[reach] Fatal: allowed user list is empty (env var TELEGRAM_ALLOWED_USER_IDS or config telegramAllowedUserIds resolved to size 0) — this would deny all users. Unset to allow all, or provide at least one ID.');
-    process.exit(1);
-  }
-
-  // Warn that all chat members can trigger AFK mirror input (security-relevant; only when chatId is known)
-  if (chatId !== undefined && allowedUserIdSet === undefined) {
-    console.warn(
-      `[reach] ⚠️  TELEGRAM_ALLOWED_USER_IDS is not configured — ALL members of chat ${chatId} can send AFK mirror input to this machine. To restrict, set TELEGRAM_ALLOWED_USER_IDS to a comma-separated list of allowed Telegram user IDs.`,
-    );
   }
 
   return {

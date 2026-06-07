@@ -179,12 +179,12 @@ export interface ChannelPort {
   // ── Formatting (transport-owned) ────────────────────────────────
 
   /**
-   * Convert raw text (roughly CommonMark from SDK output) into the
-   * transport's native format (MarkdownV2, HTML, Adaptive Card JSON, etc.).
+   * Convert raw text into the transport's native format
+   * (MarkdownV2, HTML, Adaptive Card JSON, etc.).
    *
-   * Called by the core before sendMessage/editMessage when the core wants
-   * to apply rich formatting. Adapters that don't support rich formatting
-   * may return the input unchanged.
+   * Called INTERNALLY by the adapter inside sendMessage()/editMessage() —
+   * the core relay passes raw text and never calls this method directly.
+   * Adapters without rich formatting may return the input unchanged.
    */
   formatForTransport(markdown: string): string;
 

@@ -6,9 +6,8 @@
  */
 
 import 'dotenv/config';
-import './channel/telegram/index.js'; // side-effect: registers 'telegram' channel factory
+import { TelegramChannel } from './channel/telegram/index.js'; // side-effect: registers 'telegram' channel factory
 import { createChannel } from './channel/registry.js';
-import { TelegramChannel } from './channel/telegram/index.js';
 import { registerHandlers } from './bot/handlers.js';
 import { SessionRegistry } from './sessions/registry.js';
 import { CopilotClientImpl } from './copilot/impl.js';

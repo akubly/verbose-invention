@@ -10,4 +10,14 @@
 
 **F1 independent verification (2026-06-06):** Added `tests/relay/relay.capabilities.test.ts` — 9 new relay-level capability tests that drive the REAL relay with mock channels configured for each of Carter's three cases. Key insight: the anti-regression test for Case C (editMessage count stays 1 across 12 chunks) uses fake timers that advance 1000ms per chunk inside the async iterator, which forces the 800ms throttle window to reopen on every iteration. Without timer advancement, the throttle naturally suppresses intermediate edits even on old code — so the timer-advancing approach is essential to make the test truly discriminating at the mechanical level. Primary F1 discriminator for Case C is the "thinking…" vs "…" sendMessage assertion, which unambiguously separates the pre-fix Case A path from the fixed Case C path. Lesson: for throttle-gated behavior, always advance fake timers inside the iterator to make timing assertions meaningful. 946 tests green after adding 9.
 
+**Cycle-1 verification (2026-06-06):** Added 17 new tests across three files to catch R1/B1/B2/I2 regressions that the 946-test suite missed. Key learnings:
+
+1. **Private-field inspection via casting is the right tool for factory tests.** The R1 regression involved a constructor argument being silently wrong (chatId=0 instead of 99999). The adapter is a real class with a private field; the cleanest regression test casts to `unknown as { allowedChatId: number }` to assert the exact value. Behavioral tests (e.g., message filtering) also work but require more scaffolding.
+
+2. **Module-level vi.mock must be hoisted before side-effect imports.** The telegram factory (`registerChannel(...)`) runs at import time and captures the `Bot` constructor from grammy. `vi.mock('grammy')` must appear before the import of `telegram/index.js` so the factory closure sees the mocked Bot. Vitest hoists `vi.mock` calls automatically, making this safe.
+
+3. **Boolean return propagation tests need the return to be soft-failure (not throw).** For I2, if we mocked editMessage to throw, the existing pre-fix code would also fail in safeEdit's `catch` clause (returning false). The discriminating scenario is `editMessage.mockResolvedValue(false)` — a false return that only the post-fix `return await channel.editMessage(...)` propagates. Always think: "what would the pre-fix code do differently?"
+
+4. **B2 (non-Telegram boot) uses instanceof-defeating plain objects.** Since TelegramChannel is mocked to MockTelegramChannelClass in main-composition.test.ts, a plain object literal is not an instance of it and correctly fails the `instanceof TelegramChannel` guard. No need to create a separate class hierarchy.
+
 ---

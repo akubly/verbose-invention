@@ -82,12 +82,11 @@ function makeActiveController(bridge: TestBridge, bot = makeMockBot()): AfkModeC
   );
 }
 
-/** Minimal Context double for handleStatusCommand. */
+/** ChannelContext double for handleStatusCommand. */
 function makeStatusCtx(topicId = TOPIC_ID) {
   return {
-    message: { message_thread_id: topicId },
-    chat: { id: CHAT_ID },
-    reply: vi.fn().mockResolvedValue({ message_id: 1 }),
+    threadId: String(topicId),
+    channelId: String(CHAT_ID),
   };
 }
 
@@ -107,7 +106,7 @@ describe('AfkModeController — lastKnownExcerpts stale-value clearing', () => {
     bridge.emitAfkRequest(SESSION_ID, 'Hello from assistant');
     await flush();
 
-    await controller.handleStatusCommand(makeStatusCtx() as never);
+    await controller.handleStatusCommand(makeStatusCtx());
 
     const [[, statusText]] = bot.api.sendMessage.mock.calls as [[number, string, unknown]];
     expect(statusText).toContain('Hello from assistant');
@@ -128,7 +127,7 @@ describe('AfkModeController — lastKnownExcerpts stale-value clearing', () => {
     await flush();
 
     bot.api.sendMessage.mockClear();
-    await controller.handleStatusCommand(makeStatusCtx() as never);
+    await controller.handleStatusCommand(makeStatusCtx());
 
     const [[, statusText]] = bot.api.sendMessage.mock.calls as [[number, string, unknown]];
     expect(statusText).not.toContain('Stale excerpt from first activation');
@@ -149,7 +148,7 @@ describe('AfkModeController — lastKnownExcerpts stale-value clearing', () => {
     await flush();
 
     bot.api.sendMessage.mockClear();
-    await controller.handleStatusCommand(makeStatusCtx() as never);
+    await controller.handleStatusCommand(makeStatusCtx());
 
     const [[, statusText]] = bot.api.sendMessage.mock.calls as [[number, string, unknown]];
     expect(statusText).not.toContain('Prior excerpt');
@@ -177,7 +176,7 @@ describe('AfkModeController — excerpt truncation at ingestion (C8)', () => {
     bridge.emitAfkRequest(SESSION_ID, longExcerpt);
     await flush();
 
-    await controller.handleStatusCommand(makeStatusCtx() as never);
+    await controller.handleStatusCommand(makeStatusCtx());
     const [[, statusText]] = bot.api.sendMessage.mock.calls as [[number, string, unknown]];
     // The raw 600-char string must not appear (was truncated before storage).
     expect(statusText).not.toContain(longExcerpt);
@@ -200,7 +199,7 @@ describe('AfkModeController — excerpt truncation at ingestion (C8)', () => {
     bridge.emitAfkRequest(SESSION_ID, exactExcerpt);
     await flush();
 
-    await controller.handleStatusCommand(makeStatusCtx() as never);
+    await controller.handleStatusCommand(makeStatusCtx());
     const [[, statusText]] = bot.api.sendMessage.mock.calls as [[number, string, unknown]];
     expect(statusText).toContain(exactExcerpt);
     expect(statusText).not.toContain('…');
@@ -215,7 +214,7 @@ describe('AfkModeController — excerpt truncation at ingestion (C8)', () => {
     bridge.emitAfkRequest(SESSION_ID, shortExcerpt);
     await flush();
 
-    await controller.handleStatusCommand(makeStatusCtx() as never);
+    await controller.handleStatusCommand(makeStatusCtx());
     const [[, statusText]] = bot.api.sendMessage.mock.calls as [[number, string, unknown]];
     expect(statusText).toContain(shortExcerpt);
     expect(statusText).not.toContain('…');

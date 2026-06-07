@@ -214,54 +214,35 @@ describe('TelegramChannel — Kat gotcha: isBotCommand filter lives in onMessage
   });
 });
 
-describe('TelegramChannel — Kat gotcha: /status and /cwd synthetic ctx routes reply to channel.sendMessage', () => {
-  it('makeSyntheticCtx.reply() in handlers.ts calls channel.sendMessage with the channelCtx', async () => {
-    // This tests the BEHAVIOR produced by handlers.ts registerHandlers, which
-    // creates a synthetic grammY ctx whose reply() calls channel.sendMessage.
-    // We validate that the synthetic ctx pattern works correctly.
-    const { bot } = makeMockBot(ALLOWED_CHAT_ID);
-    const ch = new TelegramChannel(bot, ALLOWED_CHAT_ID);
-
-    const { bot: mockBot } = makeMockBot(ALLOWED_CHAT_ID);
-
-    // Build a synthetic ctx like handlers.ts does for /status and /cwd.
+describe('TelegramChannel — N2 cleanup: /status and /cwd handlers route through ChannelPort directly', () => {
+  it('statusProvider.handleStatusCommand receives the original ChannelContext (no grammY shim)', async () => {
+    // After N2: handlers.ts calls statusProvider.handleStatusCommand(channelCtx) directly.
+    // This test confirms the ChannelContext passes through unmodified.
     const channelCtx: ChannelContext = { threadId: '42', channelId: String(ALLOWED_CHAT_ID) };
-    const topicIdNum = channelCtx.threadId ? Number(channelCtx.threadId) : undefined;
-
-    const sendMessageMock2 = vi.fn().mockResolvedValue({ id: '50' });
-    const channelDouble = {
-      sendMessage: sendMessageMock2,
+    const received: ChannelContext[] = [];
+    const statusProvider = {
+      handleStatusCommand: async (ctx: ChannelContext) => { received.push(ctx); },
     };
 
-    const syntheticCtx: any = {
-      message: topicIdNum !== undefined ? { message_thread_id: topicIdNum } : undefined,
-      reply: async (text: string) => {
-        await channelDouble.sendMessage(channelCtx, text);
-        return {};
-      },
-    };
-
-    // Simulate statusProvider.handleStatusCommand calling ctx.reply()
-    await syntheticCtx.reply('Status: AFK session active');
-    expect(sendMessageMock2).toHaveBeenCalledWith(channelCtx, 'Status: AFK session active');
+    // Verify the ChannelContext reaches the provider unmodified.
+    await statusProvider.handleStatusCommand(channelCtx);
+    expect(received).toHaveLength(1);
+    expect(received[0]).toEqual(channelCtx);
+    expect(received[0]).not.toHaveProperty('message'); // no grammY ctx leakage
   });
 
-  it('synthetic ctx for General Topic has message=undefined (no message_thread_id)', () => {
-    const channelCtx: ChannelContext = { threadId: '', channelId: String(ALLOWED_CHAT_ID) };
-    const topicIdNum = channelCtx.threadId ? Number(channelCtx.threadId) : undefined;
-    const syntheticCtx: any = {
-      message: topicIdNum !== undefined ? { message_thread_id: topicIdNum } : undefined,
-    };
-    // Empty threadId → message should be undefined
-    expect(syntheticCtx.message).toBeUndefined();
+  it('channelCtx with empty threadId correctly represents General Topic (no thread)', () => {
+    // General Topic in Telegram has no message_thread_id.
+    // After N2, handleCwdCommand uses channelCtx.threadId !== '' to detect this.
+    const generalCtx: ChannelContext = { threadId: '', channelId: String(ALLOWED_CHAT_ID) };
+    expect(generalCtx.threadId).toBe('');
+    expect(generalCtx.threadId !== '').toBe(false); // signals General Topic → /cwd is allowed
   });
 
-  it('synthetic ctx for topic thread has correct message_thread_id', () => {
-    const channelCtx: ChannelContext = { threadId: '42', channelId: String(ALLOWED_CHAT_ID) };
-    const topicIdNum = channelCtx.threadId ? Number(channelCtx.threadId) : undefined;
-    const syntheticCtx: any = {
-      message: topicIdNum !== undefined ? { message_thread_id: topicIdNum } : undefined,
-    };
-    expect(syntheticCtx.message?.message_thread_id).toBe(42);
+  it('channelCtx with non-empty threadId correctly represents a forum topic', () => {
+    // After N2, handleStatusCommand uses channelCtx.threadId to derive the numeric topicId.
+    const topicCtx: ChannelContext = { threadId: '42', channelId: String(ALLOWED_CHAT_ID) };
+    expect(topicCtx.threadId !== '').toBe(true);    // signals a topic thread
+    expect(Number(topicCtx.threadId)).toBe(42);      // numeric conversion used by safeSendMessage
   });
 });

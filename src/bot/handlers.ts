@@ -28,7 +28,7 @@ export interface HandlerOptions {
   channel: ChannelPort;
   permissionPolicy?: PermissionPolicy;
   telegramMirror?: { handleTelegramMessage(ctx: Context): Promise<boolean> };
-  statusProvider?: { handleStatusCommand(ctx: Context): Promise<void> };
+  statusProvider?: { handleStatusCommand(channelCtx: ChannelContext): Promise<void> };
   /** Absolute path to config.json — required for /cwd commands and /new --cwd flag. */
   configPath?: string;
   logger?: CwdCommandLogger;
@@ -77,20 +77,6 @@ export function registerHandlers({ bot, registry, factory, globalModel, channel,
   }
 
   const relay = new Relay(channel, sessionLookup, factory, globalModel, enablePermissionPrompts);
-
-  // Build a synthetic grammY Context-like object from a ChannelContext.
-  // Used only for command handlers that delegate to Telegram-specific utilities
-  // (handleCwdCommand, handleStatusCommand) that still accept a grammY Context.
-  function makeSyntheticCtx(channelCtx: ChannelContext) {
-    const topicIdNum = channelCtx.threadId ? Number(channelCtx.threadId) : undefined;
-    return {
-      message: topicIdNum !== undefined ? { message_thread_id: topicIdNum } : undefined,
-      reply: async (text: string) => {
-        await channel.sendMessage(channelCtx, text);
-        return {};
-      },
-    } as unknown as Context;
-  }
 
   // Registered via the COMMAND_NAMES loop below; defined here so relay is in scope.
   const commandHandlers: Record<CommandName, CommandHandler> = {
@@ -327,22 +313,13 @@ Commands:
         await channel.sendMessage(channelCtx, '⚠️ Status requires the extension bridge to be active.');
         return;
       }
-      await statusProvider.handleStatusCommand(makeSyntheticCtx(channelCtx));
+      await statusProvider.handleStatusCommand(channelCtx);
     },
 
     // /cwd list|add|remove — manage the known-cwds registry (General Topic only)
     cwd: async (channelCtx, args) => {
       try {
-        const topicIdNum = channelCtx.threadId ? Number(channelCtx.threadId) : undefined;
-        const syntheticCtx = {
-          message: topicIdNum !== undefined ? { message_thread_id: topicIdNum } : undefined,
-          match: args,
-          reply: async (text: string) => {
-            await channel.sendMessage(channelCtx, text);
-            return {};
-          },
-        } as unknown as Context;
-        await handleCwdCommand(syntheticCtx, {
+        await handleCwdCommand(channelCtx, args, channel, {
           logger: cwdLogger,
           ...(configPath !== undefined && { configPath }),
         });
@@ -362,10 +339,6 @@ Commands:
     if (!channelCtx.threadId) return;
     if (isBotCommand(text)) return;
     await relay.relay(channelCtx, text);
-  });
-
-  bot.catch((err) => {
-    console.error('[bot] Unhandled error:', err.message, err.error);
   });
 
   return relay;

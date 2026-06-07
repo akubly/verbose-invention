@@ -2,6 +2,7 @@ import type { Bot, Context } from 'grammy';
 import type { ISessionRegistry } from '../sessions/registry.js';
 import { ERROR_CODES, type BridgeSessionInfo, type ModeState, type RegistrationExtras } from '../bridge/protocol.js';
 import type { AfkBridgePort } from './afkBridgePort.js';
+import type { ChannelContext } from '../channel/port.js';
 import { AfkStreamRouter } from './afkStreamRouter.js';
 import { isBotCommand } from './commands.js';
 import { redactSecrets } from './redactSecrets.js';
@@ -582,24 +583,24 @@ export class AfkModeController {
    * Sends the current orientation message regardless of whether one has been sent before.
    * Only works inside AFK-active session topics.
    */
-  async handleStatusCommand(ctx: Context): Promise<void> {
-    const topicId = ctx.message?.message_thread_id;
-    if (!topicId) {
-      await ctx.reply('⚠️ /status must be used inside a session topic.');
+  async handleStatusCommand(channelCtx: ChannelContext): Promise<void> {
+    const topicId = channelCtx.threadId !== '' ? Number(channelCtx.threadId) : undefined;
+    if (topicId === undefined) {
+      await this.bot.api.sendMessage(this.chatId, '⚠️ /status must be used inside a session topic.');
       return;
     }
     if (!this.mode.active) {
-      await ctx.reply('ℹ️ AFK mode is not active.', { message_thread_id: topicId });
+      await this.safeSendMessage('ℹ️ AFK mode is not active.', topicId);
       return;
     }
     const sessionId = this.topicSessions.get(topicId);
     if (!sessionId) {
-      await ctx.reply('⚠️ No AFK session is bound to this topic.', { message_thread_id: topicId });
+      await this.safeSendMessage('⚠️ No AFK session is bound to this topic.', topicId);
       return;
     }
     const binding = this.sessionTopics.get(sessionId);
     if (!binding) {
-      await ctx.reply('⚠️ Session binding not found.', { message_thread_id: topicId });
+      await this.safeSendMessage('⚠️ Session binding not found.', topicId);
       return;
     }
     await this.safeSendMessage(this.formatOrientationMessage(binding), topicId);

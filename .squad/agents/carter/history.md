@@ -35,3 +35,7 @@ the consumer (relay) must gate every optional-method call on the flag — not
 assume the adapter will silently swallow calls it doesn't support. The
 conformance test kit validates adapter behavior; the relay capability tests
 (owned by Jun) validate that the relay *calls the right methods given the flags*.
+
+### N4 Fix — grammy require→ESM import (2026-06-06)
+
+`registerChannel`'s factory had `const { Bot } = require('grammy') as typeof import('grammy')` inside it. The comment said it was deferring grammY's load until the factory runs. There was NO circular dependency — registry.ts only imports `type { ChannelPort }` and never touches the telegram module. The defer was pure premature optimisation. Fixed by promoting `Bot` from the type-only import to a value import (`import { Bot, type Context } from 'grammy'`) and deleting the 3-line require block. tsc, lint, vitest all green; test count unchanged at 946.

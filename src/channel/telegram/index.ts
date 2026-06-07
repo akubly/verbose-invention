@@ -1,4 +1,4 @@
-import type { Bot, Context } from 'grammy';
+import { Bot, type Context } from 'grammy';
 import type {
   ChannelPort,
   ChannelCapabilities,
@@ -283,8 +283,5 @@ registerChannel('telegram', () => {
   const rawChatId = process.env.TELEGRAM_CHAT_ID;
   const chatId = rawChatId ? Number(rawChatId) : 0;
 
-  // Import Bot lazily to avoid hard-wiring grammY at module load when not needed.
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { Bot } = require('grammy') as typeof import('grammy');
   return new TelegramChannel(new Bot(token), chatId);
 });

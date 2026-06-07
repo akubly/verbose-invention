@@ -269,59 +269,13 @@ export class TelegramChannel implements ChannelPort {
   setMessageInterceptor(fn: (ctx: Context) => Promise<boolean>): void {
     this.messageInterceptor = fn;
   }
-
-  // ── MarkdownV2 wrappers (relay compat — Carter will remove after relay update) ─
-
-  /**
-   * Thin wrapper for relay compatibility. Delegates to the self-sufficient
-   * editMessage implementation. relay.ts calls this via duck-type check;
-   * Carter will remove this wrapper and update relay.ts to call editMessage
-   * directly.
-   *
-   * @deprecated Use editMessage directly after relay.ts is updated.
-   */
-  async editMessageWithMarkdown(
-    ctx: ChannelContext,
-    ref: MessageRef,
-    text: string,
-    sessionLabel = '',
-  ): Promise<boolean> {
-    return this._editMessageInternal(ctx, ref, text, sessionLabel);
-  }
-
-  /**
-   * Thin wrapper for relay compatibility. Delegates to the self-sufficient
-   * sendMessage implementation. relay.ts calls this via duck-type check;
-   * Carter will remove this wrapper and update relay.ts to call sendMessage
-   * directly.
-   *
-   * @deprecated Use sendMessage directly after relay.ts is updated.
-   */
-  async sendMessageWithMarkdown(
-    ctx: ChannelContext,
-    text: string,
-    sessionLabel = '',
-  ): Promise<MessageRef | null> {
-    const chatId = Number(ctx.channelId);
-    const topicId = Number(ctx.threadId);
-    try {
-      return await this._sendMessageInternal(ctx, text, sessionLabel);
-    } catch (sendErr) {
-      console.warn(`[telegram] sendMessage failed (chat=${chatId}, topic=${topicId}):`, sendErr);
-      return null;
-    }
-  }
 }
 
 // ── Self-registration ──────────────────────────────────────────────────────
 
-registerChannel('telegram', () => {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) {
+registerChannel('telegram', (cfg) => {
+  if (!cfg.token) {
     throw new Error('[telegram] TELEGRAM_BOT_TOKEN is required to create the telegram channel');
   }
-  const rawChatId = process.env.TELEGRAM_CHAT_ID;
-  const chatId = rawChatId ? Number(rawChatId) : 0;
-
-  return new TelegramChannel(new Bot(token), chatId);
+  return new TelegramChannel(new Bot(cfg.token), cfg.chatId ?? 0);
 });

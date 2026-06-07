@@ -27,7 +27,6 @@ import { Relay } from '../../src/relay/relay.js';
 import type { SessionLookup } from '../../src/relay/ports.js';
 import type { SessionEntry } from '../../src/sessions/registry.js';
 import type { CopilotSessionFactory } from '../../src/copilot/factory.js';
-import { escapeMarkdownV2 } from '../../src/relay/markdownV2.js';
 import { FakeBridge } from '../helpers/FakeBridge.js';
 
 // ── helpers ────────────────────────────────────────────────────────────────────
@@ -48,7 +47,7 @@ function makeStubRegistry(entries: SessionEntry[] = []): SessionLookup {
 }
 
 function makeMockChannel() {
-  const editMessage = vi.fn().mockResolvedValue(undefined);
+  const editMessage = vi.fn().mockResolvedValue(true);
   const sendMessage = vi.fn().mockResolvedValue({ id: '100' });
   return {
     editMessage,
@@ -151,8 +150,8 @@ describe('relay + BridgeSession integration', () => {
     expect(editCalls.length).toBeGreaterThan(0);
 
     const finalText = editCalls[editCalls.length - 1][2] as string;
-    // The relay formats with MarkdownV2 and appends a HUD footer
-    expect(finalText).toContain(escapeMarkdownV2('Alpha Beta Gamma'));
+    // The relay passes raw text; the adapter handles formatting internally
+    expect(finalText).toContain('Alpha Beta Gamma');
   });
 
   it('editMessageText is called at most once per 800ms during rapid-fire chunks (throttle regression guard)', async () => {
@@ -199,6 +198,7 @@ describe('relay + BridgeSession integration', () => {
     expect(editCalls.length).toBe(2);
 
     const finalText = editCalls[editCalls.length - 1][2] as string;
-    expect(finalText).toContain(escapeMarkdownV2('chunk0 chunk1 chunk2 chunk3 last'));
+    // Raw text — adapter handles formatting; relay passes through unchanged
+    expect(finalText).toContain('chunk0 chunk1 chunk2 chunk3 last');
   });
 });

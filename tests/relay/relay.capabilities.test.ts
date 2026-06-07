@@ -30,7 +30,7 @@ function makeMockChannel(): ChannelPort & {
   editMessage: ReturnType<typeof vi.fn>;
 } {
   const sendMessage = vi.fn().mockResolvedValue({ id: '100' });
-  const editMessage = vi.fn().mockResolvedValue(undefined);
+  const editMessage = vi.fn().mockResolvedValue(true);
   return {
     name: 'mock',
     start: vi.fn(),

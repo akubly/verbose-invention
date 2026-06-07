@@ -32,7 +32,6 @@ export async function main(): Promise<void> {
     return;
   }
 
-  const chatId = cfg.chatId!; // guaranteed by isPairingMode === false above
   const registry = new SessionRegistry(cfg.registryPath);
 
   let bridge: ExtensionBridge | null = null;
@@ -57,29 +56,36 @@ export async function main(): Promise<void> {
 
   await registry.load();
 
-  const channel = createChannel(cfg.reachChannel);
+  const channel = createChannel(cfg.reachChannel, cfg);
 
-  // TelegramChannel exposes its bot for components that need direct grammY access
-  // (AfkModeController, ensurePromptRegistry). Only cast when needed.
-  const telegramChannel = channel as TelegramChannel;
-  const bot = telegramChannel.bot;
+  let afkMode: AfkModeController | undefined;
 
-  if (cfg.permissionPolicy === 'approveAll') {
-    console.warn('[reach] REACH_PERMISSION_POLICY=approveAll; AFK mirror input from Telegram will be blocked for safety. Use interactiveDestructive for remote input.');
-  }
+  // AFK mirror and grammY bot access are Telegram-specific.
+  // For non-Telegram channels, skip AFK wiring and log a warning.
+  if (channel instanceof TelegramChannel) {
+    const bot = channel.bot;
+    const chatId = cfg.chatId!; // guaranteed non-undefined for Telegram normal mode
 
-  const afkMode = bridge
-    ? new AfkModeController(bot, bridge, registry, chatId, undefined, {
-      ...(cfg.allowedUserIdSet !== undefined && { allowedUserIds: cfg.allowedUserIdSet }),
-      allowTelegramInput: cfg.permissionPolicy !== 'approveAll',
-      globalModel: cfg.model,
-    })
-    : undefined;
+    if (cfg.permissionPolicy === 'approveAll') {
+      console.warn('[reach] REACH_PERMISSION_POLICY=approveAll; AFK mirror input from Telegram will be blocked for safety. Use interactiveDestructive for remote input.');
+    }
 
-  // Wire AFK mirror interception into TelegramChannel before start() registers handlers.
-  // handleTelegramMessage needs grammY Context (for from.id, reply), so it stays Telegram-specific.
-  if (afkMode) {
-    telegramChannel.setMessageInterceptor((ctx) => afkMode.handleTelegramMessage(ctx));
+    afkMode = bridge
+      ? new AfkModeController(bot, bridge, registry, chatId, undefined, {
+        ...(cfg.allowedUserIdSet !== undefined && { allowedUserIds: cfg.allowedUserIdSet }),
+        allowTelegramInput: cfg.permissionPolicy !== 'approveAll',
+        globalModel: cfg.model,
+      })
+      : undefined;
+
+    // Wire AFK mirror interception into TelegramChannel before start() registers handlers.
+    if (afkMode) {
+      channel.setMessageInterceptor((ctx) => afkMode!.handleTelegramMessage(ctx));
+    }
+
+    console.log(`[reach] Allowed chat: ***${String(chatId).slice(-4)}`);
+  } else {
+    console.warn('[reach] AFK mirror currently requires the Telegram transport; skipping AFK wiring.');
   }
 
   const relay = registerHandlers({
@@ -95,7 +101,6 @@ export async function main(): Promise<void> {
   console.log(`[reach] Model: ${cfg.model}`);
   console.log(`[reach] Permission policy: ${cfg.permissionPolicy}`);
   console.log(`[reach] Registry: ${cfg.registryPath}`);
-  console.log(`[reach] Allowed chat: ***${String(chatId).slice(-4)}`);
 
   let shuttingDown = false;
   const shutdown = () => {

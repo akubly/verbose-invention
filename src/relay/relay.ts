@@ -5,7 +5,6 @@ import type {
 } from '../copilot/factory.js';
 import type { SessionLookup } from './ports.js';
 import type { ChannelPort, ChannelContext, MessageRef } from '../channel/port.js';
-import type { TelegramChannel } from '../channel/telegram/index.js';
 import { IdleMonitor } from '../idleMonitor.js';
 import { StreamTimeoutError } from '../copilot/impl.js';
 
@@ -132,7 +131,7 @@ export class Relay {
         const body = accumulated || '_(empty response)_';
         const chunks = this.channel.splitMessage(body, footer);
 
-        const firstOk = await this.safeEditFormatted(channelCtx, placeholderRef, chunks[0] ?? '', entry.sessionName);
+        const firstOk = await this.safeEdit(channelCtx, placeholderRef, chunks[0] ?? '');
 
         if (!firstOk) {
           console.error(
@@ -150,7 +149,7 @@ export class Relay {
         let failedChunks = 0;
         for (let i = 1; i < chunks.length; i++) {
           await new Promise<void>((resolve) => setTimeout(resolve, CHUNK_SEND_DELAY_MS));
-          const ok = await this.safeSendFormatted(channelCtx, chunks[i] ?? '', entry.sessionName, i + 1, totalChunks);
+          const ok = await this.safeSend(channelCtx, chunks[i] ?? '', i + 1, totalChunks);
           if (!ok) failedChunks++;
         }
         if (failedChunks > 0) {
@@ -199,7 +198,7 @@ export class Relay {
         const body = accumulated || '_(empty response)_';
         const chunks = this.channel.splitMessage(body, footer);
 
-        const firstOk = await this.safeSendFormatted(channelCtx, chunks[0] ?? '', entry.sessionName);
+        const firstOk = await this.safeSend(channelCtx, chunks[0] ?? '');
         if (!firstOk) {
           console.error(`[relay] First-chunk send failed — aborting follow-up chunks for thread ${threadId}`);
           return;
@@ -209,7 +208,7 @@ export class Relay {
         let failedChunks = 0;
         for (let i = 1; i < chunks.length; i++) {
           await new Promise<void>((resolve) => setTimeout(resolve, CHUNK_SEND_DELAY_MS));
-          const ok = await this.safeSendFormatted(channelCtx, chunks[i] ?? '', entry.sessionName, i + 1, totalChunks);
+          const ok = await this.safeSend(channelCtx, chunks[i] ?? '', i + 1, totalChunks);
           if (!ok) failedChunks++;
         }
         if (failedChunks > 0) {
@@ -262,7 +261,7 @@ export class Relay {
         const body = accumulated || '_(empty response)_';
         const chunks = this.channel.splitMessage(body, footer);
 
-        const firstOk = await this.safeEditFormatted(channelCtx, placeholderRef, chunks[0] ?? '', entry.sessionName);
+        const firstOk = await this.safeEdit(channelCtx, placeholderRef, chunks[0] ?? '');
         if (!firstOk) {
           console.error(
             `[relay] First-chunk edit failed — aborting follow-up chunks for thread ${threadId}; updating placeholder`,
@@ -279,7 +278,7 @@ export class Relay {
         let failedChunks = 0;
         for (let i = 1; i < chunks.length; i++) {
           await new Promise<void>((resolve) => setTimeout(resolve, CHUNK_SEND_DELAY_MS));
-          const ok = await this.safeSendFormatted(channelCtx, chunks[i] ?? '', entry.sessionName, i + 1, totalChunks);
+          const ok = await this.safeSend(channelCtx, chunks[i] ?? '', i + 1, totalChunks);
           if (!ok) failedChunks++;
         }
         if (failedChunks > 0) {
@@ -312,22 +311,17 @@ export class Relay {
   }
 
   /**
-   * Edit a message with MarkdownV2 formatting if the channel is a TelegramChannel,
-   * otherwise fall back to plain editMessage.
+   * Edit a message, returning false on failure (I2: propagates the adapter's
+   * boolean return value; catches thrown errors as false).
+   * Passes RAW text — adapters own formatting internally.
    */
-  private async safeEditFormatted(
+  private async safeEdit(
     ctx: ChannelContext,
     ref: MessageRef,
     text: string,
-    sessionLabel = '',
   ): Promise<boolean> {
-    const tg = this.asTelegramChannel();
-    if (tg) {
-      return tg.editMessageWithMarkdown(ctx, ref, text, sessionLabel);
-    }
     try {
-      await this.channel.editMessage(ctx, ref, this.channel.formatForTransport(text));
-      return true;
+      return await this.channel.editMessage(ctx, ref, text);
     } catch (editErr) {
       console.warn(`[relay] editMessage failed (thread=${ctx.threadId}):`, editErr);
       return false;
@@ -335,42 +329,26 @@ export class Relay {
   }
 
   /**
-   * Send a message with MarkdownV2 formatting if the channel is a TelegramChannel,
-   * otherwise fall back to plain sendMessage.
+   * Send a message, returning false on failure.
+   * Passes RAW text — adapters own formatting internally.
    */
-  private async safeSendFormatted(
+  private async safeSend(
     ctx: ChannelContext,
     text: string,
-    sessionLabel = '',
     chunkNumber?: number,
     totalChunks?: number,
   ): Promise<boolean> {
-    const tg = this.asTelegramChannel();
-    if (tg) {
-      const ref = await tg.sendMessageWithMarkdown(ctx, text, sessionLabel);
-      if (!ref) {
-        if (chunkNumber !== undefined) {
-          console.warn(`[relay] send failed (thread=${ctx.threadId}, chunk=${chunkNumber}/${totalChunks})`);
-        } else {
-          console.warn(`[relay] send failed (thread=${ctx.threadId})`);
-        }
-        return false;
-      }
-      return true;
-    }
     try {
-      await this.channel.sendMessage(ctx, this.channel.formatForTransport(text));
+      await this.channel.sendMessage(ctx, text);
       return true;
     } catch (sendErr) {
-      console.warn(`[relay] send failed (thread=${ctx.threadId}):`, sendErr);
+      if (chunkNumber !== undefined) {
+        console.warn(`[relay] send failed (thread=${ctx.threadId}, chunk=${chunkNumber}/${totalChunks})`);
+      } else {
+        console.warn(`[relay] send failed (thread=${ctx.threadId})`);
+      }
       return false;
     }
-  }
-
-  /** Return the channel cast as TelegramChannel if it supports the markdown edit helper. */
-  private asTelegramChannel(): TelegramChannel | null {
-    const ch = this.channel as unknown as TelegramChannel;
-    return typeof ch.editMessageWithMarkdown === 'function' ? ch : null;
   }
 
   /**

@@ -11,8 +11,12 @@ import type { PermissionPolicy } from '../copilot/impl.js';
 import { loadConfig, getConfigPath, getReachDataDir } from './config.js';
 
 export interface EnvConfig {
-  token: string;
-  /** Defined when isPairingMode is false; undefined when no chat ID is known yet. */
+  /**
+   * Telegram bot token. Defined when reachChannel is 'telegram'; undefined otherwise.
+   * Always defined when isPairingMode is true (pairing is Telegram-only).
+   */
+  token: string | undefined;
+  /** Defined when isPairingMode is false and reachChannel is 'telegram'; undefined otherwise. */
   chatId: number | undefined;
   isPairingMode: boolean;
   model: string;
@@ -25,11 +29,7 @@ export interface EnvConfig {
 }
 
 export async function parseEnv(): Promise<EnvConfig> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) {
-    console.error('[reach] Fatal: TELEGRAM_BOT_TOKEN is required');
-    process.exit(1);
-  }
+  const reachChannel = process.env.REACH_CHANNEL ?? 'telegram';
 
   const model = process.env.REACH_MODEL ?? 'claude-sonnet-4';
 
@@ -45,22 +45,33 @@ export async function parseEnv(): Promise<EnvConfig> {
   const registryPath = path.join(getReachDataDir(), 'registry.json');
   const config = await loadConfig(configPath);
 
-  // Resolve chat ID: env var > config.json > pairing mode
+  // Telegram-specific credential resolution — only required when the telegram transport is selected.
+  let token: string | undefined;
   let chatId: number | undefined;
-  const rawChatId = process.env.TELEGRAM_CHAT_ID;
-  if (rawChatId) {
-    chatId = Number(rawChatId);
-    if (!Number.isInteger(chatId)) {
-      console.error('[reach] Fatal: TELEGRAM_CHAT_ID must be a valid integer');
+
+  if (reachChannel === 'telegram') {
+    token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) {
+      console.error('[reach] Fatal: TELEGRAM_BOT_TOKEN is required');
       process.exit(1);
     }
-    if (chatId === 0) {
-      console.error('[reach] Fatal: TELEGRAM_CHAT_ID cannot be 0 — set to a real chat ID or leave unset for pairing mode.');
-      process.exit(1);
+
+    // Resolve chat ID: env var > config.json > pairing mode
+    const rawChatId = process.env.TELEGRAM_CHAT_ID;
+    if (rawChatId) {
+      chatId = Number(rawChatId);
+      if (!Number.isInteger(chatId)) {
+        console.error('[reach] Fatal: TELEGRAM_CHAT_ID must be a valid integer');
+        process.exit(1);
+      }
+      if (chatId === 0) {
+        console.error('[reach] Fatal: TELEGRAM_CHAT_ID cannot be 0 — set to a real chat ID or leave unset for pairing mode.');
+        process.exit(1);
+      }
+    } else if (config.telegramChatId) {
+      chatId = config.telegramChatId;
+      console.log(`[reach] Using chat ID from config: ***${String(chatId).slice(-4)}`);
     }
-  } else if (config.telegramChatId) {
-    chatId = config.telegramChatId;
-    console.log(`[reach] Using chat ID from config: ***${String(chatId).slice(-4)}`);
   }
 
   let allowedUserIdSet: ReadonlySet<number> | undefined;
@@ -103,12 +114,12 @@ export async function parseEnv(): Promise<EnvConfig> {
   return {
     token,
     chatId,
-    isPairingMode: chatId === undefined,
+    isPairingMode: reachChannel === 'telegram' && chatId === undefined,
     model,
     permissionPolicy,
     allowedUserIdSet,
     configPath,
     registryPath,
-    reachChannel: process.env.REACH_CHANNEL ?? 'telegram',
+    reachChannel,
   };
 }

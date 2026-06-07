@@ -18,6 +18,7 @@ const {
   mockChannelStop,
   mockSetMessageInterceptor,
   mockTelegramBot,
+  MockTelegramChannelClass,
 } = vi.hoisted(() => {
   const mockBotStop = vi.fn<[], Promise<void>>().mockResolvedValue(undefined);
   const mockBridgeStart = vi.fn<[], Promise<void>>().mockResolvedValue(undefined);
@@ -36,6 +37,31 @@ const {
   const mockChannelStop = vi.fn<[], Promise<void>>().mockResolvedValue(undefined);
   const mockSetMessageInterceptor = vi.fn();
   const mockTelegramBot = { stop: mockBotStop };
+
+  // A concrete class so `channel instanceof TelegramChannel` is true in main().
+  class MockTelegramChannelClass {
+    bot = mockTelegramBot;
+    start = mockChannelStart;
+    stop = mockChannelStop;
+    setMessageInterceptor = mockSetMessageInterceptor;
+    sendMessage = vi.fn().mockResolvedValue({ id: 'msg-1' });
+    editMessage = vi.fn().mockResolvedValue(true);
+    splitMessage = vi.fn((text: string) => [text]);
+    formatForTransport = vi.fn((text: string) => text);
+    createThread = vi.fn();
+    onMessage = vi.fn();
+    onCommand = vi.fn();
+    promptUser = vi.fn().mockResolvedValue('approve');
+    name = 'telegram';
+    capabilities = {
+      supportsMessageEdit: true,
+      supportsThreadCreation: true,
+      supportsInteractivePrompts: true,
+      supportsStreaming: true,
+      maxMessageLength: 4096,
+    };
+  }
+
   return {
     mockBotStop,
     mockBridgeStart,
@@ -49,27 +75,14 @@ const {
     mockChannelStop,
     mockSetMessageInterceptor,
     mockTelegramBot,
+    MockTelegramChannelClass,
   };
 });
 
 vi.mock('dotenv/config', () => ({}));
-vi.mock('../../src/channel/telegram/index.js', () => ({ TelegramChannel: class {} }));
+vi.mock('../../src/channel/telegram/index.js', () => ({ TelegramChannel: MockTelegramChannelClass }));
 vi.mock('../../src/channel/registry.js', () => ({
-  createChannel: vi.fn().mockReturnValue({
-    bot: mockTelegramBot,
-    start: mockChannelStart,
-    stop: mockChannelStop,
-    setMessageInterceptor: mockSetMessageInterceptor,
-    sendMessage: vi.fn(),
-    editMessage: vi.fn(),
-    splitMessage: vi.fn((text: string) => [text]),
-    formatForTransport: vi.fn((text: string) => text),
-    createThread: vi.fn(),
-    onMessage: vi.fn(),
-    onCommand: vi.fn(),
-    promptUser: vi.fn(),
-    capabilities: { supportsMessageEdit: true, supportsThreadCreation: true, supportsInteractivePrompts: true, supportsStreaming: true, maxMessageLength: 4096 },
-  }),
+  createChannel: vi.fn().mockImplementation(() => new MockTelegramChannelClass()),
 }));
 
 vi.mock('../../src/config/env.js', () => ({
@@ -180,21 +193,7 @@ describe('Integration: main() composition root (A8 + N3)', () => {
       start: mockBridgeStart,
       stop: mockBridgeStop,
     }));
-    vi.mocked(createChannel).mockReturnValue({
-      bot: mockTelegramBot,
-      start: mockChannelStart,
-      stop: mockChannelStop,
-      setMessageInterceptor: mockSetMessageInterceptor,
-      sendMessage: vi.fn(),
-      editMessage: vi.fn(),
-      splitMessage: vi.fn((text: string) => [text]),
-      formatForTransport: vi.fn((text: string) => text),
-      createThread: vi.fn(),
-      onMessage: vi.fn(),
-      onCommand: vi.fn(),
-      promptUser: vi.fn(),
-      capabilities: { supportsMessageEdit: true, supportsThreadCreation: true, supportsInteractivePrompts: true, supportsStreaming: true, maxMessageLength: 4096 },
-    } as any);
+    vi.mocked(createChannel).mockImplementation(() => new MockTelegramChannelClass() as any);
     vi.mocked(SessionRegistry).mockImplementation(() => ({
       load: mockRegistryLoad,
     }));

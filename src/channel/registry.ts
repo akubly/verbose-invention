@@ -20,16 +20,17 @@
  */
 
 import type { ChannelPort } from './port.js';
+import type { EnvConfig } from '../config/env.js';
 
 /**
  * Factory function that creates a ChannelPort instance.
  *
- * The factory receives no arguments — transport-specific config (tokens,
- * tenant IDs, channel IDs) is read from environment variables or config
- * files by the adapter itself, following the existing pattern in
- * src/config/env.ts (TELEGRAM_BOT_TOKEN, etc.).
+ * The factory receives the resolved config so adapters can read transport-
+ * specific credentials (tokens, chat IDs) from the already-resolved EnvConfig
+ * rather than re-reading raw environment variables. This ensures paired-config
+ * installs (creds in config.json, env unset) work correctly.
  */
-export type ChannelFactory = () => ChannelPort;
+export type ChannelFactory = (cfg: EnvConfig) => ChannelPort;
 
 /** Internal registry — populated by registerChannel() calls at import time. */
 const registry = new Map<string, ChannelFactory>();
@@ -59,11 +60,14 @@ export function registerChannel(name: string, factory: ChannelFactory): void {
  * Create a ChannelPort instance for the given transport name.
  *
  * @param name - Transport name matching a prior registerChannel() call.
- *               Typically sourced from `process.env.REACH_CHANNEL`.
+ *               Typically sourced from `cfg.reachChannel`.
+ * @param cfg  - Resolved EnvConfig; passed to the factory so adapters can
+ *               read credentials (token, chatId) from the already-resolved
+ *               config rather than re-reading raw environment variables.
  * @returns A new (not yet started) ChannelPort instance.
  * @throws If no transport is registered under `name`.
  */
-export function createChannel(name: string): ChannelPort {
+export function createChannel(name: string, cfg: EnvConfig): ChannelPort {
   const factory = registry.get(name);
   if (!factory) {
     const available = Array.from(registry.keys());
@@ -75,7 +79,7 @@ export function createChannel(name: string): ChannelPort {
       `Set REACH_CHANNEL to a registered transport name.`,
     );
   }
-  return factory();
+  return factory(cfg);
 }
 
 /**

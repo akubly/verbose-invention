@@ -13,7 +13,7 @@ export async function runPairingMode(cfg: EnvConfig): Promise<void> {
   console.log(`[reach] No TELEGRAM_CHAT_ID set. Pairing mode active.`);
   console.log(`[reach] Pairing code: ${pairingCode} (expires in 5 minutes)`);
 
-  const pairingBot = new Bot(cfg.token);
+  const pairingBot = new Bot(cfg.token!);
   const timeout = setTimeout(() => {
     console.error('[reach] Pairing code expired. Restart to try again.');
     process.exit(1);

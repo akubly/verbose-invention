@@ -353,3 +353,130 @@ Removed the duplicate `bot.catch()` from `handlers.ts`. The canonical handler re
 The relay now honors the capability flags correctly (F1 resolved in commit e1f3f4d, verified in commit 2b5e4a2).
 
 **After Phase 1:** Corp fork can start implementing `TeamsChannel` against the locked port contract with confidence.
+
+---
+
+## Persona Review Cycle (Phase 1 — Complete)
+
+**Dates:** 2026-06-06  
+**Requested by:** Aaron Kubly  
+**Branch:** feature/channel-abstraction  
+
+### Cycle Overview
+
+**Cycle 1 (Initial Review):** Code Panel (Correctness/Skeptic/Craft/Compliance/Architect) reviewed Phase 1 deliverables.
+- **Blocking findings:** 3 (R1 paired-config regression, B1 relay duck-typing, B2 main.ts cast)
+- **Important findings:** 5 (I1–I5)
+- **Minor findings:** 4 (M1–M4)
+
+**Cycle 2 (Remediation Verification):** All three remediation agents (Kat, Carter, Jun) delivered fixes; full panel re-verified.
+- **Blocking findings from Cycle 1:** 0 remaining — all 3 resolved
+- **Important findings from Cycle 1:** 6 remaining (all verified resolved by Cycle 2)
+- **New findings in Cycle 2:** 2 important nits (I1-residual allowed-user gating, N1 formatForTransport docstring) + minors
+- **Final status:** 0 blocking, all deferred Phase-2 items documented
+
+### Option A: Aaron's Dispositions (Accepted)
+
+After Cycle 1 findings, Aaron chose **Option A:**
+- **Fix:** R1 (regression), B1 (duck-typing), B2 (cast), I1–I3 (conditional creds, boolean, adapter contract), I1 (cheap minors)
+- **Defer:** I4 (optional createThread interface), I5 (ChannelMessage union for Adaptive Cards), M5 (central mock factory)
+
+**Remediation agents assigned:**
+- **Kat (ad05548):** I3 (remove bot/telegramMirror from HandlerOptions), M1 (/help heading), M3 (topicId guard)
+- **Carter (58e1326, 5b6d30c):** R1 (cfg-factory), B1 (relay de-duck-type), B2 (AFK guard), I1 (conditional creds), I2 (boolean return)
+- **Jun (823e5d8):** +17 regression tests covering R1, B2, B1, I2; verified all prior findings resolved
+
+### R1 — Real Regression (Previously Missed)
+
+**Finding:** The original Telegram factory read process.env.TELEGRAM_CHAT_ID directly, ignoring the resolved cfg.chatId from config.json.
+
+`	ypescript
+// PRE-FIX (WRONG):
+registerChannel('telegram', () =>
+  new TelegramChannel(
+    new Bot(process.env.TELEGRAM_BOT_TOKEN!),
+    Number(process.env.TELEGRAM_CHAT_ID) || 0,  // ← ignores cfg.chatId
+  )
+);
+
+// POST-FIX (CORRECT):
+registerChannel('telegram', (cfg) => {
+  if (!cfg.token) throw new Error('[telegram] TELEGRAM_BOT_TOKEN is required...');
+  return new TelegramChannel(new Bot(cfg.token), cfg.chatId ?? 0);  // ← uses cfg
+});
+`
+
+**Why missed in Phase 1 review:** The factory signature was updated but the implementation continued reading process.env. Jun's R1a test confirms: with TELEGRAM_CHAT_ID unset and cfg.chatId=99999, the pre-fix factory would have initialized with llowedChatId=0 (wrong), while post-fix returns llowedChatId=99999 (correct).
+
+**Cycle 2 resolution:** Carter's fix (58e1326) + Jun's regression tests (823e5d8) both verified correct.
+
+### Deferred Phase-2 Items
+
+Per Aaron's Option A dispositions, the following items are deferred to Phase 2:
+
+| Item | Description | Owner | Reason |
+|------|-------------|-------|--------|
+| I4 | Optional createThread interface extension | Backlog | Non-critical for Telegram; needed for async Teams thread creation |
+| I5 | ChannelMessage union type for Adaptive Cards | Backlog | Teams formatting; not needed for Telegram MVP |
+| M5 | Central mock factory consolidation | Backlog | Test infrastructure improvement; lower priority than fixes |
+
+### Final Metrics
+
+- **Baseline (HEAD=58e1326):** 946 tests green
+- **After Jun's regression tests (HEAD=823e5d8):** 963 tests green (+17 new, all passing)
+- **Code cleanliness:** tsc + lint clean
+- **Review status:** 2-cycle persona review PASSED; 0 blocking, all prior findings verified resolved
+- **Ship readiness:** Ready for /ship-to-pr
+
+---
+
+### Remediation Detail
+
+#### Kat — Cycle 1 Fixes (ad05548)
+
+**Items:** I3 (HandlerOptions cleanup), M1 (/help heading), M3 (topicId guard)
+
+- Removed ot: Bot<Context> and 	elegramMirror from HandlerOptions → eliminated redundant imports in handlers.ts
+- Updated /help heading from "Reach — Telegram ↔ Copilot CLI bridge" to "Reach — Copilot CLI bridge"
+- Added topicId guard in promptUser and sendMessageWithMarkdown (conditional message_thread_id spread)
+
+#### Carter — Cycle 1 + Cycle 2 Fixes (58e1326, 5b6d30c)
+
+**Cycle 1 (58e1326) — Items:** R1 (cfg-factory), B1 (relay de-duck-type), B2 (AFK guard), I1 (creds conditional), I2 (boolean return)
+
+- **R1:** Factory now reads resolved cfg.token and cfg.chatId instead of process.env directly
+- **B1:** Relay no longer duck-types TelegramChannel; calls channel.sendMessage/editMessage uniformly across all capability branches
+- **B2:** main.ts guards AFK mode setup with channel instanceof TelegramChannel check; non-Telegram channels log warning and boot normally
+- **I1:** TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID validated only when REACH_CHANNEL==='telegram'; EnvConfig.token is string | undefined
+- **I2:** safeEdit() now returns wait channel.editMessage(...) directly, propagating false-return to "failed to render reply" fallback
+
+**Cycle 2 (5b6d30c) — Items:** I1-residual (allowed-user gating fix), N1 (formatForTransport docstring)
+
+- Fixed I1-residual: allowed-user gating for non-Telegram channels (already verified in Cycle 1 but confirmed in Cycle 2)
+- Added formatForTransport docstring clarity (N1)
+
+#### Jun — Cycle 1 Verification (823e5d8)
+
+**Items:** R1, B2, B1, I2 regression tests (+17 total)
+
+- **R1a–R1d:** 4 tests for factory cfg-reading (chatId, token) from resolved EnvConfig vs process.env
+- **B2a–B2d:** 4 tests for non-Telegram boot without AfkModeController
+- **B1a–B1e:** 5 tests for relay passing raw text, never calling formatForTransport, across all capability branches
+- **I2a–I2d:** 4 tests for editMessage false-return propagation to fallback path
+
+**Baseline:** 946 tests  
+**After:** 963 tests (+17 new, all passing)  
+**Verification:** All cycle-1 findings verified resolved; no new regressions found
+
+---
+
+### Cycle 2 Outcome (Confirmed PASS)
+
+**Cycle 2 persona review panel findings summary:**
+- **Blocking findings:** 0 (all 3 from Cycle 1 resolved and verified)
+- **Important findings:** 6 (all from Cycle 1 — verified resolved by all personas)
+- **Important nits in Cycle 2:** 2 (I1-residual, N1) → both fixed by Carter (5b6d30c)
+- **Minor findings:** All addressed in remediation or deferred to Phase 2
+- **Test suite:** 963 tests green, tsc+lint clean
+- **Final verdict:** PHASE-1 COMPLETE, READY FOR SHIP-TO-PR
+

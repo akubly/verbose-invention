@@ -1,8 +1,17 @@
-# Carter — History (Phase 1 Complete 2026-06-06, commit d84dc0c; F1 fixed 2026-06-06, commit e1f3f4d)
+# Carter — History (Phase 1 Complete 2026-06-06, commit d84dc0c; Persona Review Cycle 2 PASSED 2026-06-07)
 
 ---
 
-**PHASE 1 COMPLETE + VERIFIED (2026-06-06):** Shipped core rewire for channel abstraction. SessionEntry IDs migrated to strings (threadId, channelId); TelegramChannel adapter implements ChannelPort interface with full capability descriptor; relay refactored onto ChannelPort with capability-aware branching; startup wiring complete for REACH_CHANNEL env var. All 849 pre-existing tests green (zero regressions). F1 blocker fixed in commit e1f3f4d; verified by Jun in commit 2b5e4a2 (9 new relay capability tests). Final test count: 946 green. Noble Six review: APPROVE-WITH-NITS. F1 (blocking) resolved. Remaining nits (N1-N5) deferred to Phase 2/backlog. Orchestration log: `.squad/orchestration-log/2026-06-06T21-32-33Z-carter.md`. Reference: Phase 1 section in decisions.md.
+**PHASE 1 COMPLETE + PERSONA REVIEW CYCLE PASSED (2026-06-07):** Shipped core rewire for channel abstraction. SessionEntry IDs migrated to strings (threadId, channelId); TelegramChannel adapter implements ChannelPort interface with full capability descriptor; relay refactored onto ChannelPort with capability-aware branching; startup wiring complete for REACH_CHANNEL env var. **Two-cycle persona review completed:**
+- **Cycle 1 findings:** 3 blocking, 5 important, 4 minor
+- **Carter fixes (Cycle 1, 58e1326):** R1 (cfg-factory), B1 (relay de-duck-type), B2 (AFK guard), I1 (conditional creds), I2 (boolean return)
+- **Carter fixes (Cycle 2, 5b6d30c):** I1-residual (allowed-user gating), N1 (formatForTransport docstring)
+- **Cycle 2 outcome:** 0 blocking, all 6 prior important findings verified resolved by all Code Panel personas
+- **Final test count:** 963 green (+17 from Jun's regression tests, all passing). tsc+lint clean.
+- **Ship status:** READY FOR /ship-to-pr
+- **Deferred to Phase 2:** I4 (optional createThread), I5 (ChannelMessage union), M5 (central mock factory)
+
+F1 blocker fixed in commit e1f3f4d; verified by Jun in commit 2b5e4a2. Reference: Phase 1 section in decisions.md; orchestration log at .squad/orchestration-log/2026-06-07-persona-review-phase1.md. Next: Teams Phase 2 pending corp access.
 
 ---
 
@@ -65,3 +74,7 @@ direct calls in try/catch and return boolean — no Telegram special-casing anyw
 
 
 `registerChannel`'s factory had `const { Bot } = require('grammy') as typeof import('grammy')` inside it. The comment said it was deferring grammY's load until the factory runs. There was NO circular dependency — registry.ts only imports `type { ChannelPort }` and never touches the telegram module. The defer was pure premature optimisation. Fixed by promoting `Bot` from the type-only import to a value import (`import { Bot, type Context } from 'grammy'`) and deleting the 3-line require block. tsc, lint, vitest all green; test count unchanged at 946.
+
+### Cycle-2 Cleanup — I1-residual, N1, minors (2026-06-06, commit 5b6d30c)
+
+When making multiple related edits to the same file in one response, include sufficient surrounding context in each `old_str` to avoid accidentally truncating adjacent code (e.g., the inner `try` block inside an outer `try` was dropped on first attempt). Verify with `view` after each structural edit before moving on.

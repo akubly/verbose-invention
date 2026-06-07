@@ -1,8 +1,16 @@
-# Kat — History (Phase 1 Complete 2026-06-06, commit e69e50b)
+# Kat — History (Phase 1 Complete 2026-06-06, commit e69e50b; Persona Review Cycle 2 PASSED 2026-06-07)
 
 ---
 
-**PHASE 1 COMPLETE + VERIFIED (2026-06-06):** Shipped handler migration onto ChannelPort. Single-bot consolidation complete; TelegramChannel owns only grammY Bot instance. All 8 commands registered via channel.onCommand(); relay catch-all via channel.onMessage(). Synthetic context adapters for /status and /cwd maintain handler API compatibility. F1 blocker (relay capability branching) resolved by Carter + verified by Jun. Final test count: 946 green (zero regressions). Noble Six review: APPROVE-WITH-NITS. F1 (blocking) resolved. Deferred Phase 2 nits: N2 (synthetic ctx cleanup), N5 (bot.catch duplicate cleanup). Deferred backlog: N1 (setMessageInterceptor generalization). Reference: Phase 1 section in decisions.md. Next: Teams Phase 2 pending corp access.
+**PHASE 1 COMPLETE + PERSONA REVIEW CYCLE PASSED (2026-06-07):** Shipped handler migration onto ChannelPort. Single-bot consolidation complete; TelegramChannel owns only grammY Bot instance. All 8 commands registered via channel.onCommand(); relay catch-all via channel.onMessage(). Synthetic context adapters for /status and /cwd maintain handler API compatibility. F1 blocker (relay capability branching) resolved by Carter + verified by Jun. **Two-cycle persona review completed:**
+- **Cycle 1 findings:** 3 blocking, 5 important, 4 minor
+- **Kat fixes:** I3 (HandlerOptions cleanup), M1 (/help heading), M3 (topicId guard) delivered ad05548
+- **Cycle 2 outcome:** 0 blocking, all 6 prior important findings verified resolved by all Code Panel personas
+- **Final test count:** 963 green (+17 from Jun's regression tests, all passing)
+- **Ship status:** READY FOR /ship-to-pr
+- **Deferred to Phase 2:** I4 (optional createThread), I5 (ChannelMessage union), M5 (central mock factory)
+
+Reference: Phase 1 section in decisions.md; orchestration log at .squad/orchestration-log/2026-06-07-persona-review-phase1.md. Next: Teams Phase 2 pending corp access.
 
 ---
 

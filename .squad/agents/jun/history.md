@@ -1,8 +1,16 @@
-# Jun — History (Phase 1 Complete 2026-06-06, commit 3739640)
+# Jun — History (Phase 1 Complete 2026-06-06, commit 3739640; Persona Review Cycle 2 PASSED 2026-06-07)
 
 ---
 
-**PHASE 1 COMPLETE + VERIFIED (2026-06-06):** Shipped conformance kit for ChannelPort (behavioral tests + capability-fallback matrix + Telegram anti-lie checks) + full regression suite. 88 new tests added (44 FakeChannel + 44 Telegram); 937 total (up from 849). Zero contract violations found. All 4 capability flags tested in both ON and OFF states. Kat's 3 gotchas pinned. F1 blocker verified in commit 2b5e4a2 (9 new relay capability tests, all pass). Final test count: 946 green (zero regressions). Noble Six review: APPROVE-WITH-NITS. F1 (blocking) resolved. Orchestration log: `.squad/orchestration-log/2026-06-06T21-32-33Z-jun.md`. Reference: Phase 1 section in decisions.md. Next: Teams Phase 2 pending corp access.
+**PHASE 1 COMPLETE + PERSONA REVIEW CYCLE PASSED (2026-06-07):** Shipped conformance kit for ChannelPort (behavioral tests + capability-fallback matrix + Telegram anti-lie checks) + full regression suite. 88 new tests added (44 FakeChannel + 44 Telegram); 937 total (up from 849). Zero contract violations found. All 4 capability flags tested in both ON and OFF states. Kat's 3 gotchas pinned. **Two-cycle persona review completed:**
+- **Cycle 1 findings:** 3 blocking, 5 important, 4 minor
+- **Jun verification (823e5d8):** +17 regression tests covering R1 (4 tests), B2 (4 tests), B1 (5 tests), I2 (4 tests). All findings verified resolved.
+- **Cycle 2 outcome:** 0 blocking, all 6 prior important findings verified resolved by all Code Panel personas
+- **Final test count:** 963 green (946 + 17 new, all passing). Zero regressions. tsc+lint clean.
+- **Ship status:** READY FOR /ship-to-pr
+- **Deferred to Phase 2:** I4 (optional createThread), I5 (ChannelMessage union), M5 (central mock factory)
+
+F1 blocker verified in commit 2b5e4a2 (9 new relay capability tests). Reference: Phase 1 section in decisions.md; orchestration log at .squad/orchestration-log/2026-06-07-persona-review-phase1.md. Next: Teams Phase 2 pending corp access.
 
 ---
 

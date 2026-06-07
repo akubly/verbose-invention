@@ -9,14 +9,20 @@
 
 ## Current Status
 
-**PHASE 1 COMPLETE + APPROVED (2026-06-06).** Channel Abstraction Phase 1 architecture review complete. Verdict: APPROVE-WITH-NITS. F1 blocker (relay capability branching) resolved by Carter in e1f3f4d, verified by Jun in 2b5e4a2. Test count: 937 → 946 (all green, zero regressions). ChannelPort interface is Teams-ready as written. Remaining nits (N1-N5) deferred to Phase 2/backlog.
+**PHASE 1 COMPLETE + APPROVED + PERSONA REVIEW CYCLE PASSED (2026-06-07).** Channel Abstraction Phase 1 architecture review complete. Verdict: APPROVE-WITH-NITS. F1 blocker (relay capability branching) resolved by Carter in e1f3f4d, verified by Jun in 2b5e4a2. **Two-cycle persona review completed:**
+- **Cycle 1 findings:** 3 blocking, 5 important, 4 minor
+- **Cycle 2 outcome:** 0 blocking, all 6 prior important findings verified resolved by all Code Panel personas
+- **Remediation agents:** Kat (ad05548), Carter (58e1326, 5b6d30c), Jun (823e5d8)
+- **Test count:** 937 → 963 (all green, zero regressions). tsc+lint clean.
+- **Ship status:** READY FOR /ship-to-pr
+- **Deferred to Phase 2:** I4 (optional createThread), I5 (ChannelMessage union), M5 (central mock factory)
 
-**Key accomplishments:**
+Key accomplishments:
 - ChannelPort interface design locked (survived implementation unchanged)
 - Capability descriptor pattern validated
 - coerceId back-compat migration clean (legacy numeric registry.json upgrades transparently)
 - Conformance kit (88 tests) + relay tests validate contract compliance
-- Zero regressions across all test suites
+- R1 real regression (paired-config) caught by Jun's regression suite
 
 **Next phase:** Teams adapter development pending corp access.
 

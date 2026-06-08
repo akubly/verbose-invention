@@ -53,8 +53,8 @@ function coerceId(raw: unknown): string | undefined {
 function validateEntry(entry: SessionEntry, label: string): boolean {
   if (
     typeof entry.sessionName !== 'string' ||
-    typeof entry.threadId !== 'string' ||
-    typeof entry.channelId !== 'string' ||
+    typeof entry.threadId !== 'string' || entry.threadId.length === 0 ||
+    typeof entry.channelId !== 'string' || entry.channelId.length === 0 ||
     typeof entry.createdAt !== 'string'
   ) {
     console.warn(`[registry] Invalid required fields for ${label}`);
@@ -125,16 +125,24 @@ export class SessionRegistry implements ISessionRegistry {
 
         // Back-compat migration: legacy files store topicId (number) and chatId (number).
         // Coerce to threadId/channelId strings on read so existing installs upgrade transparently.
+        const threadId = coerceId(raw['threadId'] ?? raw['topicId']);
+        const channelId = coerceId(raw['channelId'] ?? raw['chatId']);
+        if (!threadId || !channelId) {
+          console.warn(`[registry] Skipping entry for key ${key}: missing or invalid threadId/channelId`);
+          continue;
+        }
+
+        const lastTopicIdCoerced = coerceId(raw['lastTopicId']);
         const entry: SessionEntry = {
           sessionName: raw['sessionName'] as string,
-          threadId: coerceId(raw['threadId'] ?? raw['topicId']) ?? '',
-          channelId: coerceId(raw['channelId'] ?? raw['chatId']) ?? '',
+          threadId,
+          channelId,
           createdAt: raw['createdAt'] as string,
           cwd: (raw['cwd'] as string) ?? '',
           ...(raw['model'] !== undefined && { model: raw['model'] as string }),
           ...(raw['mode'] !== undefined && { mode: raw['mode'] as 'afk' | 'back' }),
           ...(raw['afkSince'] !== undefined && { afkSince: raw['afkSince'] as string }),
-          ...(raw['lastTopicId'] !== undefined && { lastTopicId: coerceId(raw['lastTopicId']) ?? '' }),
+          ...(lastTopicIdCoerced ? { lastTopicId: lastTopicIdCoerced } : {}),
         };
 
         if (!validateEntry(entry, `key ${key}`)) continue;
@@ -178,7 +186,7 @@ export class SessionRegistry implements ISessionRegistry {
       const duplicate = this.findByName(sessionName);
       if (duplicate && duplicate.threadId !== threadId) {
         throw new Error(
-          `Session name "${sessionName}" is already in use by topic ${duplicate.threadId}. Choose a different name or /remove the other session first.`,
+          `Session name "${sessionName}" is already in use by thread ${duplicate.threadId}. Choose a different name or /remove the other session first.`,
         );
       }
       const entry: SessionEntry = {
@@ -255,10 +263,10 @@ export class SessionRegistry implements ISessionRegistry {
     return this.enqueueMutation(async () => {
       const source = this.entries.get(fromThreadId);
       if (!source) {
-        throw new Error(`No session found for topic ${fromThreadId}`);
+        throw new Error(`No session found for thread ${fromThreadId}`);
       }
       if (this.entries.has(toThreadId)) {
-        throw new Error(`Destination topic ${toThreadId} is already bound to "${this.entries.get(toThreadId)!.sessionName}"`);
+        throw new Error(`Destination thread ${toThreadId} is already bound to "${this.entries.get(toThreadId)!.sessionName}"`);
       }
       const newEntry: SessionEntry = { ...source, threadId: toThreadId };
       const newEntries = new Map(this.entries);

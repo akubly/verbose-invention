@@ -639,4 +639,166 @@ describe('SessionRegistry', () => {
       expect(registry.findAllByName('anything')).toEqual([]);
     });
   });
+
+  // ── load() empty-id guard ────────────────────────────────────────────────────
+
+  describe('load() empty-id guard', () => {
+    it('skips an entry whose threadId and topicId are both absent', async () => {
+      const data = {
+        version: 1,
+        entries: {
+          'orphan': {
+            sessionName: 'no-thread',
+            channelId: '-100',
+            createdAt: '2024-01-01T00:00:00.000Z',
+            // no threadId, no topicId
+          },
+        },
+      };
+      await fs.mkdir(path.dirname(storePath), { recursive: true });
+      await fs.writeFile(storePath, JSON.stringify(data), 'utf-8');
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await registry.load();
+        expect(registry.list()).toHaveLength(0);
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('missing or invalid threadId/channelId'));
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('skips an entry whose channelId and chatId are both absent', async () => {
+      const data = {
+        version: 1,
+        entries: {
+          '99': {
+            sessionName: 'no-channel',
+            threadId: '99',
+            createdAt: '2024-01-01T00:00:00.000Z',
+            // no channelId, no chatId
+          },
+        },
+      };
+      await fs.mkdir(path.dirname(storePath), { recursive: true });
+      await fs.writeFile(storePath, JSON.stringify(data), 'utf-8');
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await registry.load();
+        expect(registry.list()).toHaveLength(0);
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('missing or invalid threadId/channelId'));
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('does NOT skip a valid legacy entry with numeric topicId/chatId', async () => {
+      const data = {
+        version: 1,
+        entries: {
+          '42': {
+            sessionName: 'legacy-ok',
+            topicId: 42,
+            chatId: -100,
+            createdAt: '2024-01-01T00:00:00.000Z',
+          },
+        },
+      };
+      await fs.mkdir(path.dirname(storePath), { recursive: true });
+      await fs.writeFile(storePath, JSON.stringify(data), 'utf-8');
+
+      await registry.load();
+      const entry = registry.resolve('42');
+      expect(entry).toBeDefined();
+      expect(entry?.sessionName).toBe('legacy-ok');
+      expect(entry?.threadId).toBe('42');
+      expect(entry?.channelId).toBe('-100');
+    });
+
+    it('omits lastTopicId rather than storing empty string when value is null/missing', async () => {
+      const data = {
+        version: 1,
+        entries: {
+          '55': {
+            sessionName: 'last-topic-null',
+            threadId: '55',
+            channelId: '-100',
+            createdAt: '2024-01-01T00:00:00.000Z',
+            lastTopicId: null,
+          },
+        },
+      };
+      await fs.mkdir(path.dirname(storePath), { recursive: true });
+      await fs.writeFile(storePath, JSON.stringify(data), 'utf-8');
+
+      await registry.load();
+      const entry = registry.resolve('55');
+      expect(entry).toBeDefined();
+      expect(entry?.lastTopicId).toBeUndefined();
+    });
+
+    it('omits lastTopicId rather than storing empty string when value is an empty string', async () => {
+      const data = {
+        version: 1,
+        entries: {
+          '56': {
+            sessionName: 'last-topic-empty',
+            threadId: '56',
+            channelId: '-100',
+            createdAt: '2024-01-01T00:00:00.000Z',
+            lastTopicId: '',
+          },
+        },
+      };
+      await fs.mkdir(path.dirname(storePath), { recursive: true });
+      await fs.writeFile(storePath, JSON.stringify(data), 'utf-8');
+
+      await registry.load();
+      const entry = registry.resolve('56');
+      expect(entry).toBeDefined();
+      expect(entry?.lastTopicId).toBeUndefined();
+    });
+
+    it('loads a valid numeric lastTopicId as a string', async () => {
+      const data = {
+        version: 1,
+        entries: {
+          '57': {
+            sessionName: 'last-topic-numeric',
+            threadId: '57',
+            channelId: '-100',
+            createdAt: '2024-01-01T00:00:00.000Z',
+            lastTopicId: 123,
+          },
+        },
+      };
+      await fs.mkdir(path.dirname(storePath), { recursive: true });
+      await fs.writeFile(storePath, JSON.stringify(data), 'utf-8');
+
+      await registry.load();
+      const entry = registry.resolve('57');
+      expect(entry).toBeDefined();
+      expect(entry?.lastTopicId).toBe('123');
+    });
+  });
+
+  // ── register() / move() terminology ─────────────────────────────────────────
+
+  describe('register() / move() terminology', () => {
+    it('register() duplicate-name error says "thread" not "topic"', async () => {
+      await registry.register('1', '-100', 'shared-name');
+      await expect(registry.register('2', '-100', 'shared-name')).rejects.toThrow(/thread/);
+    });
+
+    it('move() unknown-source error says "thread" not "topic"', async () => {
+      await expect(registry.move('999', '2')).rejects.toThrow(/thread/);
+    });
+
+    it('move() destination-bound error says "thread" not "topic"', async () => {
+      await registry.register('1', '-100', 'session-a');
+      await registry.register('2', '-100', 'session-b');
+      await expect(registry.move('1', '2')).rejects.toThrow(/thread/);
+    });
+  });
 });

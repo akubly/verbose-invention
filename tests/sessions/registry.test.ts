@@ -326,6 +326,48 @@ describe('SessionRegistry', () => {
       // Invalid entry should be skipped — registry stays empty
       expect(registry.list()).toEqual([]);
     });
+
+    it('skips a numeric JSON key whose explicit threadId differs (no silent re-keying)', async () => {
+      // Regression: the old code had `canonicalKey !== key && String(Number(key)) !== key`
+      // which let numeric-looking keys through even when the entry's threadId was different,
+      // silently re-keying under the derived threadId and potentially overwriting valid entries.
+      const corrupt = {
+        version: 1,
+        entries: {
+          '9001': {
+            // Explicit threadId disagrees with the JSON key
+            threadId: '9999',
+            channelId: '-100',
+            sessionName: 'corrupt-session',
+            createdAt: '2024-01-01T00:00:00.000Z',
+            cwd: '',
+          },
+          // A real entry already occupying '9999' that must not be overwritten
+          '9999': {
+            threadId: '9999',
+            channelId: '-100',
+            sessionName: 'real-session',
+            createdAt: '2024-01-01T00:00:00.000Z',
+            cwd: '',
+          },
+        },
+      };
+      await fs.mkdir(path.dirname(storePath), { recursive: true });
+      await fs.writeFile(storePath, JSON.stringify(corrupt), 'utf-8');
+
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        await registry.load();
+        // The mismatched entry (key '9001', threadId '9999') must be skipped.
+        expect(registry.resolve('9001')).toBeUndefined();
+        // The real entry at '9999' must not be overwritten.
+        expect(registry.resolve('9999')?.sessionName).toBe('real-session');
+        expect(registry.list()).toHaveLength(1);
+        expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('9001'));
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
   });
 
   // ── name uniqueness ──────────────────────────────────────────────────────────

@@ -124,4 +124,11 @@ describe('R1 — Telegram factory reads credentials from EnvConfig (not process.
     const cfg = makeBaseCfg({ token: undefined });
     expect(() => createChannel('telegram', cfg)).toThrow('TELEGRAM_BOT_TOKEN is required');
   });
+
+  it('R1e: throws if cfg.chatId is undefined (silent dead-default of 0 is disallowed)', () => {
+    // Pre-fix: cfg.chatId ?? 0 → 0; TelegramChannel would start but silently drop all messages.
+    // Post-fix: factory throws fast with a clear error so misconfigured daemons fail at startup.
+    const cfg = makeBaseCfg({ chatId: undefined });
+    expect(() => createChannel('telegram', cfg)).toThrow('chatId is required');
+  });
 });

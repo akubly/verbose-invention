@@ -114,6 +114,6 @@ export async function main(): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  console.log('[reach] Bot started. Listening for messages…');
+  console.log(`[reach] Channel started: ${channel.name}`);
   await channel.start();
 }

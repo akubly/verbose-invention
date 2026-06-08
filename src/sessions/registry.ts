@@ -147,10 +147,10 @@ export class SessionRegistry implements ISessionRegistry {
 
         if (!validateEntry(entry, `key ${key}`)) continue;
 
-        // Canonical key is the threadId string; legacy numeric keys are transparently migrated.
+        // Canonical key must match exactly. Legacy numeric keys satisfy this automatically
+        // because coerceId(9001) === '9001', so key '9001' === canonicalKey '9001'.
         const canonicalKey = entry.threadId;
-        if (canonicalKey !== key && String(Number(key)) !== key) {
-          // String key mismatch that isn't a legacy numeric key — skip with warning.
+        if (canonicalKey !== key) {
           console.warn(`[registry] Skipping entry for key ${key}: key does not match threadId ${entry.threadId}`);
           continue;
         }

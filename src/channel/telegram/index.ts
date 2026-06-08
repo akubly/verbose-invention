@@ -278,5 +278,8 @@ registerChannel('telegram', (cfg) => {
   if (!cfg.token) {
     throw new Error('[telegram] TELEGRAM_BOT_TOKEN is required to create the telegram channel');
   }
-  return new TelegramChannel(new Bot(cfg.token), cfg.chatId ?? 0);
+  if (cfg.chatId === undefined) {
+    throw new Error('[telegram] chatId is required to create the telegram channel (run pairing or set TELEGRAM_CHAT_ID)');
+  }
+  return new TelegramChannel(new Bot(cfg.token), cfg.chatId);
 });

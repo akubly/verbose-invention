@@ -466,7 +466,10 @@ export class AfkModeController {
     }
     const persisted = matches.length === 1 ? matches[0] : undefined;
     // lastTopicId is stored as a string in SessionEntry; convert to number for Telegram API.
-    const persistedTopicId = persisted?.lastTopicId !== undefined ? Number(persisted.lastTopicId) : undefined;
+    // Guard against non-numeric values (e.g. 'abc' from a corrupt/hand-edited registry):
+    // Number.isFinite rejects NaN, Infinity, and non-numeric strings converted via Number().
+    const rawTopicId = persisted?.lastTopicId !== undefined ? Number(persisted.lastTopicId) : undefined;
+    const persistedTopicId = rawTopicId !== undefined && Number.isFinite(rawTopicId) ? rawTopicId : undefined;
     let topicId: number | undefined = persistedTopicId;
     let createdNewTopicId: number | null = null;
 

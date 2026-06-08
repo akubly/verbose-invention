@@ -28,4 +28,6 @@ F1 blocker verified in commit 2b5e4a2 (9 new relay capability tests). Reference:
 
 4. **B2 (non-Telegram boot) uses instanceof-defeating plain objects.** Since TelegramChannel is mocked to MockTelegramChannelClass in main-composition.test.ts, a plain object literal is not an instance of it and correctly fails the `instanceof TelegramChannel` guard. No need to create a separate class hierarchy.
 
+**PR #11 mock-contract fix (2026-06-07):** Fixed `editMessage: vi.fn().mockResolvedValue(undefined)` → `mockResolvedValue(true)` in 6 test files (cloud-review-1.test.ts, handlers.slashGuard.test.ts, cwdCommand.test.ts, handlers.test.ts, newCwdFlag.test.ts, resume.test.ts) to match ChannelPort's `Promise<boolean>` contract and prevent undefined-as-falsy from triggering relay fallback paths in tests. 972 tests green, tsc+lint clean.
+
 ---

@@ -50,7 +50,7 @@ function makeMockChannel() {
     start: vi.fn(),
     stop: vi.fn(),
     sendMessage: vi.fn().mockResolvedValue({ id: '100' }),
-    editMessage: vi.fn().mockResolvedValue(undefined),
+    editMessage: vi.fn().mockResolvedValue(true),
     splitMessage: vi.fn((text: string, footer?: string) => footer ? [`${text}\n\n${footer}`] : [text]),
     formatForTransport: vi.fn((text: string) => text),
     createThread: vi.fn(),

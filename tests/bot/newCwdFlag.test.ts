@@ -47,7 +47,7 @@ function makeMockChannel(): ChannelPort {
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     sendMessage: vi.fn().mockResolvedValue({ id: '100' }),
-    editMessage: vi.fn().mockResolvedValue(undefined),
+    editMessage: vi.fn().mockResolvedValue(true),
     splitMessage: vi.fn((text: string) => [text]),
     formatForTransport: vi.fn((text: string) => text),
     createThread: vi.fn(),

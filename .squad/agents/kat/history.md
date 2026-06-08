@@ -43,3 +43,9 @@ The duplicate `bot.catch()` in `handlers.ts` was removed. The single canonical e
 **M3:** `promptUser` now derives `topicId` conditionally (`ctx.threadId ? Number(...) : undefined`), matching the guard in `sendMessage`. `promptUserForPermission` in `prompt.ts` updated to accept `topicId: number | undefined` and conditionally includes `message_thread_id` in the send options. `sendMessageWithMarkdown` uses `_sendMessageInternal` which already has the guard.
 
 ---
+
+### T5 — promptUser verbatim fix: channel abstraction caused real user-visible regression (2026-06-08, commit 966e48f)
+
+**This was a real regression.** The channel-abstraction refactor (PR #11) flattened `toolName + args` into a single pre-formatted `question` string for `ChannelPort.promptUser()`, but `TelegramChannel.promptUser` kept passing that already-formatted string as the `args` parameter to `promptUserForPermission()`. That function then re-wrapped it in a second `Tool: …\nArgs: …` template, so users saw doubled headers in every permission prompt. Fix: extracted shared lifecycle into `runPermissionPrompt()` and added `promptUserVerbatim()` that sends the caller-supplied text with no re-templating. Lesson: when flattening structured parameters into a string for an interface boundary, adapters must not pipe the result into functions that re-template from structured inputs.
+
+---

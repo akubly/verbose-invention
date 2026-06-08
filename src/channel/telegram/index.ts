@@ -12,7 +12,7 @@ import { registerChannel } from '../registry.js';
 import { escapeMarkdownV2 } from '../../relay/markdownV2.js';
 import { splitForTelegram } from '../../relay/messageSplitter.js';
 import {
-  promptUserForPermission,
+  promptUserVerbatim,
   ensurePromptRegistry,
 } from '../../bot/prompt.js';
 
@@ -228,16 +228,17 @@ export class TelegramChannel implements ChannelPort {
     const chatId = Number(ctx.channelId);
     // M3: omit message_thread_id when threadId is empty (General Topic).
     const topicId = ctx.threadId ? Number(ctx.threadId) : undefined;
-    // Extract tool name from question for the result text (best-effort).
+    // Extract tool name from question for the outcome status text only (best-effort).
+    // The question is already fully formatted by Relay — pass it verbatim so the
+    // inline-keyboard message body is not re-wrapped inside another "Args:" field.
     const toolMatch = /Tool:\s*(\S+)/.exec(question);
     const toolName = toolMatch?.[1] ?? 'unknown';
-    // Map options to approve/deny semantics expected by promptUserForPermission.
-    const approved = await promptUserForPermission(
+    const approved = await promptUserVerbatim(
       this.bot,
       chatId,
       topicId,
-      toolName,
       question,
+      toolName,
       signal,
     );
     return approved ? (options.find((o) => o.value === 'approve')?.value ?? 'approve') : 'deny';

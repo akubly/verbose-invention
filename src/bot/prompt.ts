@@ -129,24 +129,21 @@ export function disposePromptRegistry(bot: Bot<Context>): void {
 }
 
 /**
- * Send an inline keyboard prompt to approve/deny a tool execution.
- * Waits indefinitely for an explicit user decision (ADR-9 §7: no wall-clock timeout).
- * Returns true if approved, false if denied or aborted.
- *
- * @param signal - When fired (e.g., session disconnect), the prompt resolves false
- *   immediately without waiting for user input. ADR-9 Q3/Q4.
+ * Core permission prompt lifecycle: sends `promptText` verbatim as the message
+ * body with Approve/Deny inline buttons, then waits for the user's decision.
+ * `toolNameForStatus` is used only in the outcome status text shown after the
+ * user taps a button — it is NOT re-embedded in the prompt body.
  */
-export async function promptUserForPermission(
+async function runPermissionPrompt(
   bot: Bot<Context>,
   chatId: number,
   topicId: number | undefined,
-  toolName: string,
-  args: string,
+  promptText: string,
+  toolNameForStatus: string,
   signal?: AbortSignal,
 ): Promise<boolean> {
   const registry = ensurePromptRegistry(bot);
   const requestId = randomUUID();
-  const promptText = `⚠️ Tool approval needed\n\nTool: ${toolName}\nArgs: ${truncateArgs(args)}\n\nApprove or deny — waiting for your decision.`;
 
   const promptMessage = await bot.api.sendMessage(chatId, promptText, {
     ...(topicId !== undefined && { message_thread_id: topicId }),
@@ -182,7 +179,7 @@ export async function promptUserForPermission(
     }
 
     const approved = outcome === 'approve';
-    const statusText = formatOutcomeText(outcome, toolName);
+    const statusText = formatOutcomeText(outcome, toolNameForStatus);
 
     resolveResult?.(approved);
 
@@ -221,5 +218,48 @@ export async function promptUserForPermission(
 
   // No timeout. No Promise.race. Just wait for user input (or abort signal).
   return resultPromise;
+}
+
+/**
+ * Send an inline keyboard prompt to approve/deny a tool execution.
+ * Formats the prompt body as "⚠️ Tool approval needed\n\nTool: …\nArgs: …\n\n…".
+ * Waits indefinitely for an explicit user decision (ADR-9 §7: no wall-clock timeout).
+ * Returns true if approved, false if denied or aborted.
+ *
+ * @param signal - When fired (e.g., session disconnect), the prompt resolves false
+ *   immediately without waiting for user input. ADR-9 Q3/Q4.
+ */
+export async function promptUserForPermission(
+  bot: Bot<Context>,
+  chatId: number,
+  topicId: number | undefined,
+  toolName: string,
+  args: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const promptText = `⚠️ Tool approval needed\n\nTool: ${toolName}\nArgs: ${truncateArgs(args)}\n\nApprove or deny — waiting for your decision.`;
+  return runPermissionPrompt(bot, chatId, topicId, promptText, toolName, signal);
+}
+
+/**
+ * Send an inline keyboard prompt using `questionText` verbatim as the message
+ * body — no re-templating of Tool/Args headers. Use this when the caller
+ * (e.g. a ChannelPort adapter) has already formatted the complete prompt string
+ * and must not have it wrapped a second time.
+ *
+ * `toolNameForStatus` is used only in the ✅/❌/⚠️ status text shown after
+ * the user taps a button; it is never re-embedded in the prompt body.
+ *
+ * Returns true if approved, false if denied or aborted.
+ */
+export async function promptUserVerbatim(
+  bot: Bot<Context>,
+  chatId: number,
+  topicId: number | undefined,
+  questionText: string,
+  toolNameForStatus: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  return runPermissionPrompt(bot, chatId, topicId, questionText, toolNameForStatus, signal);
 }
 

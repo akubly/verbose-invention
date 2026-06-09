@@ -78,3 +78,12 @@ direct calls in try/catch and return boolean — no Telegram special-casing anyw
 ### Cycle-2 Cleanup — I1-residual, N1, minors (2026-06-06, commit 5b6d30c)
 
 When making multiple related edits to the same file in one response, include sufficient surrounding context in each `old_str` to avoid accidentally truncating adjacent code (e.g., the inner `try` block inside an outer `try` was dropped on first attempt). Verify with `view` after each structural edit before moving on.
+
+### PR #11 Copilot Review — registry empty-id guard + topic→thread terminology (2026-06-07, commit f4baf17)
+
+`?? ''` fallbacks in `load()` silently accepted corrupt entries: pre-computing `threadId`/`channelId` via `coerceId` before building the object and `continue`-ing on falsy results is safer than building-then-validating, because the object literal is never constructed with a bad state. `validateEntry`'s empty-string check is a second defence-in-depth layer, not the primary gate.
+
+### PR #11 Round-2 Copilot Review — key-mismatch, chatId fast-fail, neutral log, NaN guard (2026-06-08, commit e619f00)
+
+Permissive "numeric key" branch in `load()` let mismatched entries silently re-key and overwrite real entries; removing the second AND-condition makes the rule uniform. Defaulting `chatId` to `0` in the factory produced a silent dead daemon — fail-fast with a clear Error is always safer than a default that accepts invalid state. `Number('abc') === NaN` is not `undefined`, so any guard on `!== undefined` must also check `Number.isFinite` before using the value as a Telegram API integer. Startup logs should use the transport-neutral `channel.name` so the message stays accurate when non-Telegram adapters are added.
+- PR #11 round-3 (2026-06-09): introduced 	oTelegramTopicId() as a single shared helper (threadId → message_thread_id guard, NaN-safe) to replace scattered Number(ctx.threadId) conversions; added isValidTelegramChatId() in env.ts so the config.telegramChatId path applies the same integer/non-zero constraints as the env-var path, preventing silent bad-chatId acceptance.

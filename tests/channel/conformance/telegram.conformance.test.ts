@@ -177,6 +177,18 @@ describe('TelegramChannel — Kat gotcha: empty threadId ⇒ omit message_thread
     expect(opts?.['message_thread_id']).toBeUndefined();
   });
 
+  it('sendMessage with non-numeric threadId does NOT include message_thread_id (NaN guard)', async () => {
+    const { bot, sendMessageMock } = makeMockBot(ALLOWED_CHAT_ID);
+    const ch = new TelegramChannel(bot, ALLOWED_CHAT_ID);
+    const ctx: ChannelContext = { threadId: 'not-a-number', channelId: String(ALLOWED_CHAT_ID) };
+    await ch.sendMessage(ctx, 'message');
+    expect(sendMessageMock).toHaveBeenCalledOnce();
+    const callArgs = sendMessageMock.mock.calls[0] as [number, string, Record<string, unknown> | undefined];
+    const opts = callArgs[2];
+    // NaN must be coerced to undefined — message_thread_id must be absent, not NaN.
+    expect(opts?.['message_thread_id']).toBeUndefined();
+  });
+
   it('sendMessage with non-empty threadId INCLUDES message_thread_id in API call', async () => {
     const { bot, sendMessageMock } = makeMockBot(ALLOWED_CHAT_ID);
     const ch = new TelegramChannel(bot, ALLOWED_CHAT_ID);

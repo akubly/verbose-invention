@@ -155,4 +155,42 @@ describe('parseEnv (I4-2 / M5-4)', () => {
     expect(console.error).toHaveBeenCalledWith(expect.stringContaining('deny all users'));
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
+
+  // ── config.telegramChatId validation (PR #11 round-3 Thread 3) ───────────────
+
+  describe('config.telegramChatId validation', () => {
+    beforeEach(() => {
+      // Clear env-var path so the config path is exercised.
+      delete process.env.TELEGRAM_CHAT_ID;
+    });
+
+    it('C1: accepts a valid integer config.telegramChatId and returns it as chatId', async () => {
+      vi.mocked(loadConfig).mockResolvedValueOnce({ telegramChatId: 99999 });
+      const result = await parseEnv();
+      expect(exitSpy).not.toHaveBeenCalledWith(1);
+      expect(result.chatId).toBe(99999);
+    });
+
+    it('C2: rejects non-integer config.telegramChatId (e.g. 123.45) with process.exit(1)', async () => {
+      vi.mocked(loadConfig).mockResolvedValueOnce({ telegramChatId: 123.45 });
+      await expect(parseEnv()).rejects.toThrow('process.exit(1)');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('non-zero integer'));
+    });
+
+    it('C3: rejects zero config.telegramChatId with process.exit(1)', async () => {
+      vi.mocked(loadConfig).mockResolvedValueOnce({ telegramChatId: 0 });
+      await expect(parseEnv()).rejects.toThrow('process.exit(1)');
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining('non-zero integer'));
+    });
+
+    it('C4: absent config.telegramChatId (undefined) falls through to pairing mode', async () => {
+      vi.mocked(loadConfig).mockResolvedValueOnce({});
+      const result = await parseEnv();
+      expect(exitSpy).not.toHaveBeenCalledWith(1);
+      expect(result.chatId).toBeUndefined();
+      expect(result.isPairingMode).toBe(true);
+    });
+  });
 });

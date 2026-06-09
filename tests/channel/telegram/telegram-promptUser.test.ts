@@ -257,6 +257,24 @@ describe('TelegramChannel.promptUser — verbatim rendering (PR #11 round-2 regr
     disposePromptRegistry(bot);
   });
 
+  it('omits message_thread_id when threadId is non-numeric (NaN guard)', async () => {
+    const { bot, sendMessage, click } = makeMockBot();
+    const ch = new TelegramChannel(bot, CHAT_ID);
+
+    const promptPromise = ch.promptUser(makeCtx('not-a-number'), RELAY_QUESTION, DEFAULT_OPTIONS);
+    await flushMicrotasks();
+
+    const opts = sendMessage.mock.calls[0]?.[2] as Record<string, unknown> | undefined;
+    // NaN must be coerced to undefined — message_thread_id must be absent, not NaN.
+    expect(opts?.['message_thread_id']).toBeUndefined();
+
+    const denyData = getButtonData(sendMessage).find((d) => /^perm:deny:/.test(d))!;
+    await click(denyData);
+    await expect(promptPromise).resolves.toBe('deny');
+
+    disposePromptRegistry(bot);
+  });
+
   it('inline keyboard has exactly perm:approve:{id} and perm:deny:{id} buttons', async () => {
     const { bot, sendMessage, click } = makeMockBot();
     const ch = new TelegramChannel(bot, CHAT_ID);

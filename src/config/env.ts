@@ -28,6 +28,11 @@ export interface EnvConfig {
   reachChannel: string;
 }
 
+/** Returns true iff id is a usable Telegram chat ID: a non-zero integer. */
+function isValidTelegramChatId(id: number): boolean {
+  return Number.isInteger(id) && id !== 0;
+}
+
 export async function parseEnv(): Promise<EnvConfig> {
   const reachChannel = process.env.REACH_CHANNEL ?? 'telegram';
 
@@ -68,8 +73,16 @@ export async function parseEnv(): Promise<EnvConfig> {
         console.error('[reach] Fatal: TELEGRAM_CHAT_ID cannot be 0 — set to a real chat ID or leave unset for pairing mode.');
         process.exit(1);
       }
-    } else if (config.telegramChatId) {
-      chatId = config.telegramChatId;
+    } else if (config.telegramChatId !== undefined) {
+      const cfgChatId = config.telegramChatId;
+      if (!isValidTelegramChatId(cfgChatId)) {
+        console.error(
+          '[reach] Fatal: telegramChatId in config must be a non-zero integer — ' +
+          'set to a valid Telegram chat ID or remove it to use pairing mode.',
+        );
+        process.exit(1);
+      }
+      chatId = cfgChatId;
       console.log(`[reach] Using chat ID from config: ***${String(chatId).slice(-4)}`);
     }
   }

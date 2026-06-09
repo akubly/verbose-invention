@@ -22,6 +22,17 @@ import {
 const MARKDOWN_ESCAPE_EFFECTIVE_MAX = 2048;
 const MAX_CHUNKS = 25;
 
+// ── threadId → Telegram topic ID conversion ──────────────────────────────────
+/**
+ * Converts a ChannelPort threadId (opaque string) to a Telegram message_thread_id.
+ * Returns undefined (omit the field) for empty strings and non-finite values,
+ * preventing { message_thread_id: NaN } from reaching the Telegram API.
+ */
+function toTelegramTopicId(threadId: string): number | undefined {
+  const n = Number(threadId);
+  return threadId !== '' && Number.isFinite(n) ? n : undefined;
+}
+
 // ── Parse-entities error detection ──────────────────────────────────────────
 function isParseEntitiesError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
@@ -137,7 +148,7 @@ export class TelegramChannel implements ChannelPort {
     warnKey: string,
   ): Promise<MessageRef> {
     const chatId = Number(ctx.channelId);
-    const topicId = ctx.threadId ? Number(ctx.threadId) : undefined;
+    const topicId = toTelegramTopicId(ctx.threadId);
     try {
       const sent = await this.bot.api.sendMessage(chatId, escapeMarkdownV2(text), {
         ...(topicId !== undefined && { message_thread_id: topicId }),
@@ -226,8 +237,8 @@ export class TelegramChannel implements ChannelPort {
     signal?: AbortSignal,
   ): Promise<string> {
     const chatId = Number(ctx.channelId);
-    // M3: omit message_thread_id when threadId is empty (General Topic).
-    const topicId = ctx.threadId ? Number(ctx.threadId) : undefined;
+    // M3: omit message_thread_id when threadId is empty or non-numeric (General Topic / guard NaN).
+    const topicId = toTelegramTopicId(ctx.threadId);
     // Extract tool name from question for the outcome status text only (best-effort).
     // The question is already fully formatted by Relay — pass it verbatim so the
     // inline-keyboard message body is not re-wrapped inside another "Args:" field.

@@ -114,6 +114,7 @@ export async function main(): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  console.log(`[reach] Channel started: ${channel.name}`);
+  console.log(`[reach] Channel starting: ${channel.name}`);
   await channel.start();
+  console.log(`[reach] Channel started: ${channel.name}`);
 }

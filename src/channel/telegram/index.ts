@@ -12,7 +12,7 @@ import { registerChannel } from '../registry.js';
 import { escapeMarkdownV2 } from '../../relay/markdownV2.js';
 import { splitForTelegram } from '../../relay/messageSplitter.js';
 import {
-  promptUserVerbatim,
+  promptUserVerbatimOutcome,
   ensurePromptRegistry,
 } from '../../bot/prompt.js';
 
@@ -228,8 +228,15 @@ export class TelegramChannel implements ChannelPort {
 
   /**
    * Prompt the user with an inline keyboard (approve/deny).
-   * Delegates to the existing promptUserForPermission utility.
-   * Returns 'approve' or 'deny'.
+   *
+   * CONTRACT (ChannelPort):
+   *   - Returns the selected PromptOption's `value`.
+   *   - Returns '' (empty string) when the AbortSignal fires (not 'deny').
+   *
+   * GUARD: The Telegram transport renders fixed Approve/Deny inline-keyboard
+   * buttons and cannot honour arbitrary option lists. `options` MUST be exactly
+   * two elements whose values are 'approve' and 'deny' (matching the relay's
+   * permission-prompt convention). Any other list throws immediately.
    */
   async promptUser(
     ctx: ChannelContext,
@@ -237,15 +244,21 @@ export class TelegramChannel implements ChannelPort {
     options: readonly PromptOption[],
     signal?: AbortSignal,
   ): Promise<string> {
+    const approveOption = options.find((o) => o.value === 'approve');
+    const denyOption = options.find((o) => o.value === 'deny');
+    if (options.length !== 2 || !approveOption || !denyOption) {
+      throw new Error('[telegram] promptUser only supports a two-option approve/deny prompt');
+    }
+
     const chatId = Number(ctx.channelId);
-    // M3: omit message_thread_id when threadId is empty or non-numeric (General Topic / guard NaN).
     const topicId = toTelegramTopicId(ctx.threadId);
     // Extract tool name from question for the outcome status text only (best-effort).
     // The question is already fully formatted by Relay — pass it verbatim so the
     // inline-keyboard message body is not re-wrapped inside another "Args:" field.
     const toolMatch = /Tool:\s*(\S+)/.exec(question);
     const toolName = toolMatch?.[1] ?? 'unknown';
-    const approved = await promptUserVerbatim(
+
+    const outcome = await promptUserVerbatimOutcome(
       this.bot,
       chatId,
       topicId,
@@ -253,7 +266,9 @@ export class TelegramChannel implements ChannelPort {
       toolName,
       signal,
     );
-    return approved ? (options.find((o) => o.value === 'approve')?.value ?? 'approve') : 'deny';
+
+    if (outcome === 'aborted') return '';
+    return outcome === 'approve' ? approveOption.value : denyOption.value;
   }
 
   // ── Thread Management ──────────────────────────────────────────────────────

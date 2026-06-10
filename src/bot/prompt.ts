@@ -3,7 +3,7 @@ import type { Bot, Context } from 'grammy';
 
 type PromptAction = 'approve' | 'deny';
 /** ADR-9: 'timeout' renamed to 'aborted' — automatic resolution is disconnect-driven, not timer-driven. */
-type PromptOutcome = PromptAction | 'aborted';
+export type PromptOutcome = PromptAction | 'aborted';
 
 const TEN_MINUTES_MS = 10 * 60 * 1000;
 
@@ -141,7 +141,7 @@ async function runPermissionPrompt(
   promptText: string,
   toolNameForStatus: string,
   signal?: AbortSignal,
-): Promise<boolean> {
+): Promise<PromptOutcome> {
   const registry = ensurePromptRegistry(bot);
   const requestId = randomUUID();
 
@@ -156,10 +156,10 @@ async function runPermissionPrompt(
   });
 
   let settled = false;
-  let resolveResult: ((approved: boolean) => void) | undefined;
+  let resolveResult: ((outcome: PromptOutcome) => void) | undefined;
   let abortHandler: (() => void) | undefined;
 
-  const resultPromise = new Promise<boolean>((resolve) => {
+  const resultPromise = new Promise<PromptOutcome>((resolve) => {
     resolveResult = resolve;
   });
 
@@ -178,10 +178,9 @@ async function runPermissionPrompt(
       abortHandler = undefined;
     }
 
-    const approved = outcome === 'approve';
     const statusText = formatOutcomeText(outcome, toolNameForStatus);
 
-    resolveResult?.(approved);
+    resolveResult?.(outcome);
 
     const uiUpdates = [
       bot.api.editMessageText(chatId, promptMessage.message_id, statusText, {
@@ -238,7 +237,8 @@ export async function promptUserForPermission(
   signal?: AbortSignal,
 ): Promise<boolean> {
   const promptText = `⚠️ Tool approval needed\n\nTool: ${toolName}\nArgs: ${truncateArgs(args)}\n\nApprove or deny — waiting for your decision.`;
-  return runPermissionPrompt(bot, chatId, topicId, promptText, toolName, signal);
+  const outcome = await runPermissionPrompt(bot, chatId, topicId, promptText, toolName, signal);
+  return outcome === 'approve';
 }
 
 /**
@@ -260,6 +260,24 @@ export async function promptUserVerbatim(
   toolNameForStatus: string,
   signal?: AbortSignal,
 ): Promise<boolean> {
+  const outcome = await runPermissionPrompt(bot, chatId, topicId, questionText, toolNameForStatus, signal);
+  return outcome === 'approve';
+}
+
+/**
+ * Like promptUserVerbatim, but resolves with the raw PromptOutcome
+ * ('approve' | 'deny' | 'aborted') so callers can distinguish abort from deny.
+ * Used by TelegramChannel.promptUser to conform to the ChannelPort contract
+ * (abort → '', selected option's value otherwise).
+ */
+export async function promptUserVerbatimOutcome(
+  bot: Bot<Context>,
+  chatId: number,
+  topicId: number | undefined,
+  questionText: string,
+  toolNameForStatus: string,
+  signal?: AbortSignal,
+): Promise<PromptOutcome> {
   return runPermissionPrompt(bot, chatId, topicId, questionText, toolNameForStatus, signal);
 }
 

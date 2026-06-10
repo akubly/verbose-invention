@@ -172,7 +172,7 @@ describe('TelegramChannel.promptUser — verbatim rendering (PR #11 round-2 regr
     disposePromptRegistry(bot);
   });
 
-  it('returns "approve" when the user taps ✅ Approve', async () => {
+  it('returns the approve option\'s value (\'approve\') when the user taps ✅ Approve', async () => {
     const { bot, sendMessage, click } = makeMockBot();
     const ch = new TelegramChannel(bot, CHAT_ID);
 
@@ -187,7 +187,7 @@ describe('TelegramChannel.promptUser — verbatim rendering (PR #11 round-2 regr
     disposePromptRegistry(bot);
   });
 
-  it('returns "deny" when the user taps ❌ Deny', async () => {
+  it('returns the deny option\'s value (\'deny\') when the user taps ❌ Deny', async () => {
     const { bot, sendMessage, click } = makeMockBot();
     const ch = new TelegramChannel(bot, CHAT_ID);
 
@@ -202,7 +202,7 @@ describe('TelegramChannel.promptUser — verbatim rendering (PR #11 round-2 regr
     disposePromptRegistry(bot);
   });
 
-  it('returns "deny" (not throw) when AbortSignal fires before user taps', async () => {
+  it('returns \'\' (empty string, per ChannelPort contract) when AbortSignal fires before user taps', async () => {
     const { bot, editMessageText } = makeMockBot();
     const ch = new TelegramChannel(bot, CHAT_ID);
     const ac = new AbortController();
@@ -213,7 +213,7 @@ describe('TelegramChannel.promptUser — verbatim rendering (PR #11 round-2 regr
     ac.abort();
     await flushMicrotasks();
 
-    await expect(promptPromise).resolves.toBe('deny');
+    await expect(promptPromise).resolves.toBe('');
     expect(editMessageText).toHaveBeenCalled();
     expect(String(editMessageText.mock.calls.at(-1)?.[2] ?? '')).toMatch(/aborted/i);
 
@@ -296,6 +296,35 @@ describe('TelegramChannel.promptUser — verbatim rendering (PR #11 round-2 regr
     const denyData = buttonData.find((d) => /^perm:deny:/.test(d))!;
     await click(denyData);
     await expect(promptPromise).resolves.toBe('deny');
+
+    disposePromptRegistry(bot);
+  });
+
+  it('throws when options is not a two-element approve/deny list (runtime guard)', async () => {
+    const { bot } = makeMockBot();
+    const ch = new TelegramChannel(bot, CHAT_ID);
+
+    // Single option — not approve/deny.
+    await expect(
+      ch.promptUser(makeCtx(), RELAY_QUESTION, [{ value: 'yes', label: 'Yes' }]),
+    ).rejects.toThrow('[telegram] promptUser only supports a two-option approve/deny prompt');
+
+    // Three options — even if approve and deny are present.
+    await expect(
+      ch.promptUser(makeCtx(), RELAY_QUESTION, [
+        { value: 'approve', label: '✅ Approve' },
+        { value: 'deny', label: '❌ Deny' },
+        { value: 'maybe', label: '🤔 Maybe' },
+      ]),
+    ).rejects.toThrow('[telegram] promptUser only supports a two-option approve/deny prompt');
+
+    // Two options but without the expected approve/deny values.
+    await expect(
+      ch.promptUser(makeCtx(), RELAY_QUESTION, [
+        { value: 'yes', label: 'Yes' },
+        { value: 'no', label: 'No' },
+      ]),
+    ).rejects.toThrow('[telegram] promptUser only supports a two-option approve/deny prompt');
 
     disposePromptRegistry(bot);
   });

@@ -27,11 +27,12 @@
  *     No intermediate stream edits.
  *
  *   supportsInteractivePrompts = false:
- *     Core falls back to a text-based permission prompt: sends a message like
- *     "Tool X wants to run Y — reply 'yes' to approve" and waits for an
- *     inbound text message matching 'yes'/'no'. promptUser() MUST still work
- *     (the adapter implements the text fallback internally), but the core
- *     should prefer the text path when this capability is false.
+ *     The core does NOT special-case this flag — it calls promptUser() the same
+ *     way regardless of capability. When this flag is false, the adapter's own
+ *     promptUser() implementation MUST provide a text-based fallback: post the
+ *     question and options as a plain text message and resolve when a matching
+ *     inbound reply arrives. The adapter owns the fallback; the core sees only
+ *     a uniform promptUser() call.
  *
  *   supportsThreadCreation = false:
  *     Core MUST NOT call createThread(). Sessions must be bound to

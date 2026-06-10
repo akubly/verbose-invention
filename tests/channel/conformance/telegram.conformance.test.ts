@@ -199,6 +199,39 @@ describe('TelegramChannel — Kat gotcha: empty threadId ⇒ omit message_thread
   });
 });
 
+// ── Round-4: positive-integer topic ID guard ──────────────────────────────────
+
+describe('TelegramChannel — positive-integer topic ID guard (PR #11 round-4)', () => {
+  // Helper: extract message_thread_id from the first sendMessage call's options.
+  async function getTopicId(threadId: string): Promise<unknown> {
+    const { bot, sendMessageMock } = makeMockBot(ALLOWED_CHAT_ID);
+    const ch = new TelegramChannel(bot, ALLOWED_CHAT_ID);
+    await ch.sendMessage({ threadId, channelId: String(ALLOWED_CHAT_ID) }, 'test');
+    const opts = sendMessageMock.mock.calls[0]?.[2] as Record<string, unknown> | undefined;
+    return opts?.['message_thread_id'];
+  }
+
+  it("sendMessage with threadId='0' omits message_thread_id (zero is not a valid topic)", async () => {
+    expect(await getTopicId('0')).toBeUndefined();
+  });
+
+  it("sendMessage with threadId='  ' (whitespace) omits message_thread_id", async () => {
+    expect(await getTopicId('  ')).toBeUndefined();
+  });
+
+  it("sendMessage with threadId='1.5' (non-integer) omits message_thread_id", async () => {
+    expect(await getTopicId('1.5')).toBeUndefined();
+  });
+
+  it("sendMessage with threadId='-5' (negative) omits message_thread_id", async () => {
+    expect(await getTopicId('-5')).toBeUndefined();
+  });
+
+  it("sendMessage with threadId='42' (valid positive integer) includes message_thread_id: 42", async () => {
+    expect(await getTopicId('42')).toBe(42);
+  });
+});
+
 describe('TelegramChannel — Kat gotcha: isBotCommand filter lives in onMessage handler (not adapter)', () => {
   it('TelegramChannel.onMessage stores the handler — command filtering is caller responsibility', async () => {
     const { bot, onHandlers } = makeMockBot(ALLOWED_CHAT_ID);

@@ -25,12 +25,13 @@ const MAX_CHUNKS = 25;
 // ── threadId → Telegram topic ID conversion ──────────────────────────────────
 /**
  * Converts a ChannelPort threadId (opaque string) to a Telegram message_thread_id.
- * Returns undefined (omit the field) for empty strings and non-finite values,
- * preventing { message_thread_id: NaN } from reaching the Telegram API.
+ * Telegram requires message_thread_id to be a positive integer; any other value
+ * (empty string, whitespace, '0', negative, non-integer like '1.5', NaN) returns
+ * undefined so the caller omits the field and the message lands in the General Topic.
  */
 function toTelegramTopicId(threadId: string): number | undefined {
   const n = Number(threadId);
-  return threadId !== '' && Number.isFinite(n) ? n : undefined;
+  return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
 // ── Parse-entities error detection ──────────────────────────────────────────

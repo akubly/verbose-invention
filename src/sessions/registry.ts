@@ -197,6 +197,9 @@ export class SessionRegistry implements ISessionRegistry {
         cwd,
         ...(model !== undefined && { model }),
       };
+      if (!validateEntry(entry, `register ${sessionName}`)) {
+        throw new Error(`[registry] refusing to register invalid session entry: register ${sessionName}`);
+      }
       const newEntries = new Map(this.entries);
       newEntries.set(threadId, entry);
       await this.doPersistEntries(newEntries);
@@ -269,6 +272,9 @@ export class SessionRegistry implements ISessionRegistry {
         throw new Error(`Destination thread ${toThreadId} is already bound to "${this.entries.get(toThreadId)!.sessionName}"`);
       }
       const newEntry: SessionEntry = { ...source, threadId: toThreadId };
+      if (!validateEntry(newEntry, `move ${toThreadId}`)) {
+        throw new Error(`[registry] refusing to move invalid session entry: move ${toThreadId}`);
+      }
       const newEntries = new Map(this.entries);
       newEntries.delete(fromThreadId);
       newEntries.set(toThreadId, newEntry);

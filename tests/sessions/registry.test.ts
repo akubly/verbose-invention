@@ -843,4 +843,48 @@ describe('SessionRegistry', () => {
       await expect(registry.move('1', '2')).rejects.toThrow(/thread/);
     });
   });
+
+  // ── write-path validation (PR #11 round 6) ───────────────────────────────────
+
+  describe('write-path validation', () => {
+    // register() — fail-fast on invalid inputs
+
+    it('register() throws and does not persist when threadId is empty', async () => {
+      await expect(registry.register('', '-100', 'bad-thread')).rejects.toThrow(
+        /\[registry\].*register bad-thread/,
+      );
+      expect(registry.list()).toHaveLength(0);
+    });
+
+    it('register() throws and does not persist when channelId is empty', async () => {
+      await expect(registry.register('42', '', 'bad-channel')).rejects.toThrow(
+        /\[registry\].*register bad-channel/,
+      );
+      expect(registry.list()).toHaveLength(0);
+    });
+
+    it('register() with valid threadId and channelId succeeds as before', async () => {
+      await expect(registry.register('42', '-100', 'valid-session')).resolves.not.toThrow();
+      expect(registry.resolve('42')?.sessionName).toBe('valid-session');
+    });
+
+    // move() — fail-fast on invalid destination
+
+    it('move() throws and does not persist when toThreadId is empty', async () => {
+      await registry.register('1', '-100', 'session-a');
+      await expect(registry.move('1', '')).rejects.toThrow(
+        /\[registry\].*move /,
+      );
+      // Source entry must remain intact — nothing was persisted
+      expect(registry.resolve('1')?.sessionName).toBe('session-a');
+      expect(registry.resolve('')).toBeUndefined();
+    });
+
+    it('move() with a valid toThreadId succeeds as before', async () => {
+      await registry.register('1', '-100', 'session-b');
+      await expect(registry.move('1', '2')).resolves.not.toThrow();
+      expect(registry.resolve('1')).toBeUndefined();
+      expect(registry.resolve('2')?.sessionName).toBe('session-b');
+    });
+  });
 });

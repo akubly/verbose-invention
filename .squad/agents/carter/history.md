@@ -1,272 +1,92 @@
-# Carter — History (PR #10 squash-merged 2026-06-06, commit 692e770)
-# Carter — History (Summarized 2026-05-30 → Phase 9 complete)
-# Carter — History (Summarized 2026-05-28 → Phase 8.5 complete 2026-05-30)
-
-## Identity & Role
-
-- **Agent:** Carter (Bridge Dev, Code Specialist)
-- **Project:** Reach — TypeScript daemon bridging Telegram to GitHub Copilot CLI
-- **Domain:** SDK relay, streaming, MarkdownV2 formatting, message splitting, session discovery, install orchestration, flag parsing, command routing
-- **Domain:** SDK relay, streaming, MarkdownV2 formatting, message splitting, session discovery, named-pipe bridge, **install orchestration** (Phase 8.5)
-- **Joined:** 2026-04-12
-
-## Current Status
-
-**PR #10 Cycle 16 shipped (2026-06-06 — FINAL CYCLE):** T1 — Investigated `BOT_COMMAND_NAMES` alias in `src/bot/commands.ts:36`. Grep of entire repo (`src/` + `tests/`) found zero live references outside the definition; the `.squad/decisions.md` note "alias kept for isBotCommand.test.ts" was itself stale — that test imports only `isBotCommand` and `BOT_COMMANDS`. No hardcoded command-name lists found that should be consuming it. Case (a): genuinely dead. Deleted the export. T2 — Rewrote stale "RED tests (awaiting Carter) / EXISTING TEST CONFLICT" file header in `tests/bot/handlers.slashGuard.test.ts` to describe present reality (guard is live, handlers.test.ts already updated). T3 — Removed 5 inline "RED until Carter:" body comments and stale section-heading suffix from same file; replaced stale conflict note with factual record that handlers.test.ts was updated in this PR. Extra: applied identical cleanup to `tests/relay/afkMode.slashGuard.test.ts` (same TDD scaffold generation — file header + 5 inline comments + section heading) and `tests/bot/isBotCommand.test.ts` (anticipatory header + "RED until Carter lands the regex change" + "(anticipatory)" describe label). tsc clean, lint zero warnings. Tests: 851/851 (no change). Decision in `.squad/decisions/inbox/carter-pr10-cycle16.md`.
-
- T1 — `src/install/index.ts` bot token prompt echoed raw token to terminal (shoulder-surfing/screen-recording risk). Added `promptSecret()` helper using `_writeToOutput` blank-masking idiom — same pattern already established in `src/service/install.ts:promptPassword()`. Used for `TELEGRAM_BOT_TOKEN` prompt only; `TELEGRAM_ALLOWED_USER_IDS` prompt is non-secret and keeps `promptLine`. Non-TTY handled by the existing wizard gate (exits before reaching any prompt). Sibling audit: `uninstall.ts` has no prompts; `service/install.ts` already masked; no token echo-back in post-capture log. Tests: 849→851 (+2: IX18 captures token correctly with masking active, IX19 verifies no `_writeToOutput` leak to subsequent non-secret prompt via `capturedWriteFns` mock instrumentation). Decisions in `.squad/decisions/inbox/carter-pr10-cycle15.md`.
-
- T2 (DO FIRST, connectivity-breaking) — `getAuthFilePath()` in `extension.mjs` was reading `%LOCALAPPDATA%\reach\bridge-auth.json` while the daemon writes to `~/.reach/bridge-auth.json` (via `getReachDataDir()` unified in Cycle 3). Extension never connected. Fix: rewrote `extension.mjs getAuthFilePath()` to mirror `getReachDataDir()` exactly (`REACH_DATA_DIR` env override → `path.resolve(override.trim())`, fallback `path.join(homedir(), '.reach')`). Added `resolve` import. ARCHITECTURAL NOTE: path-resolution logic is now duplicated across two runtime boundaries (compiled TS daemon vs standalone .mjs extension); both files carry a LOCKSTEP comment. Future changes to `getReachDataDir()` must be manually mirrored in `extension.mjs`. Also fixed broken N2 test stubs (`LOCALAPPDATA` → `REACH_DATA_DIR`) and added 4 N3 path-contract tests. T1 — `streamSdkResponse()` closures read global `pipeSocket` at execution time; reconnect mid-stream could write old-stream frames to new connection. Fix: declared `let socket = null` before outer try, assigned `socket = pipeSocket` after `await gate`, guarded `enqueueFrame` and done/error frames with `socket !== pipeSocket || socket.destroyed` stale-check. T1 streaming path not unit-testable from current harness (sdkSession coupling); documented in decisions. Tests: 845→849 (+4). tsc clean, lint zero warnings. Decision rationale in `.squad/decisions/inbox/carter-pr10-cycle14.md`.
-
- T1/T2 — replaced `ghp_`-prefixed token fixtures in `tests/bot/redactSecrets.test.ts` (unquoted + quoted ENV-assignment tests) with `FAKE_GH_TOKEN = 'not-a-real-token-0000'`; ENV pass doesn't care about token shape, and the `-` char makes it unambiguously fake (won't trip GitHub secret scanning). T3 — restructured the AWS-secret charset test from `AWS_SECRET_ACCESS_KEY=<value>` to a bare 42-char value `FAKE+Xm3z9pQr/vNsLwD7hYc+E4aOjZtFu1Ii/8bGn` that only `HIGH_ENTROPY_PATTERN` can redact; added `toBe('[REDACTED]')` companion assertion; deliberately avoids keyword words to prevent `KEYWORD_PATTERN` from firing first. If the cycle-8 charset regressed to exclude `/` and `+`, all fragments would be ≤12 chars and the test fails. Tests: 845→845 (unchanged — all edits to existing fixtures). tsc clean, lint zero warnings. Decision rationale in `.squad/decisions/inbox/carter-pr10-cycle13.md`.
-
-**PR #10 Cycle 12 shipped (2026-06-05):** T1 — added `registry.json` to `wipeLocalData()` marker list in `src/install/uninstall.ts`; full audit of `<dataDir>/` state files confirmed it was the only missing marker. UN14+UN15 tests added (registry-only dir allows wipe; unrelated-file dir refuses). T2 — replaced `sessionParts.length > 1` with unified `/\s/.test(sessionName)` in `parseNewFlags()`; quoted names like `"my session"` now reject with same error as unquoted multi-word. 5 new tests added. Tests: 838→843 (+5). tsc clean, lint zero warnings. Decision rationale in `.squad/decisions/inbox/carter-pr10-cycle12.md`.
-
-**PR #10 Cycle 11 shipped (2026-06-05):** T1 — guarded `relativeTime()` in `src/bot/cwdCommand.ts` against NaN (invalid ISO string → `'unknown'`) and future timestamps (clock skew → clamp diffMs to 0 → `'just now'`). Added 4 tests: invalid timestamp, future timestamp, exactly-now boundary, 2d-ago regression. Tests: 834→838 (+4). tsc clean, lint zero warnings. Decision rationale in `.squad/decisions/inbox/carter-pr10-cycle11.md`.
-
-**PR #10 Cycle 10 shipped (2026-06-05):** T1 — replaced argv[1]-only save/restore in `isDirectRun.test.ts` with full-array `slice()` snapshot + reference restore. IDR5 uses `splice(1)` which mutates array length; the cycle-6 pattern didn't undo that. Full-array restore is strictly correct and no more complex.
-
-**PR #10 Cycle 9 shipped (2026-06-05):** T1 — partial legacy migration retry (Option B: removed early-return on newRoot-exists, per-dir check now handles re-runs after partial failure, MIG8 test added). T2 — excerpt truncation off-by-one corrected (`slice(0, MAX_EXCERPT_LENGTH - 1) + '…'` = 500 chars, length-assertion added to C8 test).
-
-**Test baseline:** 838 passed / 4 skipped / 1 todo. tsc clean, lint zero warnings.
-**Phase 8.5 COMPLETE.** Install story shipped 2026-05-30 (copyExtension + orchestrator + uninstaller + dev junction). 570 tests green (537 existing + 33 new). Bridge code stable. Ready for Aaron dogfood re-verification of /afk.
-
-**Test baseline:** 570 passed / 4 skipped / 0 failed. tsc clean, lint zero warnings.
-
-**Phase 8 COMPLETE.** Phase 8 P1 sprint shipped 2026-05-27 (A7 drift coverage + integration harness). Watch sweep complete 2026-05-28 (no bridge/relay changes needed by F4 refactor or A6-6 fleet validation). Bridge code stable and ready for next phase or ship-to-pr.
+# Carter — History (Phase 1 Complete 2026-06-06, commit d84dc0c; Persona Review Cycle 2 PASSED 2026-06-07)
 
 ---
 
-## Phase 10 Backlog
+**PHASE 1 COMPLETE + PERSONA REVIEW CYCLE PASSED (2026-06-07):** Shipped core rewire for channel abstraction. SessionEntry IDs migrated to strings (threadId, channelId); TelegramChannel adapter implements ChannelPort interface with full capability descriptor; relay refactored onto ChannelPort with capability-aware branching; startup wiring complete for REACH_CHANNEL env var. **Two-cycle persona review completed:**
+- **Cycle 1 findings:** 3 blocking, 5 important, 4 minor
+- **Carter fixes (Cycle 1, 58e1326):** R1 (cfg-factory), B1 (relay de-duck-type), B2 (AFK guard), I1 (conditional creds), I2 (boolean return)
+- **Carter fixes (Cycle 2, 5b6d30c):** I1-residual (allowed-user gating), N1 (formatForTransport docstring)
+- **Cycle 2 outcome:** 0 blocking, all 6 prior important findings verified resolved by all Code Panel personas
+- **Final test count:** 963 green (+17 from Jun's regression tests, all passing). tsc+lint clean.
+- **Ship status:** READY FOR /ship-to-pr
+- **Deferred to Phase 2:** I4 (optional createThread), I5 (ChannelMessage union), M5 (central mock factory)
 
-- Cross-platform path detection in /new --cwd (Unix `/` startsWith check)
-- Bot token plaintext echo during wizard (minor Security, deferred)
-- .env file permissions hardening (minor Security, deferred)
-- newFlagParser single-quote `\'` handling (minor, acceptable)
-- redactSecrets over-redaction on very long model names (minor, acceptable per bias)
-
----
-
-## Phase 9 Cycle 3 Complete (2026-05-31)
-
-A4 + A5 refactors (single command registry, discriminated ParseResult union) shipped in commit 41a584e. Architect's findings addressed. Branch user/aaron/phase9 now 9 commits ahead. Suite stable at 783 tests. Ready for PR. No further review cycles required.
+F1 blocker fixed in commit e1f3f4d; verified by Jun in commit 2b5e4a2. Reference: Phase 1 section in decisions.md; orchestration log at .squad/orchestration-log/2026-06-07-persona-review-phase1.md. Next: Teams Phase 2 pending corp access.
 
 ---
-
-## PR #10 Cycle 3 Fix Wave (2026-05-31)
-
-**Trigger:** Four Copilot review threads on PR #10. T2 was a BLOCKING regression.
-
-### T2 - Service Uninstall Composability
-
-Extracted `uninstallService(): Promise<void>` from `src/service/install.ts`. Wraps node-windows event-emitter in a Promise with settled boolean guard (prevents double-fire), 60-second timeout rejection, and clearTimeout cleanup. `runUninstall()` promoted to async; service step is a tracked StepResult. Old `uninstall()` kept as a backward-compat CLI shim.
-
-Key learning: node-windows event-emitter patterns need the same settled/timeout/cleanup treatment as the extension.mjs SDK streaming fix. Pattern is reusable across all node-windows wrappers.
-
-### T6 - noble six/ to noble-six/ Consolidation
-
-Physical move via git rm + copy. Merged two history.md files: used the noble six/ version (comprehensive, Phases 6-9) as base, inserted the Phase 9 Sprint breakdown block from noble-six/ (unique KB and Decision Consolidation sections). Streaming-fix section was duplicated - kept one copy. Charter inbox path updated. team.md roster updated.
-
-### T7 - isBotCommand test header comment
-
-Single-line update: replaced stale pre-cycle-1 contract text with accurate post-fix description.
-
-### T8 - TELEGRAM_ALLOWED_USER_IDS wizard validation
-
-Added 3-attempt retry loop before skip-with-confirmation fallback. Validation regex `/^[1-9][0-9]*$/` is a strict subset of parseEnv's check (rejects leading zeros that Number() would silently coerce). Normalization: `tokens.join(',')` before write.
-
-Key learning: wizard validation should be at least as strict as the runtime parser - document any intentional tightening (leading zeros) so future maintainers don't loosen it.
-
-### Validation
-
-- tsc --noEmit: green
-- eslint: green (0 warnings)
-- vitest run: 797 passed / 4 skipped / 1 todo (was 791; +6 new tests)
-
----
-
-## PR #10 Cycle 3 Second Wave — Storage Unification (2026-05-31)
-
-**Spec:** Noble Six's `.copilot/reach-state-storage-design.md` Option D.  
-**Aaron's locked decision:** unify all Reach state under `~/.reach/` with `REACH_DATA_DIR` env override.
-
-### Changes
-
-**`src/config/config.ts` — `getReachDataDir()` rewritten:**
-Removed platform switch (`win32` APPDATA vs Unix `.config`). New implementation: `REACH_DATA_DIR` env override (trimmed, empty-string-safe, `path.resolve()`'d) → `path.join(os.homedir(), '.reach')`. Cross-platform from day one. `getConfigPath()` continues to route through `getReachDataDir()` unchanged.
-
-**`src/config/migrate.ts` — new migration helper (Approach A):**
-`migrateLegacyDataDir()` is explicit — called from `runInit()` and `main()`. One-shot: module-level flag prevents double-run per process. If `~/.reach/` exists: no-op. Else if `%APPDATA%\reach\` or `%LOCALAPPDATA%\reach\` exist: copy contents, verify all files present, then remove legacy dir. Never deletes legacy until copy is verified. Log lines confirm each migration.
-
-**`src/bridge/pipeAuth.ts` — `getAuthFilePath()` simplified:**
-Removed `LOCALAPPDATA` logic entirely. Imports `getReachDataDir()` and returns `getReachDataDir() + '/bridge-auth.json'`. `os` import retained (still used for ACL's `os.userInfo()`). Docstring updated to reference `~/.reach/`.
-
-**`src/install/uninstall.ts` — `wipeLocalData()` simplified:**
-`LOCALAPPDATA` env var dependency removed. `wipeLocalData()` now calls `getReachDataDir()` directly. No-wipe hint updated to show `Remove-Item -Recurse -Force ~/.reach`. `UninstallOptions.wipe` docstring updated.
-
-**`src/install/index.ts` + `src/main.ts` — migration call sites:**
-`migrateLegacyDataDir()` called at start of both `runInit()` and `main()`.
-
-**`tests/bridge/cloud-review-1.test.ts` — `vi.stubEnv` patched:**
-T3/T4/T7 used `vi.stubEnv('LOCALAPPDATA', tempDir)` to redirect `getAuthFilePath()`. Now uses `vi.stubEnv('REACH_DATA_DIR', tempDir)` — same effect, correct surface.
-
-### Key Patterns Learned
-
-- **Real-filesystem tests that use `vi.stubEnv` to redirect paths must stub the env var that the production code actually reads**, not a legacy env var. When `getAuthFilePath()` was updated from `LOCALAPPDATA` to `REACH_DATA_DIR`, the stubs in cloud-review-1.test.ts broke silently (writes went to `~/.reach/` instead of the tempdir, pipeName comparison failed with a stale cached value). Grep for `vi.stubEnv` whenever changing which env var a path resolver reads.
-- **`vi.resetModules()` + dynamic import pattern for module-level flags in tests.** The `migrateLegacyDataDir` flag (`migrationAttempted`) is module-level; resetting it between tests requires re-importing the module fresh. Use `vi.resetModules()` in a helper, then `await import('../../src/config/migrate.js')`, and call the freshly-imported function. Each test gets a clean flag.
-- **`REACH_DATA_DIR` env override doubles as a test harness.** Setting it in `beforeEach` to a known path eliminates the need to mock `os.homedir()` in uninstall and migration tests. Cleaner than spy on `os.homedir` which requires module-level mock setup.
-
-### Validation
-
-- tsc --noEmit: green
-- eslint src --max-warnings 0: green
-- vitest run: 809 passed / 4 skipped / 1 todo (was 797; +12 new tests across config.test.ts, migrate.test.ts, uninstall.test.ts)
-
-
----
-
-## PR #10 Cycle 4 Fix Wave (2026-06-01)
-
-**Threads:** 3 (Thread 1: uninstallService sync-throw timer leak; Thread 2: hardcoded ~/.reach in no-wipe hint; Thread 3: stale comment). All in `src/service/install.ts` and `src/install/uninstall.ts`.
-
-### Thread 1 — uninstallService sync-throw timer leak
-
-Added try/catch around `svc.uninstall()` in `uninstallService()`. Catch block: `if (!settled) { settled = true; finish(err); }`. The existing `finish()` helper already called `clearTimeout(timer)` before rejecting — no refactoring needed. The `settled` guard ensures no double-resolution if an async event fires after the sync throw.
-
-Added 3 new tests (SU1-SU3) in `tests/service/install.test.ts`. Key learning: SU tests set `mockSvcUninstall.mockImplementation(() => { throw ... })`. The outer `beforeEach` uses `vi.clearAllMocks()` which clears call counts but NOT mock implementations. This caused the throw impl to leak into the `main()` describe tests, triggering an unhandled rejection when the un-awaited `main()` call hit the throwing `uninstallService()`. Fixed by adding `afterEach(() => { mockSvcUninstall.mockReset(); })` inside the SU describe block.
-
-Pattern: when tests in a shared mock context use `mockImplementation` to override behavior, always reset in afterEach if the outer beforeEach only calls `clearAllMocks` (not `resetAllMocks`).
-
-### Thread 2 — hardcoded ~/.reach in no-wipe hint
-
-`reachDir` was already resolved on line 111. Only the `Remove-Item` command line (line 114) was hardcoded. Updated to ` Remove-Item -Recurse -Force "${reachDir}" `. Other `~/.reach` occurrences in src are JSDoc/comments describing the default — left unchanged.
-
-### Thread 3 — stale comment
-
-Updated `src/install/uninstall.ts:100-102` to accurately describe that `uninstallService()` returns a Promise, does NOT call `process.exit()`, and the orchestrator decides the exit code.
-
-### Validation
-
-- tsc --noEmit: green
-- eslint src --max-warnings 0: green  
-- vitest run: 813 passed / 4 skipped / 1 todo (was 809; +4 new tests: SU1-SU3 in service/install.test.ts + UN11 in install/uninstall.test.ts)
-**Note for Carter:** No bridge action required. Plan focuses on daemon/relay validation. Bridge code remains stable.
-
----
-
-## Phase 8.5 Task 1 (2026-05-29T23:23:02-07:00) — Extension Copy Installer
-
-**Deliverable:** `src/install/copyExtension.ts` + `"install:extension"` npm script.
-
-**What ships:**
-- `src/install/copyExtension.ts` — resolves `%APPDATA%\GitHub Copilot\User\extensions\reach\extension.mjs`, validates Copilot CLI is installed, creates `reach/` subdir if needed, copies `extension.mjs` unconditionally (idempotent overwrite), logs target path. Exports `copyExtension()` for orchestrator use (Task 2).
-- `package.json` — added `"install:extension": "node dist/install/copyExtension.js"` matching the `service:install`/`service:uninstall` dist runner pattern.
-
-**Validation:** `tsc --noEmit` clean, `npm run lint` clean (0 warnings).
 
 ## Learnings
 
-- **Runner pattern choice:** Use `node dist/...js` not `node --import tsx/esm src/...ts` for install scripts. All existing service scripts use compiled dist; staying consistent prevents a confusing split. tsx is dev-only.
-- **Project root from dist/install/:** `path.resolve(__dirname, '..', '..')` is reliable when the compiled path depth is fixed. No filesystem walk needed (unlike `service/install.ts` which uses a dynamic walk because it was written before the path depth was established).
-- **process.exit narrows type:** TypeScript correctly narrows `appData` from `string | undefined` to `string` after `if (!appData) { process.exit(1); }` because `process.exit` returns `never`. No need for non-null assertion downstream.
+### F1 Fix — Relay Capability Branching (2026-06-06, commit e1f3f4d)
 
----
+Noble Six's Phase 1 review caught that the relay always sent a `"…"` placeholder
+and called `editMessage` on every 800ms throttle tick regardless of capability
+flags — violating the `ChannelPort` contract for channels like Teams where
+`supportsStreaming=false`.
 
-## Phase 8.5 Task 2 (2026-05-29T23:36:06-07:00) — Full Install Orchestrator
+**Fix approach:** replaced the single monolithic streaming block with an
+explicit three-case branch keyed on `channel.capabilities`:
 
-**Deliverables:**
-- `src/install/copyExtension.ts` — updated: added dev junction mode. `NODE_ENV=development` creates a Windows directory junction (`reach/` → repo root) instead of copying. Uses `existsSync`+`rmSync` pattern (not `lstatSync`) so Jun's test mocks work cleanly. Source-file check moved inside production branch (dev mode skips it — junction provides access without an explicit copy).
-- `src/install/index.ts` — new: `runInit()` orchestrator. Banner, TTY-gated config wizard (bot token prompt, chat ID warn-only, allowed-user-IDs prompt with explicit skip), `copyExtension()`, next-step summary print, then `install()` from service/install.ts (which handles its own exit).
-- `src/install/uninstall.ts` — implemented (was a stub): `runUninstall({ wipe })`. Removes extension dir (existsSync+rmSync), optionally wipes %LOCALAPPDATA%\reach\, then calls `uninstall()` from service/install.ts. Step ordering matters: all sync cleanup before the async service uninstall (which process.exit()s internally).
-- `package.json` — added `"init"` and `"uninstall"` scripts (dist runner pattern).
+- **Case A** (`supportsStreaming && supportsMessageEdit`): byte-identical to the
+  pre-fix Telegram path. No behavior change, confirmed by 937 green tests.
+- **Case B** (`!supportsMessageEdit`): no placeholder, silent accumulation,
+  single `sendMessage` with the complete response. `editMessage` is never
+  reached — the code path to it doesn't exist in this branch.
+- **Case C** (`!supportsStreaming`, `supportsMessageEdit=true`): `"thinking…"`
+  placeholder, full accumulation, single `safeEditFormatted` at the end. No
+  intermediate edits at all.
 
-**Test results:** 33/33 install tests green. 570 passed / 4 skipped / 0 failed full suite.
+Error paths updated symmetrically: Case B uses `sendMessage` for the error
+message (no placeholder to edit); Cases A and C edit the placeholder.
 
-**Validation:** tsc --noEmit clean, npm run lint clean (0 warnings), vitest 570/574.
+**Key lesson:** when a port contract specifies per-capability fallback behaviors,
+the consumer (relay) must gate every optional-method call on the flag — not
+assume the adapter will silently swallow calls it doesn't support. The
+conformance test kit validates adapter behavior; the relay capability tests
+(owned by Jun) validate that the relay *calls the right methods given the flags*.
 
-## Learnings
+### Cycle-1 Fixes — cfg-into-factory + relay de-duck-typing (2026-06-06, commit 58e1326)
 
-- **Mock what the tests mock.** When Jun's tests mock `existsSync`/`rmSync` but not `lstatSync`, using `lstatSync` in the implementation silently calls the real filesystem. Use the same fs surface the tests mock. Lesson: read the test file's mock setup before picking implementation strategy for file operations.
-- **node-windows events + process.exit = unreachable code after `install()`/`uninstall()`.** Both functions from service/install.ts call `process.exit` in their event handlers. Any code placed after calling them is dead. Structure orchestrators to print all user-visible output BEFORE the hand-off call.
-- **Dev mode can skip guards that don't apply.** Moving the source-file `existsSync` check inside the production branch is correct: dev mode doesn't need the file to exist separately (the junction exposes it). This also happens to make the tests cleaner. Both are wins.
+**R1 — factory must use resolved cfg, not raw env.**  
+The Telegram adapter's self-registration factory was reading `process.env.TELEGRAM_BOT_TOKEN`
+and `process.env.TELEGRAM_CHAT_ID` directly, bypassing the already-resolved `EnvConfig`.
+Paired installs (chatId stored in config.json, env unset) worked at the `parseEnv()` level
+(cfg.chatId resolved from config) but broke silently at the factory: chatId defaulted to 0
+because the env var was absent.
 
----
+**Fix:** `ChannelFactory` now takes `(cfg: EnvConfig) => ChannelPort`; `createChannel(name, cfg)`
+threads the resolved config to the factory. The Telegram factory reads `cfg.token` and
+`cfg.chatId` — the pre-resolved values — restoring the pre-refactor `createBot(cfg.token, cfg.chatId)` behavior exactly.
 
-## Phase 9 Item 2 (2026-05-30) — Slash Command Pass-Through
+**Lesson:** when a refactor lifts credential resolution into a config layer, all downstream
+consumers must be updated to read from that layer. Leaving one consumer (the factory) reading
+from the raw source creates a regression path that only manifests for non-default config
+shapes (paired install).
 
-- **BOT_COMMANDS source-of-truth:** `src/bot/commands.ts`. The authoritative list is
-  derived from `bot.command()` registrations in `handlers.ts`: `new` (line 53),
-  `list` (line 131), `remove` (line 145), `resume` (line 161), `help` (line 244),
-  `pair` (line 259). Both `afkMode.ts` and `handlers.ts` import from `commands.ts`.
-  Future maintainers: if you add a BotFather command, add it here too.
+**B1 — relay de-duck-typing (remove TelegramChannel leak).**  
+Replaced `asTelegramChannel()` duck-type check + `editMessageWithMarkdown`/`sendMessageWithMarkdown`
+wrappers with uniform `channel.sendMessage(ctx, rawText)` / `channel.editMessage(ctx, ref, rawText)`
+calls for all transports. The adapter (TelegramChannel) owns formatting internally per contract.
+The deprecated `*WithMarkdown` public wrappers on TelegramChannel were also removed.
 
-- **Pre-existing tests encode old invariants.** T4 in `afk-mode.contract.test.ts`
-  and the "ignores command messages" case in `handlers.test.ts` both tested the old
-  blanket `/` drop behavior. When a design decision changes, grep for tests that
-  assert the old behavior explicitly — they won't fail on type-check or lint, only on
-  the test run. Always run `npx vitest run` after any guard change.
+Simplified private helpers `safeEdit(ctx, ref, text)` and `safeSend(ctx, text, ...)` wrap the
+direct calls in try/catch and return boolean — no Telegram special-casing anywhere in core.
 
-- **ADR vs. Phase update semantics.** ADR-11 §2 said `/back` is CLI-only ("not honored
-  from Telegram"). Phase 9 pass-through supersedes that for relay re-targeting: `/back`
-  now forwards via mirror.input. The core protocol invariant (no `back.confirmed`
-  without `back.request`) is still correct — text pass-through doesn't trigger it.
-  When Phase supersedes an ADR clause, update the test and document the supersession
-  in the decisions file. Don't silently leave contradictory test comments.
 
-- **`ReadonlySet<string>` for shared command sets.** Jun's test contract expected this
-  type. Using `export const X: ReadonlySet<string> = new Set([...])` ensures the
-  consuming code can't mutate the set and the type flows correctly through imports.
+`registerChannel`'s factory had `const { Bot } = require('grammy') as typeof import('grammy')` inside it. The comment said it was deferring grammY's load until the factory runs. There was NO circular dependency — registry.ts only imports `type { ChannelPort }` and never touches the telegram module. The defer was pure premature optimisation. Fixed by promoting `Bot` from the type-only import to a value import (`import { Bot, type Context } from 'grammy'`) and deleting the 3-line require block. tsc, lint, vitest all green; test count unchanged at 946.
 
----
+### Cycle-2 Cleanup — I1-residual, N1, minors (2026-06-06, commit 5b6d30c)
 
-## Phase 9 Item 3 (2026-05-30) — /cwd Command Group + /new --cwd Flag
+When making multiple related edits to the same file in one response, include sufficient surrounding context in each `old_str` to avoid accidentally truncating adjacent code (e.g., the inner `try` block inside an outer `try` was dropped on first attempt). Verify with `view` after each structural edit before moving on.
 
-- **General Topic detection is `message_thread_id === undefined`.** In Telegram supergroup
-forums, messages in the General Topic have no `message_thread_id`; all session topics
-have one. This is the right guard for commands that should only run in the General Topic.
+### PR #11 Copilot Review — registry empty-id guard + topic→thread terminology (2026-06-07, commit f4baf17)
 
-- **Registry already supported cwd.** `ISessionRegistry.register()` had a 5th optional
-`cwd?: string` param from a prior phase. No interface changes needed. The key constraint:
-when `--cwd` is absent, call with exactly 4 args so existing test assertions
-(`toHaveBeenCalledWith(42, chatId, name, undefined)`) don't break.
+`?? ''` fallbacks in `load()` silently accepted corrupt entries: pre-computing `threadId`/`channelId` via `coerceId` before building the object and `continue`-ing on falsy results is safer than building-then-validating, because the object literal is never constructed with a bad state. `validateEntry`'s empty-string check is a second defence-in-depth layer, not the primary gate.
 
-- **Position-independent flag parsing via `.replace(/(^|\s)--flagname\s+(\S+)/g, ...)`.**
-This regex correctly handles flags before name, after name, and in any order. The
-`(^|\s)` group captures either start-of-string or a space separator; replacing the full
-match with `''` cleanly removes the flag+value without fusing adjacent words because
-the leading space (when present) is included in the match. Always normalize with
-`.replace(/\s{2,}/g, ' ').trim()` afterward.
+### PR #11 Round-2 Copilot Review — key-mismatch, chatId fast-fail, neutral log, NaN guard (2026-06-08, commit e619f00)
 
-- **Dangling flag detection after extraction.** After extracting known flags, a dangling
-`--model` or `--cwd` (present but no value) remains in the `name` string. Detect with
-`/(^|\s)--flagname($|\s)/` — the `$` matches end-of-string, the `\s` matches a following
-space. This preserves the `expect.stringContaining('model value')` assertion from the
-existing test suite without special-casing the old regex.
-
-- **`args.slice(2).join(' ')` for path args with spaces.** Splitting user input on `\s+`
-fragments Windows paths containing spaces (e.g., `C:\my projects\repo`). Rejoining from
-index 2 onward recovers the full path. Always use this pattern for positional path args
-in Telegram command handlers.
-
-- **`relativeTime()` is a private handler-module helper.** Not exported because it's only
-used by the `/cwd list` reply formatter. If tests need to cover it directly, extract to
-`src/bot/formatters.ts` and export — note the move in the decisions file so Jun can
-update imports.
-
-- **720 tests green after Item 3** (637 baseline + 67 Jun Item 2 anticipatory + 16 Jun Item 3
-anticipatory). Test count is a reliable coordination signal: if it doesn't jump when you
-land a feature, check whether Jun's anticipatory tests are failing silently.
-
----
-
-## Phase 9 Sprint — 2026-05-30
-
-**Sprint shipped.** All 3 Aaron dogfood feedback items addressed:
-1. Orientation message + /status command (Kat, afkMode + handlers)
-2. Slash pass-through via isBotCommand allowlist (Carter Items 2)
-3. /cwd registry + /new --cwd flag (Carter Items 3 + Kat config schema)
-
-**Suite:** 720 passed / 4 skipped / 1 todo. +150 net tests.
-
-**Known Phase 10 follow-up:** Cross-platform path detection in /new --cwd (Unix `/` startsWith check deferred).
-
+Permissive "numeric key" branch in `load()` let mismatched entries silently re-key and overwrite real entries; removing the second AND-condition makes the rule uniform. Defaulting `chatId` to `0` in the factory produced a silent dead daemon — fail-fast with a clear Error is always safer than a default that accepts invalid state. `Number('abc') === NaN` is not `undefined`, so any guard on `!== undefined` must also check `Number.isFinite` before using the value as a Telegram API integer. Startup logs should use the transport-neutral `channel.name` so the message stays accurate when non-Telegram adapters are added.
+- PR #11 round-3 (2026-06-09): introduced 	oTelegramTopicId() as a single shared helper (threadId → message_thread_id guard, NaN-safe) to replace scattered Number(ctx.threadId) conversions; added isValidTelegramChatId() in env.ts so the config.telegramChatId path applies the same integer/non-zero constraints as the env-var path, preventing silent bad-chatId acceptance.
+- PR #11 round-4 (2026-06-09): tightened toTelegramTopicId() to positive-integer-only (Number.isInteger(n) && n > 0), rejecting '0', whitespace, negatives, and non-integers that Number.isFinite() previously accepted; doc-only fix to port.ts supportsInteractivePrompts=false note to reflect that the adapter owns the text-fallback in promptUser(), not the core.
+- PR #11 round-5 (2026-06-09): log 'Channel starting' BEFORE await channel.start() and 'Channel started' AFTER it resolves — "started" should only print when startup actually succeeded, not before it completes.
+- PR #11 round-6 (2026-06-09): added validateEntry() guards on register() and move() write paths — fail-fast with a clear Error before persisting, symmetric with the load-path guard; prevents invalid entries from reaching disk and being silently dropped on next load().

@@ -17,10 +17,14 @@ export interface AfkSessionFixture {
   cwd: string;
   topicId?: number;
   chatId?: number;
+  /** String thread ID as written by AfkModeController (P1 migration). */
+  threadId?: string;
+  channelId?: string;
   createdAt?: string;
   mode?: 'afk' | 'back';
   afkSince?: string;
-  lastTopicId?: number;
+  /** Numeric for initial fixtures; string after AfkModeController writes it. */
+  lastTopicId?: number | string;
 }
 
 export function makeSessionEntry(overrides: Partial<AfkSessionFixture> = {}): AfkSessionFixture {
@@ -66,7 +70,7 @@ export class MemoryAfkRegistry {
 
   findByTopicId(topicId: number): AfkSessionFixture | undefined {
     return Array.from(this.bySessionId.values()).find(
-      (entry) => entry.topicId === topicId || entry.lastTopicId === topicId,
+      (entry) => entry.topicId === topicId || entry.lastTopicId === topicId || String(entry.topicId) === String(topicId),
     );
   }
 
@@ -90,8 +94,16 @@ export class MemoryAfkRegistry {
     return Array.from(this.bySessionId.values());
   }
 
-  resolve(topicId: number): AfkSessionFixture | undefined {
-    return Array.from(this.bySessionId.values()).find((entry) => entry.topicId === topicId);
+  resolve(threadId: string): AfkSessionFixture | undefined {
+    // Match by string threadId field or by converting numeric topicId
+    return Array.from(this.bySessionId.values()).find(
+      (entry) => entry.threadId === threadId || String(entry.topicId) === threadId,
+    );
+  }
+
+  /** Resolve by string threadId — used by the contract test suite. */
+  resolveByThreadId(threadId: string): AfkSessionFixture | undefined {
+    return this.resolve(threadId);
   }
 
   findAllByName(sessionName: string): AfkSessionFixture[] {
@@ -102,7 +114,9 @@ export class MemoryAfkRegistry {
     // No-op for in-memory implementation; matches real SessionRegistry async signature.
   }
 
-  async register(topicId: number, chatId: number, sessionName: string, model?: string, cwd?: string): Promise<void> {
+  async register(threadId: string, channelId: string, sessionName: string, model?: string, cwd?: string): Promise<void> {
+    const topicId = Number(threadId);
+    const chatId = Number(channelId);
     const existing = this.findByName(sessionName);
     if (existing && existing.topicId !== topicId) {
       throw new Error(
@@ -110,7 +124,7 @@ export class MemoryAfkRegistry {
       );
     }
     const entry: AfkSessionFixture = {
-      sessionId: sessionName, // tests use sessionName as sessionId convention
+      sessionId: sessionName,
       sessionName,
       topicId,
       chatId,
@@ -121,21 +135,21 @@ export class MemoryAfkRegistry {
     await this.upsert(entry);
   }
 
-  async remove(topicId: number): Promise<boolean> {
-    const entry = this.resolve(topicId);
+  async remove(threadId: string): Promise<boolean> {
+    const entry = this.resolve(threadId);
     if (!entry) return false;
     this.bySessionId.delete(entry.sessionId);
     return true;
   }
 
-  async move(fromTopicId: number, toTopicId: number): Promise<void> {
-    const entry = this.resolve(fromTopicId);
-    if (!entry) throw new Error(`No session found for topic ${fromTopicId}`);
-    const existingAtTarget = this.resolve(toTopicId);
+  async move(fromThreadId: string, toThreadId: string): Promise<void> {
+    const entry = this.resolve(fromThreadId);
+    if (!entry) throw new Error(`No session found for topic ${fromThreadId}`);
+    const existingAtTarget = this.resolve(toThreadId);
     if (existingAtTarget) {
-      throw new Error(`Destination topic ${toTopicId} is already bound to "${existingAtTarget.sessionName}"`);
+      throw new Error(`Destination topic ${toThreadId} is already bound to "${existingAtTarget.sessionName}"`);
     }
-    const moved: AfkSessionFixture = { ...entry, topicId: toTopicId };
+    const moved: AfkSessionFixture = { ...entry, topicId: Number(toThreadId), threadId: toThreadId };
     this.bySessionId.delete(entry.sessionId);
     await this.upsert(moved);
   }

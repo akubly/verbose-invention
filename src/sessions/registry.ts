@@ -6,31 +6,42 @@ export type { SessionEntry } from '../types.js';
 
 interface RegistryData {
   version?: number;  // absent in legacy files, 1 in current format
-  entries: Record<string, SessionEntry>;
+  entries: Record<string, unknown>;
 }
 
 export interface ISessionRegistry {
   load(): Promise<void>;
-  register(topicId: number, chatId: number, sessionName: string, model?: string, cwd?: string): Promise<void>;
-  /** Upserts an AFK-managed entry; if the session name moved topics, replaces the prior topic binding. */
+  register(threadId: string, channelId: string, sessionName: string, model?: string, cwd?: string): Promise<void>;
+  /** Upserts an AFK-managed entry; if the session name moved threads, replaces the prior thread binding. */
   upsert(entry: SessionEntry): Promise<void>;
-  /** Resolves a Telegram topic ID to its session entry. */
-  resolve(telegramTopicId: number): SessionEntry | undefined;
+  /** Resolves a thread ID to its session entry. */
+  resolve(threadId: string): SessionEntry | undefined;
   /** Returns every entry whose sessionName matches (normally at most one). */
   findAllByName(sessionName: string): SessionEntry[];
   findByName(sessionName: string): SessionEntry | undefined;
   list(): SessionEntry[];
-  remove(telegramTopicId: number): Promise<boolean>;
+  remove(threadId: string): Promise<boolean>;
   /**
-   * Re-binds a named session from one topic to another.
+   * Re-binds a named session from one thread to another.
    * Serialized via the internal mutation queue — only one registry mutation runs at a time.
-   * Reads identity (sessionName, chatId, model) from the stored source entry;
-   * the caller supplies only the two topic IDs.
+   * Reads identity (sessionName, channelId, model) from the stored source entry;
+   * the caller supplies only the two thread IDs.
    * Builds a new entries snapshot, persists it to disk, then atomically swaps
    * this.entries to the new map. No rollback path — this.entries is never mutated on failure.
-   * Throws if fromTopicId is not registered, toTopicId is already bound, or persist fails.
+   * Throws if fromThreadId is not registered, toThreadId is already bound, or persist fails.
    */
-  move(fromTopicId: number, toTopicId: number): Promise<void>;
+  move(fromThreadId: string, toThreadId: string): Promise<void>;
+}
+
+/**
+ * Coerce a raw value read from legacy JSON to a string ID.
+ * Numeric values (legacy topicId/chatId) are converted via String(); strings pass through.
+ * Returns undefined for null/undefined/other non-coercible types.
+ */
+function coerceId(raw: unknown): string | undefined {
+  if (typeof raw === 'string') return raw;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
+  return undefined;
 }
 
 /**
@@ -42,8 +53,8 @@ export interface ISessionRegistry {
 function validateEntry(entry: SessionEntry, label: string): boolean {
   if (
     typeof entry.sessionName !== 'string' ||
-    typeof entry.topicId !== 'number' ||
-    typeof entry.chatId !== 'number' ||
+    typeof entry.threadId !== 'string' || entry.threadId.length === 0 ||
+    typeof entry.channelId !== 'string' || entry.channelId.length === 0 ||
     typeof entry.createdAt !== 'string'
   ) {
     console.warn(`[registry] Invalid required fields for ${label}`);
@@ -65,7 +76,7 @@ function validateEntry(entry: SessionEntry, label: string): boolean {
     console.warn(`[registry] Stripping invalid afkSince for ${label}`);
     delete entry.afkSince;
   }
-  if (entry.lastTopicId !== undefined && typeof entry.lastTopicId !== 'number') {
+  if (entry.lastTopicId !== undefined && typeof entry.lastTopicId !== 'string') {
     console.warn(`[registry] Stripping invalid lastTopicId for ${label}`);
     delete entry.lastTopicId;
   }
@@ -73,12 +84,17 @@ function validateEntry(entry: SessionEntry, label: string): boolean {
 }
 
 /**
- * Durable map of Telegram forum topic ID → Copilot session entry.
+ * Durable map of thread ID → Copilot session entry.
  * Persists to a JSON file so registry survives daemon restarts.
  * Active SDK session handles are NOT persisted — recreated via resumeSession on demand.
+ *
+ * Back-compat: legacy registry.json files store `topicId: number` and `chatId: number`.
+ * On load(), numeric values are coerced to strings so existing installs upgrade
+ * transparently without any migration step. The file is rewritten with string keys
+ * on the next mutation (register/upsert/remove/move).
  */
 export class SessionRegistry implements ISessionRegistry {
-  private entries = new Map<number, SessionEntry>();
+  private entries = new Map<string, SessionEntry>();
   private mutationQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly persistPath: string) {}
@@ -103,24 +119,54 @@ export class SessionRegistry implements ISessionRegistry {
       if (!data.entries) {
         console.warn(`[registry] Registry file missing 'entries' field, starting empty`);
       }
-      for (const [key, value] of Object.entries(entries)) {
-        if (!validateEntry(value, `key ${key}`)) continue;
-        if (Number(key) !== value.topicId) {
-          console.warn(`[registry] Skipping entry for key ${key}: key does not match topicId ${value.topicId}`);
+      for (const [key, rawValue] of Object.entries(entries)) {
+        if (rawValue === null || typeof rawValue !== 'object') continue;
+        const raw = rawValue as Record<string, unknown>;
+
+        // Back-compat migration: legacy files store topicId (number) and chatId (number).
+        // Coerce to threadId/channelId strings on read so existing installs upgrade transparently.
+        const threadId = coerceId(raw['threadId'] ?? raw['topicId']);
+        const channelId = coerceId(raw['channelId'] ?? raw['chatId']);
+        if (!threadId || !channelId) {
+          console.warn(`[registry] Skipping entry for key ${key}: missing or invalid threadId/channelId`);
           continue;
         }
-        this.entries.set(Number(key), value);
+
+        const lastTopicIdCoerced = coerceId(raw['lastTopicId']);
+        const entry: SessionEntry = {
+          sessionName: raw['sessionName'] as string,
+          threadId,
+          channelId,
+          createdAt: raw['createdAt'] as string,
+          cwd: (raw['cwd'] as string) ?? '',
+          ...(raw['model'] !== undefined && { model: raw['model'] as string }),
+          ...(raw['mode'] !== undefined && { mode: raw['mode'] as 'afk' | 'back' }),
+          ...(raw['afkSince'] !== undefined && { afkSince: raw['afkSince'] as string }),
+          ...(lastTopicIdCoerced ? { lastTopicId: lastTopicIdCoerced } : {}),
+        };
+
+        if (!validateEntry(entry, `key ${key}`)) continue;
+
+        // Canonical key must match exactly. Legacy numeric keys satisfy this automatically
+        // because coerceId(9001) === '9001', so key '9001' === canonicalKey '9001'.
+        const canonicalKey = entry.threadId;
+        if (canonicalKey !== key) {
+          console.warn(`[registry] Skipping entry for key ${key}: key does not match threadId ${entry.threadId}`);
+          continue;
+        }
+
+        this.entries.set(canonicalKey, entry);
       }
       // Detect duplicate names (warn but preserve — may predate uniqueness enforcement)
-      const namesSeen = new Map<string, number>();
-      for (const [topicId, entry] of this.entries) {
+      const namesSeen = new Map<string, string>();
+      for (const [threadId, entry] of this.entries) {
         const prev = namesSeen.get(entry.sessionName);
         if (prev !== undefined) {
           console.warn(
-            `[registry] Duplicate session name "${entry.sessionName}" found for topics ${prev} and ${topicId}. New registrations with this name will be rejected.`,
+            `[registry] Duplicate session name "${entry.sessionName}" found for threads ${prev} and ${threadId}. New registrations with this name will be rejected.`,
           );
         } else {
-          namesSeen.set(entry.sessionName, topicId);
+          namesSeen.set(entry.sessionName, threadId);
         }
       }
       console.log(`[registry] Loaded ${this.entries.size} session(s) from ${this.persistPath}`);
@@ -135,51 +181,54 @@ export class SessionRegistry implements ISessionRegistry {
     }
   }
 
-  async register(topicId: number, chatId: number, sessionName: string, model?: string, cwd = process.cwd()): Promise<void> {
+  async register(threadId: string, channelId: string, sessionName: string, model?: string, cwd = process.cwd()): Promise<void> {
     return this.enqueueMutation(async () => {
       const duplicate = this.findByName(sessionName);
-      if (duplicate && duplicate.topicId !== topicId) {
+      if (duplicate && duplicate.threadId !== threadId) {
         throw new Error(
-          `Session name "${sessionName}" is already in use by topic ${duplicate.topicId}. Choose a different name or /remove the other session first.`,
+          `Session name "${sessionName}" is already in use by thread ${duplicate.threadId}. Choose a different name or /remove the other session first.`,
         );
       }
       const entry: SessionEntry = {
         sessionName,
-        topicId,
-        chatId,
+        threadId,
+        channelId,
         createdAt: new Date().toISOString(),
         cwd,
         ...(model !== undefined && { model }),
       };
+      if (!validateEntry(entry, `register ${sessionName}`)) {
+        throw new Error(`[registry] refusing to register invalid session entry: register ${sessionName}`);
+      }
       const newEntries = new Map(this.entries);
-      newEntries.set(topicId, entry);
+      newEntries.set(threadId, entry);
       await this.doPersistEntries(newEntries);
       this.entries = newEntries;
-      console.log(`[registry] Registered topic ${topicId} → "${sessionName}"`);
+      console.log(`[registry] Registered thread ${threadId} → "${sessionName}"`);
     });
   }
 
-  /** Upserts an AFK-managed entry, replacing any prior topic binding for the same session name. */
+  /** Upserts an AFK-managed entry, replacing any prior thread binding for the same session name. */
   async upsert(entry: SessionEntry): Promise<void> {
     return this.enqueueMutation(async () => {
       const entryToStore = { ...entry };
-      if (!validateEntry(entryToStore, `session "${entry.sessionName}" topic ${entry.topicId}`)) {
+      if (!validateEntry(entryToStore, `session "${entry.sessionName}" thread ${entry.threadId}`)) {
         throw new Error(`[registry] Cannot upsert invalid entry for "${entry.sessionName}"`);
       }
       const duplicate = this.findByName(entryToStore.sessionName);
       const newEntries = new Map(this.entries);
-      if (duplicate && duplicate.topicId !== entryToStore.topicId) {
-        newEntries.delete(duplicate.topicId);
+      if (duplicate && duplicate.threadId !== entryToStore.threadId) {
+        newEntries.delete(duplicate.threadId);
       }
-      newEntries.set(entryToStore.topicId, entryToStore);
+      newEntries.set(entryToStore.threadId, entryToStore);
       await this.doPersistEntries(newEntries);
       this.entries = newEntries;
-      console.log(`[registry] Upserted topic ${entryToStore.topicId} → "${entryToStore.sessionName}"`);
+      console.log(`[registry] Upserted thread ${entryToStore.threadId} → "${entryToStore.sessionName}"`);
     });
   }
 
-  resolve(telegramTopicId: number): SessionEntry | undefined {
-    return this.entries.get(telegramTopicId);
+  resolve(threadId: string): SessionEntry | undefined {
+    return this.entries.get(threadId);
   }
 
   findByName(sessionName: string): SessionEntry | undefined {
@@ -201,38 +250,41 @@ export class SessionRegistry implements ISessionRegistry {
     return Array.from(this.entries.values());
   }
 
-  async remove(telegramTopicId: number): Promise<boolean> {
+  async remove(threadId: string): Promise<boolean> {
     return this.enqueueMutation(async () => {
-      if (!this.entries.has(telegramTopicId)) return false;
+      if (!this.entries.has(threadId)) return false;
       const newEntries = new Map(this.entries);
-      newEntries.delete(telegramTopicId);
+      newEntries.delete(threadId);
       await this.doPersistEntries(newEntries);
       this.entries = newEntries;
-      console.log(`[registry] Removed topic ${telegramTopicId}`);
+      console.log(`[registry] Removed thread ${threadId}`);
       return true;
     });
   }
 
-  async move(fromTopicId: number, toTopicId: number): Promise<void> {
+  async move(fromThreadId: string, toThreadId: string): Promise<void> {
     return this.enqueueMutation(async () => {
-      const source = this.entries.get(fromTopicId);
+      const source = this.entries.get(fromThreadId);
       if (!source) {
-        throw new Error(`No session found for topic ${fromTopicId}`);
+        throw new Error(`No session found for thread ${fromThreadId}`);
       }
-      if (this.entries.has(toTopicId)) {
-        throw new Error(`Destination topic ${toTopicId} is already bound to "${this.entries.get(toTopicId)!.sessionName}"`);
+      if (this.entries.has(toThreadId)) {
+        throw new Error(`Destination thread ${toThreadId} is already bound to "${this.entries.get(toThreadId)!.sessionName}"`);
       }
-      const newEntry: SessionEntry = { ...source, topicId: toTopicId };
+      const newEntry: SessionEntry = { ...source, threadId: toThreadId };
+      if (!validateEntry(newEntry, `move ${toThreadId}`)) {
+        throw new Error(`[registry] refusing to move invalid session entry: move ${toThreadId}`);
+      }
       const newEntries = new Map(this.entries);
-      newEntries.delete(fromTopicId);
-      newEntries.set(toTopicId, newEntry);
+      newEntries.delete(fromThreadId);
+      newEntries.set(toThreadId, newEntry);
       await this.doPersistEntries(newEntries);
       this.entries = newEntries;
-      console.log(`[registry] Moved "${source.sessionName}" from topic ${fromTopicId} to topic ${toTopicId}`);
+      console.log(`[registry] Moved "${source.sessionName}" from thread ${fromThreadId} to thread ${toThreadId}`);
     });
   }
 
-  private async doPersistEntries(entries: Map<number, SessionEntry>): Promise<void> {
+  private async doPersistEntries(entries: Map<string, SessionEntry>): Promise<void> {
     const data: RegistryData = { version: 1, entries: Object.fromEntries(entries) };
     await fs.mkdir(path.dirname(this.persistPath), { recursive: true });
     const tmp = this.persistPath + '.tmp';

@@ -2,34 +2,34 @@ const raw = Number(process.env.IDLE_TIMEOUT_MS ?? 300_000);
 const IDLE_TIMEOUT_MS = Number.isFinite(raw) && raw > 0 ? raw : 300_000;
 
 /**
- * Tracks per-topic idle timers.
- * When a topic's timer fires, the callback evicts its in-memory SDK session.
+ * Tracks per-thread idle timers (keyed by opaque string threadId).
+ * When a thread's timer fires, the callback evicts its in-memory SDK session.
  * The registry entry (sessionName) is kept — the session is recreated lazily
  * on the next message.
  */
 export class IdleMonitor {
-  private timers = new Map<number, ReturnType<typeof setTimeout>>();
+  private timers = new Map<string, ReturnType<typeof setTimeout>>();
 
   /**
-   * Reset the idle timer for a topic. Call this on every relayed message.
-   * @param topicId The forum topic ID.
-   * @param onIdle  Called when the topic has been idle for IDLE_TIMEOUT_MS.
+   * Reset the idle timer for a thread. Call this on every relayed message.
+   * @param threadId The opaque thread identifier.
+   * @param onIdle  Called when the thread has been idle for IDLE_TIMEOUT_MS.
    */
-  reset(topicId: number, onIdle: () => void): void {
-    const existing = this.timers.get(topicId);
+  reset(threadId: string, onIdle: () => void): void {
+    const existing = this.timers.get(threadId);
     if (existing !== undefined) clearTimeout(existing);
-    this.timers.set(topicId, setTimeout(() => {
-      this.timers.delete(topicId);
+    this.timers.set(threadId, setTimeout(() => {
+      this.timers.delete(threadId);
       onIdle();
     }, IDLE_TIMEOUT_MS));
   }
 
-  /** Cancel the idle timer for a topic (e.g. when the topic is removed). */
-  cancel(topicId: number): void {
-    const existing = this.timers.get(topicId);
+  /** Cancel the idle timer for a thread (e.g. when the thread is removed). */
+  cancel(threadId: string): void {
+    const existing = this.timers.get(threadId);
     if (existing !== undefined) {
       clearTimeout(existing);
-      this.timers.delete(topicId);
+      this.timers.delete(threadId);
     }
   }
 

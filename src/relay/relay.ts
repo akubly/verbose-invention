@@ -1,323 +1,372 @@
-import type { Context } from 'grammy';
 import type {
   CopilotSessionFactory,
   CopilotSession,
   PermissionPromptCallback,
 } from '../copilot/factory.js';
-import type { SessionLookup, PermissionPrompter } from './ports.js';
+import type { SessionLookup } from './ports.js';
+import type { ChannelPort, ChannelContext, MessageRef } from '../channel/port.js';
 import { IdleMonitor } from '../idleMonitor.js';
 import { StreamTimeoutError } from '../copilot/impl.js';
-import { escapeMarkdownV2 } from './markdownV2.js';
-import { splitForTelegram } from './messageSplitter.js';
 
 const CHUNK_SEND_DELAY_MS = 100;
 
 /** DoS guard: cap streamed response to avoid O(n²) concat and Telegram 429 lockout. */
 const MAX_ACCUMULATED_BYTES = 100_000;
-/** DoS guard: cap split chunk array to avoid flooding Telegram with hundreds of messages. */
-const MAX_CHUNKS = 25;
-/**
- * Worst-case MarkdownV2 escape budget: a chunk made entirely of special chars
- * doubles in size after escaping. Using half of Telegram's 4096-char limit (≈ 2048)
- * as the effective max guarantees even 100%-special-char content stays under 4096.
- */
-const MARKDOWN_ESCAPE_EFFECTIVE_MAX = 2048;
 
-/** Throttle Telegram message edits to stay within ~1/s rate limit. */
+/** Throttle channel message edits to stay within ~1/s rate limit. */
 const STREAM_EDIT_THROTTLE_MS = 800;
 
-/**
- * F6: Returns true only for Telegram parse-mode 400 errors ("can't parse entities").
- * Network errors, 429 rate limits, and permission errors are NOT parse errors.
- */
-function isParseEntitiesError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  const msg = err.message.toLowerCase();
-  return msg.includes("can't parse entities") || msg.includes('parse entities');
-}
-
 export class Relay {
-  /** In-memory cache of live SDK session handles, keyed by forum topic ID. */
-  private activeSessions = new Map<number, { sessionName: string; session: CopilotSession }>();
+  /** In-memory cache of live SDK session handles, keyed by threadId. */
+  private activeSessions = new Map<string, { sessionName: string; session: CopilotSession }>();
   private idleMonitor = new IdleMonitor();
-  /** Sessions that have already logged a MarkdownV2 rejection (log once per session). */
-  private md2WarnedSessions = new Set<string>();
 
   constructor(
+    private readonly channel: ChannelPort,
     private readonly sessionLookup: SessionLookup,
     private readonly factory: CopilotSessionFactory,
     private readonly globalModel: string,
-    private readonly permissionPrompter?: PermissionPrompter,
+    private readonly enablePermissionPrompts = false,
   ) {}
 
-  async relay(ctx: Context): Promise<void> {
-    const topicId = ctx.message?.message_thread_id;
-    const userText = ctx.message?.text;
+  async relay(channelCtx: ChannelContext, userText: string): Promise<void> {
+    const { threadId } = channelCtx;
 
-    if (!topicId || !userText) return;
-
-    const entry = this.sessionLookup.resolve(topicId);
+    const entry = this.sessionLookup.resolve(threadId);
     if (!entry) {
-      await ctx.reply(
-        '⚠️ No session linked to this topic. Use /new <name> to create one.',
-        { message_thread_id: topicId },
-      );
+      await this.channel.sendMessage(channelCtx, '⚠️ No session linked to this topic. Use /new <name> to create one.');
       return;
     }
 
-    const cached = this.activeSessions.get(topicId);
+    const cached = this.activeSessions.get(threadId);
     let session = cached?.session;
 
-    // Evict stale cache: if the topic was re-linked to a different session name
+    // Evict stale cache: if the thread was re-linked to a different session name
     // (e.g. /remove then /new), the cached handle is for the wrong session.
     if (cached && cached.sessionName !== entry.sessionName) {
       cached.session.dispose?.();
-      this.activeSessions.delete(topicId);
+      this.activeSessions.delete(threadId);
       session = undefined;
     }
 
     if (!session) {
       try {
         let permissionCallback: PermissionPromptCallback | undefined;
-        if (this.permissionPrompter !== undefined) {
-          const chatId = ctx.chat?.id;
-          if (chatId === undefined) {
-            const message = '⚠️ permission prompting requires chat context — cannot prompt';
-            console.warn('[relay] permission prompting requires chat context — cannot prompt');
-            await ctx.reply(message, { message_thread_id: topicId });
-            return;
-          }
-
-          const prompter = this.permissionPrompter;
-          permissionCallback = (toolName: string, args: string, signal?: AbortSignal) =>
-            prompter.prompt(chatId, topicId, toolName, args, signal);
+        if (this.enablePermissionPrompts) {
+          const capturedCtx = channelCtx;
+          permissionCallback = async (toolName: string, args: string, signal?: AbortSignal) => {
+            const result = await this.channel.promptUser(
+              capturedCtx,
+              `⚠️ Tool approval needed\n\nTool: ${toolName}\nArgs: ${args.length > 200 ? args.slice(0, 197) + '...' : args}\n\nApprove or deny — waiting for your decision.`,
+              [
+                { value: 'approve', label: '✅ Approve' },
+                { value: 'deny', label: '❌ Deny' },
+              ],
+              signal,
+            );
+            return result === 'approve';
+          };
         }
 
         session = await this.factory.resume(entry.sessionName, entry.model, permissionCallback)
           ?? await this.factory.create(entry.sessionName, entry.model, permissionCallback);
 
-        this.activeSessions.set(topicId, { sessionName: entry.sessionName, session });
+        this.activeSessions.set(threadId, { sessionName: entry.sessionName, session });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        await ctx.reply(`❌ Could not open session "${entry.sessionName}": ${msg}`, {
-          message_thread_id: topicId,
-        });
+        await this.channel.sendMessage(channelCtx, `❌ Could not open session "${entry.sessionName}": ${msg}`);
         return;
       }
     }
 
     // Reset idle timer — evict cached session handle on inactivity.
-    // ADR-9: if the session has a pending permission prompt (isBusy), defer
-    // eviction by re-scheduling the timer rather than calling dispose(), which
-    // would abort the session AbortController and deny the in-flight prompt.
     const scheduleIdle = (): void => {
-      this.idleMonitor.reset(topicId, () => {
-        const evicted = this.activeSessions.get(topicId);
+      this.idleMonitor.reset(threadId, () => {
+        const evicted = this.activeSessions.get(threadId);
         if (!evicted) return;
         if (evicted.session.isBusy?.()) {
-          // Session has pending permissions — defer eviction, re-arm the timer.
-          // Log evicted.sessionName (read from activeSessions at eviction time)
-          // rather than entry.sessionName from the closure: if the topic was
-          // re-linked after relay() returned, the cached value reflects the
-          // session actually being deferred.
-          console.log(`[relay] Session busy (pending permission), deferring idle eviction: topic ${topicId} → "${evicted.sessionName}"`);
+          console.log(`[relay] Session busy (pending permission), deferring idle eviction: thread ${threadId} → "${evicted.sessionName}"`);
           scheduleIdle();
           return;
         }
         evicted.session.dispose?.();
-        this.activeSessions.delete(topicId);
-        console.log(`[relay] Session handle evicted (idle): topic ${topicId} → "${evicted.sessionName}"`);
+        this.activeSessions.delete(threadId);
+        console.log(`[relay] Session handle evicted (idle): thread ${threadId} → "${evicted.sessionName}"`);
       });
     };
     scheduleIdle();
 
-    const placeholder = await ctx.reply('…', { message_thread_id: topicId });
+    const { supportsStreaming, supportsMessageEdit } = this.channel.capabilities;
 
-    let accumulated = '';
-    let lastEditAt = 0;
+    if (supportsStreaming && supportsMessageEdit) {
+      // ── Case A: live streaming with throttled edits ────────────────────────
+      // Both flags true (e.g. Telegram). Behavior is byte-identical to the
+      // original code: send "…" placeholder, stream-edit every 800ms, final edit.
+      const placeholderRef = await this.channel.sendMessage(channelCtx, '…');
 
-    try {
-      for await (const chunk of session.send(userText)) {
-        accumulated += chunk;
-        if (accumulated.length > MAX_ACCUMULATED_BYTES) {
-          accumulated = accumulated.slice(0, MAX_ACCUMULATED_BYTES) + '\n\n_(response truncated at 100KB)_';
-          break;
+      let accumulated = '';
+      let lastEditAt = 0;
+
+      try {
+        for await (const chunk of session.send(userText)) {
+          accumulated += chunk;
+          if (accumulated.length > MAX_ACCUMULATED_BYTES) {
+            accumulated = accumulated.slice(0, MAX_ACCUMULATED_BYTES) + '\n\n_(response truncated at 100KB)_';
+            break;
+          }
+          const now = Date.now();
+          if (now - lastEditAt >= STREAM_EDIT_THROTTLE_MS) {
+            try {
+              await this.channel.editMessage(channelCtx, placeholderRef, accumulated);
+            } catch {
+              // best-effort throttle edit — ignore failures during streaming
+            }
+            lastEditAt = now;
+          }
         }
-        const now = Date.now();
-        if (now - lastEditAt >= STREAM_EDIT_THROTTLE_MS) {
-          await this.safeEdit(ctx, placeholder.chat.id, placeholder.message_id, accumulated);
-          lastEditAt = now;
+
+        // Final edit: full response with Markdown and optional extra chunks
+        const modelStr = String(entry.model ?? this.globalModel);
+        const footer = `📎 ${entry.sessionName} · ${modelStr}`;
+        const body = accumulated || '_(empty response)_';
+        const chunks = this.channel.splitMessage(body, footer);
+
+        const firstOk = await this.safeEdit(channelCtx, placeholderRef, chunks[0] ?? '');
+
+        if (!firstOk) {
+          console.error(
+            `[relay] First-chunk edit failed — aborting follow-up chunks for thread ${threadId}; updating placeholder`,
+          );
+          try {
+            await this.channel.editMessage(channelCtx, placeholderRef, '_(failed to render reply — see logs)_');
+          } catch {
+            // best-effort: ignore failure to update placeholder
+          }
+          return;
+        }
+
+        const totalChunks = chunks.length;
+        let failedChunks = 0;
+        for (let i = 1; i < chunks.length; i++) {
+          await new Promise<void>((resolve) => setTimeout(resolve, CHUNK_SEND_DELAY_MS));
+          const ok = await this.safeSend(channelCtx, chunks[i] ?? '', i + 1, totalChunks);
+          if (!ok) failedChunks++;
+        }
+        if (failedChunks > 0) {
+          console.warn(`[relay] ${failedChunks} of ${totalChunks} chunks failed — response may be truncated for thread ${threadId}`);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[relay] Stream error on thread ${threadId}:`, err);
+
+        const isTimeout = err instanceof StreamTimeoutError;
+        if (!isTimeout && this.factory.resetForRestart) {
+          this.idleMonitor.cancelAll();
+          for (const { session: s } of this.activeSessions.values()) s.dispose?.();
+          this.activeSessions.clear();
+          this.factory.resetForRestart();
+          console.log(`[relay] SDK error detected — factory marked for restart; cleared cached sessions`);
+        } else {
+          const evicted = this.activeSessions.get(threadId);
+          evicted?.session.dispose?.();
+          this.activeSessions.delete(threadId);
+        }
+
+        try {
+          await this.channel.editMessage(channelCtx, placeholderRef, `❌ Error: ${msg}`);
+        } catch {
+          // best-effort: ignore failure to update placeholder with error
         }
       }
+    } else if (!supportsMessageEdit) {
+      // ── Case B: no edit support — accumulate silently, send one final message ─
+      // supportsMessageEdit=false: core MUST NOT call editMessage(). No placeholder.
+      // Stream is consumed; one sendMessage with the complete response when done.
+      let accumulated = '';
 
-      // Final edit: full response with Markdown and optional extra chunks
-      const modelStr = String(entry.model ?? this.globalModel);
-      const footer = `📎 ${entry.sessionName} · ${modelStr}`;
-      const body = accumulated || '_(empty response)_';
-      const chunks = splitForTelegram(body, {
-        footer,
-        numbering: true,
-        effectiveMaxLen: MARKDOWN_ESCAPE_EFFECTIVE_MAX,
-        maxChunks: MAX_CHUNKS,
-      });
+      try {
+        for await (const chunk of session.send(userText)) {
+          accumulated += chunk;
+          if (accumulated.length > MAX_ACCUMULATED_BYTES) {
+            accumulated = accumulated.slice(0, MAX_ACCUMULATED_BYTES) + '\n\n_(response truncated at 100KB)_';
+            break;
+          }
+        }
 
-      // Truncation (if any) is handled inside splitForTelegram: when chunk count
-      // exceeds MAX_CHUNKS the splitter replaces the last slot with a truncation
-      // marker BEFORE numbering/footer composition, so every delivered chunk
-      // carries consistent [n/MAX_CHUNKS] totals and the marker gets the HUD footer.
+        const modelStr = String(entry.model ?? this.globalModel);
+        const footer = `📎 ${entry.sessionName} · ${modelStr}`;
+        const body = accumulated || '_(empty response)_';
+        const chunks = this.channel.splitMessage(body, footer);
 
-      const firstOk = await this.safeEdit(
-        ctx,
-        placeholder.chat.id,
-        placeholder.message_id,
-        chunks[0] ?? '',
-        true,
-        entry.sessionName,
-      );
+        const firstOk = await this.safeSend(channelCtx, chunks[0] ?? '');
+        if (!firstOk) {
+          console.error(`[relay] First-chunk send failed — aborting follow-up chunks for thread ${threadId}`);
+          return;
+        }
 
-      if (!firstOk) {
-        console.error(
-          `[relay] First-chunk edit failed — aborting follow-up chunks for topic ${topicId}; updating placeholder`,
-        );
-        // Best-effort: replace "…" with a brief error so the user isn't left at the placeholder.
-        await this.safeEdit(ctx, placeholder.chat.id, placeholder.message_id, '_(failed to render reply — see logs)_');
-        return;
+        const totalChunks = chunks.length;
+        let failedChunks = 0;
+        for (let i = 1; i < chunks.length; i++) {
+          await new Promise<void>((resolve) => setTimeout(resolve, CHUNK_SEND_DELAY_MS));
+          const ok = await this.safeSend(channelCtx, chunks[i] ?? '', i + 1, totalChunks);
+          if (!ok) failedChunks++;
+        }
+        if (failedChunks > 0) {
+          console.warn(`[relay] ${failedChunks} of ${totalChunks} chunks failed — response may be truncated for thread ${threadId}`);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[relay] Stream error on thread ${threadId}:`, err);
+
+        const isTimeout = err instanceof StreamTimeoutError;
+        if (!isTimeout && this.factory.resetForRestart) {
+          this.idleMonitor.cancelAll();
+          for (const { session: s } of this.activeSessions.values()) s.dispose?.();
+          this.activeSessions.clear();
+          this.factory.resetForRestart();
+          console.log(`[relay] SDK error detected — factory marked for restart; cleared cached sessions`);
+        } else {
+          const evicted = this.activeSessions.get(threadId);
+          evicted?.session.dispose?.();
+          this.activeSessions.delete(threadId);
+        }
+
+        try {
+          // No placeholder to edit — send error as a new message
+          await this.channel.sendMessage(channelCtx, `❌ Error: ${msg}`);
+        } catch {
+          // best-effort: ignore failure to send error message
+        }
       }
+    } else {
+      // ── Case C: supportsStreaming=false, supportsMessageEdit=true ──────────────
+      // Send "thinking…" placeholder, consume the full stream without intermediate
+      // edits, then replace the placeholder with the complete response in one edit.
+      const placeholderRef = await this.channel.sendMessage(channelCtx, 'thinking…');
 
-      // F9: track failures per chunk for log fidelity.
-      const totalChunks = chunks.length;
-      let failedChunks = 0;
-      for (let i = 1; i < chunks.length; i++) {
-        await new Promise<void>((resolve) => setTimeout(resolve, CHUNK_SEND_DELAY_MS));
-        const ok = await this.safeSend(ctx, topicId, chunks[i] ?? '', true, entry.sessionName, i + 1, totalChunks);
-        if (!ok) failedChunks++;
-      }
-      if (failedChunks > 0) {
-        console.warn(`[relay] ${failedChunks} of ${totalChunks} chunks failed — response may be truncated for topic ${topicId}`);
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[relay] Stream error on topic ${topicId}:`, err);
+      let accumulated = '';
 
-      // If this looks like an SDK crash (not a timeout), trigger factory restart
-      const isTimeout = err instanceof StreamTimeoutError;
-      if (!isTimeout && this.factory.resetForRestart) {
-        this.idleMonitor.cancelAll();
-        for (const { session } of this.activeSessions.values()) session.dispose?.();
-        this.activeSessions.clear();
-        this.factory.resetForRestart();
-        console.log(`[relay] SDK error detected — factory marked for restart; cleared cached sessions`);
-      } else {
-        const evicted = this.activeSessions.get(topicId);
-        evicted?.session.dispose?.();
-        this.activeSessions.delete(topicId); // Only evict current topic for timeouts
+      try {
+        for await (const chunk of session.send(userText)) {
+          accumulated += chunk;
+          if (accumulated.length > MAX_ACCUMULATED_BYTES) {
+            accumulated = accumulated.slice(0, MAX_ACCUMULATED_BYTES) + '\n\n_(response truncated at 100KB)_';
+            break;
+          }
+          // No intermediate stream edits — supportsStreaming is false
+        }
+
+        const modelStr = String(entry.model ?? this.globalModel);
+        const footer = `📎 ${entry.sessionName} · ${modelStr}`;
+        const body = accumulated || '_(empty response)_';
+        const chunks = this.channel.splitMessage(body, footer);
+
+        const firstOk = await this.safeEdit(channelCtx, placeholderRef, chunks[0] ?? '');
+        if (!firstOk) {
+          console.error(
+            `[relay] First-chunk edit failed — aborting follow-up chunks for thread ${threadId}; updating placeholder`,
+          );
+          try {
+            await this.channel.editMessage(channelCtx, placeholderRef, '_(failed to render reply — see logs)_');
+          } catch {
+            // best-effort: ignore failure to update placeholder
+          }
+          return;
+        }
+
+        const totalChunks = chunks.length;
+        let failedChunks = 0;
+        for (let i = 1; i < chunks.length; i++) {
+          await new Promise<void>((resolve) => setTimeout(resolve, CHUNK_SEND_DELAY_MS));
+          const ok = await this.safeSend(channelCtx, chunks[i] ?? '', i + 1, totalChunks);
+          if (!ok) failedChunks++;
+        }
+        if (failedChunks > 0) {
+          console.warn(`[relay] ${failedChunks} of ${totalChunks} chunks failed — response may be truncated for thread ${threadId}`);
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[relay] Stream error on thread ${threadId}:`, err);
+
+        const isTimeout = err instanceof StreamTimeoutError;
+        if (!isTimeout && this.factory.resetForRestart) {
+          this.idleMonitor.cancelAll();
+          for (const { session: s } of this.activeSessions.values()) s.dispose?.();
+          this.activeSessions.clear();
+          this.factory.resetForRestart();
+          console.log(`[relay] SDK error detected — factory marked for restart; cleared cached sessions`);
+        } else {
+          const evicted = this.activeSessions.get(threadId);
+          evicted?.session.dispose?.();
+          this.activeSessions.delete(threadId);
+        }
+
+        try {
+          await this.channel.editMessage(channelCtx, placeholderRef, `❌ Error: ${msg}`);
+        } catch {
+          // best-effort: ignore failure to update placeholder with error
+        }
       }
-      
-      await this.safeEdit(ctx, placeholder.chat.id, placeholder.message_id, `❌ Error: ${msg}`);
     }
   }
 
   /**
-   * F6+F8: Shared MarkdownV2 fallback logic.
-   * Attempts tryMd(); on parse-entities error falls back to fallback().
-   * Non-parse errors (network, 429, permission) are rethrown to the caller.
+   * Edit a message, returning false on failure (I2: propagates the adapter's
+   * boolean return value; catches thrown errors as false).
+   * Passes RAW text — adapters own formatting internally.
    */
-  private async withMarkdownFallback(
-    sessionLabel: string,
-    tryMd: () => Promise<unknown>,
-    fallback: () => Promise<unknown>,
-  ): Promise<void> {
-    try {
-      await tryMd();
-    } catch (err) {
-      if (!isParseEntitiesError(err)) throw err;
-      if (sessionLabel && !this.md2WarnedSessions.has(sessionLabel)) {
-        this.md2WarnedSessions.add(sessionLabel);
-        console.warn(`[relay] MarkdownV2 rejected for session "${sessionLabel}" — falling back to plain text`);
-      }
-      await fallback();
-    }
-  }
-
   private async safeEdit(
-    ctx: Context,
-    chatId: number,
-    messageId: number,
+    ctx: ChannelContext,
+    ref: MessageRef,
     text: string,
-    tryMarkdown = false,
-    sessionLabel = '',
   ): Promise<boolean> {
     try {
-      if (tryMarkdown) {
-        await this.withMarkdownFallback(
-          sessionLabel,
-          () => ctx.api.editMessageText(chatId, messageId, escapeMarkdownV2(text), { parse_mode: 'MarkdownV2' }),
-          () => ctx.api.editMessageText(chatId, messageId, text),
-        );
-      } else {
-        await ctx.api.editMessageText(chatId, messageId, text);
-      }
-      return true;
+      return await this.channel.editMessage(ctx, ref, text);
     } catch (editErr) {
-      console.warn(`[relay] editMessageText failed (chat=${chatId}, msg=${messageId}):`, editErr);
+      console.warn(`[relay] editMessage failed (thread=${ctx.threadId}):`, editErr);
       return false;
     }
   }
 
+  /**
+   * Send a message, returning false on failure.
+   * Passes RAW text — adapters own formatting internally.
+   */
   private async safeSend(
-    ctx: Context,
-    topicId: number,
+    ctx: ChannelContext,
     text: string,
-    tryMarkdown = false,
-    sessionLabel = '',
     chunkNumber?: number,
     totalChunks?: number,
   ): Promise<boolean> {
     try {
-      if (tryMarkdown) {
-        await this.withMarkdownFallback(
-          sessionLabel,
-          () => ctx.reply(escapeMarkdownV2(text), { message_thread_id: topicId, parse_mode: 'MarkdownV2' }),
-          () => ctx.reply(text, { message_thread_id: topicId }),
-        );
-      } else {
-        await ctx.reply(text, { message_thread_id: topicId });
-      }
+      await this.channel.sendMessage(ctx, text);
       return true;
     } catch (sendErr) {
       if (chunkNumber !== undefined) {
-        console.warn(`[relay] reply failed (topic=${topicId}, chunk=${chunkNumber}/${totalChunks})`, sendErr);
+        console.warn(`[relay] send failed (thread=${ctx.threadId}, chunk=${chunkNumber}/${totalChunks})`);
       } else {
-        console.warn(`[relay] reply failed (topic=${topicId})`, sendErr);
+        console.warn(`[relay] send failed (thread=${ctx.threadId})`);
       }
       return false;
     }
   }
 
   /**
-   * Migrates the in-memory SDK session cache from oldTopicId to newTopicId.
+   * Migrates the in-memory SDK session cache from fromThreadId to toThreadId.
    * Called by the /resume handler after a successful registry.move() so the
    * live session handle travels with the binding instead of sitting stale under
-   * the old topic key until idle eviction.
-   * If no cache entry exists for oldTopicId this is a no-op (safe to call
-   * speculatively — first relay after /resume will create a fresh session).
+   * the old thread key until idle eviction.
    */
-  rekeySession(fromTopicId: number, toTopicId: number): void {
-    const cached = this.activeSessions.get(fromTopicId);
+  rekeySession(fromThreadId: string, toThreadId: string): void {
+    const cached = this.activeSessions.get(fromThreadId);
     if (!cached) return;
-    // Cancel any stale timer/entry at the destination first. If toTopicId still
-    // has an old cached session (e.g. from before a /remove that hadn't been
-    // idle-evicted yet) its timer closure would later fire and evict the newly
-    // moved session, silently losing in-memory state.
-    if (this.activeSessions.has(toTopicId)) {
-      this.idleMonitor.cancel(toTopicId);
-      this.activeSessions.delete(toTopicId);
+    if (this.activeSessions.has(toThreadId)) {
+      this.idleMonitor.cancel(toThreadId);
+      this.activeSessions.delete(toThreadId);
     }
-    this.activeSessions.delete(fromTopicId);
-    this.activeSessions.set(toTopicId, cached);
-    // Cancel the old idle timer — its closure references fromTopicId and would
-    // evict the wrong key.  The next message in toTopicId resets a fresh timer.
-    this.idleMonitor.cancel(fromTopicId);
+    this.activeSessions.delete(fromThreadId);
+    this.activeSessions.set(toThreadId, cached);
+    this.idleMonitor.cancel(fromThreadId);
   }
 
   /** Tear down all active sessions and timers (call on graceful shutdown). */

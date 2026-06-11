@@ -11,7 +11,7 @@
  * with an explanatory error.
  */
 
-import type { Context } from 'grammy';
+import type { ChannelContext, ChannelPort } from '../channel/port.js';
 import type { ReachConfig } from '../config/config.js';
 import {
   validateAlias,
@@ -62,7 +62,7 @@ function relativeTime(iso: string): string {
  *   `remove <alias>` — remove an existing alias from the registry
  *
  * Enforcement:
- *   - Restricted to the General Topic (no `message_thread_id`).  Calls from
+ *   - Restricted to the General Topic (empty `threadId`).  Calls from
  *     named topics receive an informative rejection.
  *   - When `options.configPath` is undefined the command is unavailable and
  *     the user is told so explicitly.
@@ -71,51 +71,44 @@ function relativeTime(iso: string): string {
  * receive a usage hint.  Structured events are logged via `options.logger`
  * at info/warn/error level for every significant action.
  */
-export async function handleCwdCommand(ctx: Context, options: CwdCommandOptions): Promise<void> {
-  const topicId = ctx.message?.message_thread_id;
-  if (topicId !== undefined) {
-    await ctx.reply(
+export async function handleCwdCommand(channelCtx: ChannelContext, args: string, channel: ChannelPort, options: CwdCommandOptions): Promise<void> {
+  const hasThread = channelCtx.threadId !== '';
+  if (hasThread) {
+    await channel.sendMessage(channelCtx,
       '❌ /cwd commands work in the General Topic only. Manage your cwd registry there, then start sessions from any topic.',
-      { message_thread_id: topicId },
     );
     return;
   }
 
   if (!options.configPath) {
-    await ctx.reply('❌ /cwd is not available (config path not configured).');
+    await channel.sendMessage(channelCtx, '❌ /cwd is not available (config path not configured).');
     return;
   }
 
   const configApi = options.config ?? { loadConfig, saveConfig };
-  const matchText =
-    typeof ctx.match === 'string'
-      ? ctx.match
-      : Array.isArray(ctx.match)
-        ? ctx.match[0] ?? ''
-        : '';
-  const args = matchText.trim().split(/\s+/).filter(Boolean);
-  const subCmd = args[0]?.toLowerCase() ?? 'list';
+  const parsedArgs = args.trim().split(/\s+/).filter(Boolean);
+  const subCmd = parsedArgs[0]?.toLowerCase() ?? 'list';
 
   if (subCmd === 'list') {
     const config = await configApi.loadConfig(options.configPath);
     const cwds = listKnownCwds(config);
     if (cwds.length === 0) {
-      await ctx.reply('📂 No known cwds yet. Add one with: /cwd add <alias> <path>');
+      await channel.sendMessage(channelCtx, '📂 No known cwds yet. Add one with: /cwd add <alias> <path>');
       return;
     }
     const lines = cwds.map((c) => {
       const used = c.lastUsedAt ? `last used ${relativeTime(c.lastUsedAt)}` : 'never used';
       return `• ${c.alias} — ${c.path}  (${used})`;
     });
-    await ctx.reply(`📂 Known cwds:\n${lines.join('\n')}\n\nStart one with: /new <session-name> --cwd <alias>`);
+    await channel.sendMessage(channelCtx, `📂 Known cwds:\n${lines.join('\n')}\n\nStart one with: /new <session-name> --cwd <alias>`);
     return;
   }
 
   if (subCmd === 'add') {
-    const alias = args[1];
-    const rawPath = args.slice(2).join(' ');
+    const alias = parsedArgs[1];
+    const rawPath = parsedArgs.slice(2).join(' ');
     if (!alias || !rawPath) {
-      await ctx.reply('❌ Usage: /cwd add <alias> <path>');
+      await channel.sendMessage(channelCtx, '❌ Usage: /cwd add <alias> <path>');
       return;
     }
 
@@ -123,7 +116,7 @@ export async function handleCwdCommand(ctx: Context, options: CwdCommandOptions)
     const aliasResult = validateAlias(alias);
     if (!aliasResult.ok) {
       options.logger.warn({ alias, reason: aliasResult.reason }, 'cwd add invalid alias');
-      await ctx.reply(
+      await channel.sendMessage(channelCtx,
         `❌ Invalid alias: ${aliasResult.reason}. Aliases must be 1-32 chars, start alphanumeric, use letters/digits/hyphens/underscores.`,
       );
       return;
@@ -135,7 +128,7 @@ export async function handleCwdCommand(ctx: Context, options: CwdCommandOptions)
         { alias, existing_path: existingAlias.path },
         'cwd add collision',
       );
-      await ctx.reply(
+      await channel.sendMessage(channelCtx,
         `❌ Alias '${alias}' already exists for ${existingAlias.path}. Use a different name or run /cwd remove ${alias} first.`,
       );
       return;
@@ -144,14 +137,14 @@ export async function handleCwdCommand(ctx: Context, options: CwdCommandOptions)
     const pathResult = await validatePath(rawPath);
     if (!pathResult.ok) {
       options.logger.warn({ path: rawPath, reason: pathResult.reason }, 'cwd add invalid path');
-      await ctx.reply(
+      await channel.sendMessage(channelCtx,
         `❌ Invalid path: ${pathResult.reason}. Path must be an absolute, existing directory.`,
       );
       return;
     }
 
     if (pathResult.warning) {
-      await ctx.reply(`⚠️ ${pathResult.warning}`);
+      await channel.sendMessage(channelCtx, `⚠️ ${pathResult.warning}`);
     }
 
     const newConfig = addKnownCwd(config, alias, pathResult.normalized, new Date().toISOString());
@@ -162,14 +155,14 @@ export async function handleCwdCommand(ctx: Context, options: CwdCommandOptions)
       throw err;
     }
     options.logger.info({ alias, path: pathResult.normalized }, 'cwd added');
-    await ctx.reply(`✅ Added '${alias}' → ${pathResult.normalized}`);
+    await channel.sendMessage(channelCtx, `✅ Added '${alias}' → ${pathResult.normalized}`);
     return;
   }
 
   if (subCmd === 'remove') {
-    const alias = args[1];
+    const alias = parsedArgs[1];
     if (!alias) {
-      await ctx.reply('❌ Usage: /cwd remove <alias>');
+      await channel.sendMessage(channelCtx, '❌ Usage: /cwd remove <alias>');
       return;
     }
 
@@ -177,7 +170,7 @@ export async function handleCwdCommand(ctx: Context, options: CwdCommandOptions)
     const found = getKnownCwdByAlias(config, alias);
     if (!found) {
       options.logger.info({ alias }, 'cwd remove not found');
-      await ctx.reply(`❌ Alias '${alias}' not found. Run /cwd list to see known cwds.`);
+      await channel.sendMessage(channelCtx, `❌ Alias '${alias}' not found. Run /cwd list to see known cwds.`);
       return;
     }
 
@@ -189,9 +182,9 @@ export async function handleCwdCommand(ctx: Context, options: CwdCommandOptions)
       throw err;
     }
     options.logger.info({ alias }, 'cwd removed');
-    await ctx.reply(`✅ Removed '${alias}'.`);
+    await channel.sendMessage(channelCtx, `✅ Removed '${alias}'.`);
     return;
   }
 
-  await ctx.reply('❌ Unknown sub-command. Usage: /cwd list | /cwd add <alias> <path> | /cwd remove <alias>');
+  await channel.sendMessage(channelCtx, '❌ Unknown sub-command. Usage: /cwd list | /cwd add <alias> <path> | /cwd remove <alias>');
 }

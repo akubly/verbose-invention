@@ -1,12 +1,13 @@
 /**
  * Reach — DI root and daemon entry point.
  *
- * Wires the Telegram bot, session registry, and Copilot SDK factory,
- * then starts long-polling. Graceful shutdown on SIGINT/SIGTERM.
+ * Wires the channel, session registry, and Copilot SDK factory,
+ * then starts the channel. Graceful shutdown on SIGINT/SIGTERM.
  */
 
 import 'dotenv/config';
-import { createBot } from './bot/index.js';
+import { TelegramChannel } from './channel/telegram/index.js'; // side-effect: registers 'telegram' channel factory
+import { createChannel } from './channel/registry.js';
 import { registerHandlers } from './bot/handlers.js';
 import { SessionRegistry } from './sessions/registry.js';
 import { CopilotClientImpl } from './copilot/impl.js';
@@ -30,7 +31,6 @@ export async function main(): Promise<void> {
     return;
   }
 
-  const chatId = cfg.chatId!; // guaranteed by isPairingMode === false above
   const registry = new SessionRegistry(cfg.registryPath);
 
   let bridge: ExtensionBridge | null = null;
@@ -55,31 +55,51 @@ export async function main(): Promise<void> {
 
   await registry.load();
 
-  const bot = createBot(cfg.token, chatId);
-  if (cfg.permissionPolicy === 'approveAll') {
-    console.warn('[reach] REACH_PERMISSION_POLICY=approveAll; AFK mirror input from Telegram will be blocked for safety. Use interactiveDestructive for remote input.');
+  const channel = createChannel(cfg.reachChannel, cfg);
+
+  let afkMode: AfkModeController | undefined;
+
+  // AFK mirror and grammY bot access are Telegram-specific.
+  // For non-Telegram channels, skip AFK wiring and log a warning.
+  if (channel instanceof TelegramChannel) {
+    const bot = channel.bot;
+    const chatId = cfg.chatId!; // guaranteed non-undefined for Telegram normal mode
+
+    if (cfg.permissionPolicy === 'approveAll') {
+      console.warn('[reach] REACH_PERMISSION_POLICY=approveAll; AFK mirror input from Telegram will be blocked for safety. Use interactiveDestructive for remote input.');
+    }
+
+    afkMode = bridge
+      ? new AfkModeController(bot, bridge, registry, chatId, undefined, {
+        ...(cfg.allowedUserIdSet !== undefined && { allowedUserIds: cfg.allowedUserIdSet }),
+        allowTelegramInput: cfg.permissionPolicy !== 'approveAll',
+        globalModel: cfg.model,
+      })
+      : undefined;
+
+    // Wire AFK mirror interception into TelegramChannel before start() registers handlers.
+    if (afkMode) {
+      channel.setMessageInterceptor((ctx) => afkMode!.handleTelegramMessage(ctx));
+    }
+
+    console.log(`[reach] Allowed chat: ***${String(chatId).slice(-4)}`);
+  } else {
+    console.warn('[reach] AFK mirror currently requires the Telegram transport; skipping AFK wiring.');
   }
 
-  const afkMode = bridge
-    ? new AfkModeController(bot, bridge, registry, chatId, undefined, {
-      ...(cfg.allowedUserIdSet !== undefined && { allowedUserIds: cfg.allowedUserIdSet }),
-      allowTelegramInput: cfg.permissionPolicy !== 'approveAll',
-      globalModel: cfg.model,
-    })
-    : undefined;
-
   const relay = registerHandlers({
-    bot, registry, factory,
+    registry, factory,
     globalModel: cfg.model,
+    channel,
     permissionPolicy: cfg.permissionPolicy,
     configPath: cfg.configPath,
-    ...(afkMode !== undefined && { telegramMirror: afkMode, statusProvider: afkMode }),
+    ...(afkMode !== undefined && { statusProvider: afkMode }),
   });
 
+  console.log(`[reach] Channel: ${cfg.reachChannel}`);
   console.log(`[reach] Model: ${cfg.model}`);
   console.log(`[reach] Permission policy: ${cfg.permissionPolicy}`);
   console.log(`[reach] Registry: ${cfg.registryPath}`);
-  console.log(`[reach] Allowed chat: ***${String(chatId).slice(-4)}`);
 
   let shuttingDown = false;
   const shutdown = () => {
@@ -87,13 +107,14 @@ export async function main(): Promise<void> {
     shuttingDown = true;
     console.log('\n[reach] Shutting down…');
     relay.dispose();
-    const tasks: Promise<unknown>[] = [bot.stop(), sdkFactory.stop()];
+    const tasks: Promise<unknown>[] = [channel.stop(), sdkFactory.stop()];
     if (bridge) tasks.push(bridge.stop());
     Promise.allSettled(tasks).finally(() => { console.log('[reach] Bye.'); process.exit(0); });
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 
-  console.log('[reach] Bot started. Listening for messages…');
-  await bot.start({ allowed_updates: ['message', 'edited_message', 'callback_query'] });
+  console.log(`[reach] Channel starting: ${channel.name}`);
+  await channel.start();
+  console.log(`[reach] Channel started: ${channel.name}`);
 }

@@ -32,20 +32,20 @@ import type { SessionEntry } from '../../src/types.js';
 // Minimal interface shared by both implementations for contract testing.
 interface RegistryContractSUT {
   upsert(entry: SessionEntry): Promise<void>;
-  findByName(name: string): { sessionName: string; lastTopicId?: number; mode?: string } | undefined;
-  findAllByName(name: string): Array<{ sessionName: string; lastTopicId?: number; mode?: string }>;
-  resolve?(topicId: number): { sessionName: string; lastTopicId?: number; mode?: string } | undefined;
-  register?(topicId: number, chatId: number, sessionName: string, model?: string, cwd?: string): Promise<void>;
-  move?(fromTopicId: number, toTopicId: number): Promise<void>;
+  findByName(name: string): { sessionName: string; lastTopicId?: string; mode?: string } | undefined;
+  findAllByName(name: string): Array<{ sessionName: string; lastTopicId?: string; mode?: string }>;
+  resolve?(threadId: string): { sessionName: string; lastTopicId?: string; mode?: string } | undefined;
+  register?(threadId: string, channelId: string, sessionName: string, model?: string, cwd?: string): Promise<void>;
+  move?(fromThreadId: string, toThreadId: string): Promise<void>;
 }
 
 const BASE_ENTRY: SessionEntry = {
   sessionName: 'reach-myapp',
-  topicId: 9001,
-  chatId: -1001234567890,
+  threadId: '9001',
+  channelId: '-1001234567890',
   createdAt: '2026-05-24T23:19:14-07:00',
   cwd: 'D:\\git\\verbose-invention',
-  lastTopicId: 9001,
+  lastTopicId: '9001',
   mode: 'afk',
 };
 
@@ -67,7 +67,6 @@ describe.each([
       const reg = new MemoryAfkRegistry();
       sut = {
         async upsert(entry: SessionEntry) {
-          // AfkSessionFixture is a superset of SessionEntry for test use; cast is safe because only overlapping fields are exercised.
           await reg.upsert(entry as unknown as AfkSessionFixture);
         },
         findByName(name: string) {
@@ -76,14 +75,14 @@ describe.each([
         findAllByName(name: string) {
           return reg.findAllByName(name);
         },
-        resolve(topicId: number) {
-          return reg.resolve(topicId);
+        resolve(threadId: string) {
+          return reg.resolveByThreadId(threadId);
         },
-        register(topicId: number, chatId: number, sessionName: string, model?: string, cwd?: string) {
-          return reg.register(topicId, chatId, sessionName, model, cwd);
+        register(threadId: string, channelId: string, sessionName: string, model?: string, cwd?: string) {
+          return reg.register(threadId, channelId, sessionName, model, cwd);
         },
-        move(fromTopicId: number, toTopicId: number) {
-          return reg.move(fromTopicId, toTopicId);
+        move(fromThreadId: string, toThreadId: string) {
+          return reg.move(fromThreadId, toThreadId);
         },
       };
     }
@@ -119,7 +118,7 @@ describe.each([
     delete entryWithoutLastTopicId.lastTopicId;
     await sut.upsert(entryWithoutLastTopicId);
 
-    // Replace semantics: the prior lastTopicId=9001 must NOT survive into the stored entry.
+    // Replace semantics: the prior lastTopicId='9001' must NOT survive into the stored entry.
     const result = sut.findByName(BASE_ENTRY.sessionName);
     expect(result?.lastTopicId).toBeUndefined();
   });
@@ -129,11 +128,11 @@ describe.each([
   });
 
   it('findAllByName replace semantics: two upserts for the same sessionName produce exactly one entry', async () => {
-    // First upsert: entry with lastTopicId=9001.
+    // First upsert: entry with lastTopicId='9001'.
     await sut.upsert(BASE_ENTRY);
 
     // Second upsert: same sessionName, different lastTopicId.
-    const updated = { ...BASE_ENTRY, lastTopicId: 9002 };
+    const updated = { ...BASE_ENTRY, lastTopicId: '9002' };
     await sut.upsert(updated);
 
     // Replace semantics: only one entry exists, with the last-written value.
@@ -141,7 +140,7 @@ describe.each([
     expect(results).toHaveLength(1);
     expect(results[0]).toMatchObject({
       sessionName: BASE_ENTRY.sessionName,
-      lastTopicId: 9002,
+      lastTopicId: '9002',
     });
   });
 
@@ -154,53 +153,49 @@ describe.each([
     delete entryWithoutLastTopicId.lastTopicId;
     await sut.upsert(entryWithoutLastTopicId);
 
-    // Replace semantics: the prior lastTopicId=9001 must NOT survive.
+    // Replace semantics: the prior lastTopicId='9001' must NOT survive.
     const results = sut.findAllByName(BASE_ENTRY.sessionName);
     expect(results).toHaveLength(1);
     expect(results[0]?.lastTopicId).toBeUndefined();
   });
 
-  it('resolve returns entry for known topicId', async () => {
+  it('resolve returns entry for known threadId', async () => {
     if (!sut.resolve) {
-      // Skip if resolve is not implemented (optional method).
       return;
     }
 
     await sut.upsert(BASE_ENTRY);
-    const result = sut.resolve(BASE_ENTRY.topicId!);
+    const result = sut.resolve(BASE_ENTRY.threadId!);
     expect(result).toMatchObject({
       sessionName: BASE_ENTRY.sessionName,
       lastTopicId: BASE_ENTRY.lastTopicId,
     });
   });
 
-  it('resolve returns undefined for unknown topicId', () => {
+  it('resolve returns undefined for unknown threadId', () => {
     if (!sut.resolve) {
-      // Skip if resolve is not implemented (optional method).
       return;
     }
 
-    expect(sut.resolve(99999)).toBeUndefined();
+    expect(sut.resolve('99999')).toBeUndefined();
   });
 
-  it('register rejects duplicate name (different topicId)', async () => {
+  it('register rejects duplicate name (different threadId)', async () => {
     if (!sut.register) {
-      // Skip if register is not implemented (optional method).
       return;
     }
 
-    await sut.register(1, -100, 'dup-name');
-    await expect(sut.register(2, -100, 'dup-name')).rejects.toThrow(/dup-name/);
+    await sut.register('1', '-100', 'dup-name');
+    await expect(sut.register('2', '-100', 'dup-name')).rejects.toThrow(/dup-name/);
   });
 
   it('move rejects occupied destination', async () => {
     if (!sut.register || !sut.move) {
-      // Skip if register or move is not implemented (optional methods).
       return;
     }
 
-    await sut.register(1, -100, 'a');
-    await sut.register(2, -100, 'b');
-    await expect(sut.move(1, 2)).rejects.toThrow(/already bound|Destination/i);
+    await sut.register('1', '-100', 'a');
+    await sut.register('2', '-100', 'b');
+    await expect(sut.move('1', '2')).rejects.toThrow(/already bound|Destination/i);
   });
 });

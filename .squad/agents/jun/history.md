@@ -1,208 +1,33 @@
-# Jun — History (Summarized 2026-05-30 → Phase 9 complete)
-
-## Identity & Role
-
-- **Agent:** Jun (Test Engineer, Sonnet 4.6)
-- **Project:** Reach — TypeScript daemon bridging Telegram to GitHub Copilot CLI
-- **Domain:** Test infrastructure, integration test harnesses, contract validation, anticipatory TDD
-- **Joined:** 2026-04-12
-
-## Current Status
-
-**Phase 9 COMPLETE.** Shipped 163 new tests total:
-- Item 2 tests (80): isBotCommand (66+1 todo), afkMode.slashGuard (15), handlers.slashGuard (25)
-- Item 3 tests (83): knownCwds helpers (60), /cwd commands (12), /new --cwd flag (11)
-
-Suite: 720 passed / 4 skipped / 1 todo. +150 net tests (Phase 8.5 → Phase 9). All green.
-
-**Phase 9 Persona Review (2026-05-30):** F-8 helpers extraction completed (makeStubRegistry, makeMockBot consolidated). Anticipatory RED regression tests added (7 tests). Cycle 1 fix wave: 725→771 tests. Cycle 2 fix wave (C2-I2 stub migration): 771→783 tests. Branch user/aaron/phase9, all green, ready for merge.
-
-**Phase 8.5 COMPLETE.** Install story tests shipped (copyExtension 14, uninstall 6, index 13 = 33 new). Suite 570 passed / 4 skipped.
-
-**Phase 8 COMPLETE.** Integration harness + config env tests (A8, N2, N3 validation). Phase 7 ADR-11 contract tests (T1–T8). Test infrastructure stabilized.
-**Phase 8.5 COMPLETE.** Shipped 33 new tests for install story (copyExtension 14, uninstall 6, index orchestrator 13). Full suite: 570 passed / 4 skipped / 0 failed ✅. tsc clean, lint zero warnings.
-
-Suite: 720 passed / 4 skipped / 1 todo. +150 net tests (Phase 8.5 → Phase 9). All green.
-
-**Phase 8.5 COMPLETE.** Install story tests shipped (copyExtension 14, uninstall 6, index 13 = 33 new). Suite 570 passed / 4 skipped.
-
-**Phase 8 COMPLETE.** Integration harness + config env tests (A8, N2, N3 validation). Phase 7 ADR-11 contract tests (T1–T8). Test infrastructure stabilized.
+# Jun — History (Phase 1 Complete 2026-06-06, commit 3739640; Persona Review Cycle 2 PASSED 2026-06-07)
 
 ---
 
-## Recent Phases Summary
+**PHASE 1 COMPLETE + PERSONA REVIEW CYCLE PASSED (2026-06-07):** Shipped conformance kit for ChannelPort (behavioral tests + capability-fallback matrix + Telegram anti-lie checks) + full regression suite. 88 new tests added (44 FakeChannel + 44 Telegram); 937 total (up from 849). Zero contract violations found. All 4 capability flags tested in both ON and OFF states. Kat's 3 gotchas pinned. **Two-cycle persona review completed:**
+- **Cycle 1 findings:** 3 blocking, 5 important, 4 minor
+- **Jun verification (823e5d8):** +17 regression tests covering R1 (4 tests), B2 (4 tests), B1 (5 tests), I2 (4 tests). All findings verified resolved.
+- **Cycle 2 outcome:** 0 blocking, all 6 prior important findings verified resolved by all Code Panel personas
+- **Final test count:** 963 green (946 + 17 new, all passing). Zero regressions. tsc+lint clean.
+- **Ship status:** READY FOR /ship-to-pr
+- **Deferred to Phase 2:** I4 (optional createThread), I5 (ChannelMessage union), M5 (central mock factory)
 
-### Phase 9 (2026-05-30) — Anticipatory Tests + Item 3 Suite
-
-**Item 2 — Slash Pass-Through (80 tests):**
-- `isBotCommand.test.ts` — Guard contract (case-insensitive, @botname handling, extraction regex)
-- `afkMode.slashGuard.test.ts` — Pass-through validation
-- `handlers.slashGuard.test.ts` — Relay target changes
-
-**Item 3 — CWD Registry (83 tests):**
-- `knownCwds.test.ts` — 8 helpers (validate, list, lookup, add, remove, touch, path-compare)
-- `cwdCommand.test.ts` — /cwd group commands (list, add, remove, topic enforcement)
-- `newCwdFlag.test.ts` — Position-independent flag parser, path vs alias disambiguation
-
-**Pattern:** Mock architecture (vi.hoisted + vi.mock), fake timers for deterministic timestamps.
-
-**Key learning:** Anticipatory tests written before implementation matched Carter's code exactly on first run — no import path adjustments needed. Indicates strong design convergence.
-
-### Phase 8.5 (2026-05-29) — Install Story Tests
-
-- `copyExtension.test.ts` — 14 tests (APPDATA validation, reach/ mkdir, copy, junction mode)
-- `uninstall.test.ts` — 6 tests (removal, --wipe flag)
-- `index.test.ts` — 13 tests (orchestrator + wizard wiring)
-- `extension-protocol-drift.test.ts` — 4 regression tests (Issue #8 SDK fix)
-
-### Phase 8 (2026-05-27–2026-05-28)
-
-- `main-composition.test.ts` — 7 tests (A8 pairing-mode, N3 config guard)
-- A6-6 fleet compensation validation (Kat, Jun collab)
-
-### Phase 7 (2026-05-25) — ADR-11 Contract Tests
-
-- `afk-mode.contract.test.ts` — T1–T8 integration suite (30/31 green)
-- `FakeDaemon` + `FakeExtensionClient` extensions for ADR-11 protocol
-
----
-
-## Architectural Patterns
-
-- **Mock setup:** vi.hoisted() → vi.mock() → imports after mocks
-- **Test double cleanup:** restoreAllMocks() pairs with full re-establishment in beforeEach (not clearAllMocks alone)
-- **Fake timers:** vi.useFakeTimers({ now: ISO-8601 }) for deterministic timestamps
-- **vi.fn() rules:** Always reset inline mocks in beforeEach if using restoreAllMocks() afterEach
-
----
-
-## Phase 9 Sprint — 2026-05-30
-
-**Sprint shipped.** All 3 Aaron dogfood feedback items addressed:
-1. Orientation message + /status command (Kat, afkMode + handlers)
-2. Slash pass-through via isBotCommand allowlist (Carter Items 2)
-3. /cwd registry + /new --cwd flag (Carter Items 3 + Kat config schema)
-
-**Suite:** 720 passed / 4 skipped / 1 todo. +150 net tests.
-
-**Known Phase 10 follow-up:** Cross-platform path detection in /new --cwd (Unix `/` startsWith check deferred).
-
-**Known Phase 10 follow-up:** Cross-platform path detection in /new --cwd (Unix `/` startsWith check deferred).
-
-## Phase 9 Review Wave (2026-05-30) — Test-Quality Blockers + Anticipatory Regression Tests
-
-**Sprint:** Phase 9 review blockers (B2, I7) + helpers extraction (F-8) + anticipatory tests for B1/B3/I3+I4/I10/I11.
-
-### B2 — Fixed vacuous `/new` assertion
-
-`handlers.slashGuard.test.ts` had a vacuously true assertion: the ctx passed to the handler and the ctx used in `expect()` were two different objects created by separate `makeMockCtx()` calls. Fixed by capturing ctx before the handler call. **Key lesson:** always capture the exact ctx reference and assert on THAT reference.
-
-### I7 — extension-back-banner.test.ts rewrite (source-analysis)
-
-Option (a) — direct import — failed: handlers are not exported, and extension.mjs has top-level side effects (reads env vars, imports SDK). Chose source-analysis (same pattern as extension-protocol-drift.test.ts): parse extension.mjs with `readFileSync`, extract function bodies via brace-balancing, assert structural properties (unconditional call in handleBackConfirmed, guarded call in handleModeChanged).
-
-### F-8 — Helpers extraction
-
-Extracted `makeMockBot` + `makeMockCtx` → `tests/helpers/botMocks.ts` and `makeStubRegistry` → `tests/helpers/registryMocks.ts`. Key finding: `afkMode.slashGuard.test.ts` had a DIFFERENT `makeMockBot` (AfkModeController API shape, not grammY) — kept that one local; only `makeStubRegistry` was extracted from that file.
-
-### Anticipatory tests — what was pre-landed vs genuinely anticipatory
-
-- **I10 (validatePath warning):** Kat already shipped this in `src/config/knownCwds.ts`. Tests went GREEN immediately — confirms design convergence.
-- **B1 (isBotCommand digit fix):** 3 tests RED (expected). Current regex `/[a-z_]+/` extracts "new" from "/new123" → true (bug). Tests: `/new123`→false, `/list1`→false, `/status42`→false (all fail until Carter fixes regex). Note: "status" IS in BOT_COMMANDS currently (surprise!).
-- **B3 (prod-over-dev junction):** TC15 RED (expected). `lstatSync` mock infrastructure added to copyExtension.test.ts.
-- **I11 (redactSecrets):** 3 tests RED. Module exists at `src/bot/redactSecrets.ts` but implementation is partial — ENV-style assignments and high-entropy strings not yet redacted.
-- **I3+I4 (flag parser):** Collection error (module not found). `src/bot/newFlagParser.ts` doesn't exist yet.
-
-### Final suite state (Phase 9 review wave)
-
-- tsc: GREEN (exit 0)
-- vitest: 7 failed (all anticipated RED) / 746 passed / 4 skipped / 1 todo
-- Failing: B1 (3) + I11 partial (3) + B3 TC15 (1). Collection error: newFlagParser.test.ts.
-
-### Learnings
-
-1. **Source-analysis tests require brace-balancing parsers** — a simple regex won't reliably extract function bodies. The brace-counter approach from extension-protocol-drift.test.ts is the established pattern for this project.
-2. **Always verify "RED" expectations by checking what the current impl returns** — I10 tests went GREEN because Kat had already shipped. Don't assume all anticipatory tests will be red.
-3. **`process.platform` is configurable via `vi.spyOn` getter mock** — works reliably to test platform-specific code paths without actually running on that OS.
-4. **Check BOT_COMMANDS membership before writing anticipatory tests** — "status" was unexpectedly in BOT_COMMANDS, which changed which B1 tests would be red.
-5. **afkMode's `makeMockBot` is NOT the grammY bot mock** — its shape is `{api: {editMessageText, sendMessage}}` for AfkModeController. The two mocks are not interchangeable.
-
-
-
-## Cycle 2 Cleanup — handlers.test.ts migration (2026-05-30)
-
-**Task:** Replace local `makeStubRegistry` in `tests/bot/handlers.test.ts` with the shared helper from `tests/helpers/registryMocks.ts`.
-
-**Investigation findings:**
-- Local stub was missing `upsert` (masked by `as unknown as ISessionRegistry` cast)
-- Local stub's `findByName` was a functional linear-search; no test in the file asserted on `findByName` behavior → straight migration, no need to extend shared helper with `findByName` override
-- **Craft reviewer's GOTCHA was not triggered** — no name-collision tests exist
-
-**Behavioral gap discovered during validation:**
-- Local `remove: vi.fn(async (topicId) => map.delete(topicId))` returned `true` on success
-- Shared `remove: vi.fn()` returned `undefined` (falsy) → "removes the session and confirms" test failed
-- Fix: updated shared helper to `remove: vi.fn().mockResolvedValue(true)` as default. Tests that need falsy (e.g. "no session linked") already call `.mockResolvedValue(false)` explicitly. No other consumers were affected.
-
-**Cast situation:** `as unknown as ISessionRegistry` lives inside the shared helper's implementation — consumers always receive `ISessionRegistry` from the function signature. No consumer-visible casts were introduced.
-## Phase 8.5 Task 3 (2026-05-29T23:27:00-07:00) — copyExtension.ts Tests
-
-**Deliverables:**
-- `tests/install/copyExtension.test.ts` — 9 tests (TC1–TC9) for `copyExtension()`
-- `src/install/copyExtension.ts` — Carter's implementation was already present; stub not needed
-- `.squad/decisions/inbox/jun-task3-copyextension-tests.md` — infrastructure decisions
-
-**Coverage:**
-- TC1 happy path (copy + log), TC2 first install (mkdir), TC3 upgrade (idempotent overwrite)
-- TC4 Copilot CLI not installed, TC5 APPDATA unset, TC6 source missing
-- TC7 spaces + unicode in user profile path
-- TC8 mkdir EPERM → exit(1), TC9 copyFileSync EPERM → exit(1)
-
-**Infrastructure:**
-- `vi.mock('fs', async (importOriginal) => { ...actual, existsSync, mkdirSync, copyFileSync })`
-- Same pattern as `tests/service/install.test.ts`; no new devDependencies
-- `process.exit` spy throws; re-established in `beforeEach` after `vi.clearAllMocks()`
-- Source path = `path.join(process.cwd(), 'extension.mjs')` because Carter's `getProjectRoot()`
-  resolves `path.resolve(__dirname, '..', '..')` which equals `process.cwd()` under vitest ESM
-
-**Verification:** `npx tsc --noEmit` GREEN. `npx vitest run tests/install/copyExtension.test.ts` — 9 passed. Full suite — 42 files, 546 passed / 4 skipped / 0 failed ✅.
-
-**Key learning:** When the source module uses `import * as fs from 'fs'` (bare specifier), the
-vi.mock specifier must be `'fs'`, NOT `'node:fs'`. Mixing specifiers causes the mock to not
-intercept the production code's imports.
-
-## Phase 8.5 Task 2 (2026-05-29T23:44:00-07:00) — Junction / Uninstall / Orchestrator Tests
-
-**Deliverables:**
-- `tests/install/copyExtension.test.ts` — extended to TC14 (TC10–TC14 = junction mode: symlinkSync called, log contains "linked/dev", rmSync before re-junction, idempotent absent case, production regression)
-- `tests/install/uninstall.test.ts` — 6 tests (UN1–UN6): service uninstall, ext dir remove, data preserve, wipe flag, idempotent absent, both absent
-- `tests/install/index.test.ts` — 13 tests (IX1–IX13): happy path, copyExtension+service called, prompts bot token, empty token exits, .env creation, key preservation, allowed IDs prompt, skip+confirm y, skip+decline n, chat ID warn-only, non-TTY exit, non-TTY all-set proceeds, secret hygiene
-- `src/install/uninstall.ts` — stub created (Carter must implement body, interface preserved)
-- `.squad/decisions/inbox/jun-task2-tests.md` — infrastructure decisions
-
-**Key learnings:**
-
-1. **Readline mock via answer queue** — `vi.hoisted()` + `rlAnswerQueue.shift()` pattern lets each test push expected answers; `mockCreateInterface` call tracking confirms TTY gate assertions. This is robust to prompt-text changes.
-
-2. **Carter's junction support was already live** — TC10–TC14 were expected RED but landed GREEN because Carter had already implemented the `NODE_ENV=development` branch before tests ran. Cross-team anticipatory testing still has value: it confirmed Carter's implementation matched the contract exactly.
-
-3. **Sparse service mock causes import errors** — mock all expected named exports from a module even if only one is used; sparse mocks cause "not a function" at runtime when code uses additional named bindings.
-
-4. **`process.stdin.isTTY` needs `Object.defineProperty`** — it's a plain property, not a getter, so `vi.spyOn` won't work. Use `{ configurable: true }` and restore in `afterAll`.
-
-5. **`vi.clearAllMocks()` not `vi.restoreAllMocks()`** — restoreAllMocks wipes factory-closure `vi.fn()` implementations. clearAllMocks only resets call records; re-establish the handful of spy implementations manually each `beforeEach`.
-
-**Verification:** `npx tsc --noEmit` GREEN. `npx vitest run tests/install/` — 33/33 GREEN. Full suite maintained.
+F1 blocker verified in commit 2b5e4a2 (9 new relay capability tests). Reference: Phase 1 section in decisions.md; orchestration log at .squad/orchestration-log/2026-06-07-persona-review-phase1.md. Next: Teams Phase 2 pending corp access.
 
 ---
 
 ## Learnings
 
-**Learnings:**
-1. **Check all vi.fn() return values, not just types** — a no-op `vi.fn()` returning `undefined` is behaviorally different from a stub that returns `true` even when the TS interface says `Promise<boolean>`. Type check passes; runtime test fails.
-2. **Successful-default principle for stubs** — mutating stubs (`remove`, `register`, etc.) should default to "success" semantics (`mockResolvedValue(true)`) so that "happy path" tests require no extra setup. Override to failure only when the test specifically exercises the failure branch.
-3. **Review all test assertions before assuming straight migration** — even when no test directly calls `expect(registry.findByName)`, a mock's side-effects (return value) can still flow through the SUT and affect other assertions.
+**F1 independent verification (2026-06-06):** Added `tests/relay/relay.capabilities.test.ts` — 9 new relay-level capability tests that drive the REAL relay with mock channels configured for each of Carter's three cases. Key insight: the anti-regression test for Case C (editMessage count stays 1 across 12 chunks) uses fake timers that advance 1000ms per chunk inside the async iterator, which forces the 800ms throttle window to reopen on every iteration. Without timer advancement, the throttle naturally suppresses intermediate edits even on old code — so the timer-advancing approach is essential to make the test truly discriminating at the mechanical level. Primary F1 discriminator for Case C is the "thinking…" vs "…" sendMessage assertion, which unambiguously separates the pre-fix Case A path from the fixed Case C path. Lesson: for throttle-gated behavior, always advance fake timers inside the iterator to make timing assertions meaningful. 946 tests green after adding 9.
 
-## Full Archive
+**Cycle-1 verification (2026-06-06):** Added 17 new tests across three files to catch R1/B1/B2/I2 regressions that the 946-test suite missed. Key learnings:
 
-Phases 1–6, Phase 7 detailed learnings, Phase 8 P1 analysis → `history-archive.md`.
+1. **Private-field inspection via casting is the right tool for factory tests.** The R1 regression involved a constructor argument being silently wrong (chatId=0 instead of 99999). The adapter is a real class with a private field; the cleanest regression test casts to `unknown as { allowedChatId: number }` to assert the exact value. Behavioral tests (e.g., message filtering) also work but require more scaffolding.
 
+2. **Module-level vi.mock must be hoisted before side-effect imports.** The telegram factory (`registerChannel(...)`) runs at import time and captures the `Bot` constructor from grammy. `vi.mock('grammy')` must appear before the import of `telegram/index.js` so the factory closure sees the mocked Bot. Vitest hoists `vi.mock` calls automatically, making this safe.
+
+3. **Boolean return propagation tests need the return to be soft-failure (not throw).** For I2, if we mocked editMessage to throw, the existing pre-fix code would also fail in safeEdit's `catch` clause (returning false). The discriminating scenario is `editMessage.mockResolvedValue(false)` — a false return that only the post-fix `return await channel.editMessage(...)` propagates. Always think: "what would the pre-fix code do differently?"
+
+4. **B2 (non-Telegram boot) uses instanceof-defeating plain objects.** Since TelegramChannel is mocked to MockTelegramChannelClass in main-composition.test.ts, a plain object literal is not an instance of it and correctly fails the `instanceof TelegramChannel` guard. No need to create a separate class hierarchy.
+
+**PR #11 mock-contract fix (2026-06-07):** Fixed `editMessage: vi.fn().mockResolvedValue(undefined)` → `mockResolvedValue(true)` in 6 test files (cloud-review-1.test.ts, handlers.slashGuard.test.ts, cwdCommand.test.ts, handlers.test.ts, newCwdFlag.test.ts, resume.test.ts) to match ChannelPort's `Promise<boolean>` contract and prevent undefined-as-falsy from triggering relay fallback paths in tests. 972 tests green, tsc+lint clean.
+
+---

@@ -12,19 +12,7 @@ export interface ResolvedSession {
   model?: string;
 }
 
-/** Port: resolves a Telegram topic ID to its linked session entry. */
+/** Port: resolves a thread ID to its linked session entry. */
 export interface SessionLookup {
-  resolve(topicId: number): ResolvedSession | undefined;
-}
-
-/**
- * Port: prompts the user interactively to approve or deny a destructive tool
- * execution. Relay calls this when a permissionPrompter is injected.
- * Returns true = approved, false = denied or aborted.
- *
- * @param signal - Optional AbortSignal; when fired the prompt resolves false
- *   immediately (e.g., on session disconnect). K1 / ADR-9 §6.
- */
-export interface PermissionPrompter {
-  prompt(chatId: number, topicId: number, toolName: string, args: string, signal?: AbortSignal): Promise<boolean>;
+  resolve(threadId: string): ResolvedSession | undefined;
 }

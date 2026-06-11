@@ -1,10 +1,9 @@
-import type { Bot, Context } from 'grammy';
 import type { PermissionPolicy } from '../copilot/impl.js';
 import type { CopilotSessionFactory } from '../copilot/factory.js';
 import type { ISessionRegistry } from '../sessions/registry.js';
-import type { SessionLookup, PermissionPrompter } from '../relay/ports.js';
+import type { SessionLookup } from '../relay/ports.js';
+import type { ChannelPort, ChannelContext, CommandHandler } from '../channel/port.js';
 import { Relay } from '../relay/relay.js';
-import { promptUserForPermission, ensurePromptRegistry } from './prompt.js';
 import { isBotCommand, COMMAND_NAMES, type CommandName } from './commands.js';
 import { loadConfig, saveConfig } from '../config/config.js';
 import {
@@ -19,13 +18,13 @@ import { handleCwdCommand, type CwdCommandLogger } from './cwdCommand.js';
 export const SESSION_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
 
 export interface HandlerOptions {
-  bot: Bot<Context>;
   registry: ISessionRegistry;
   factory: CopilotSessionFactory;
   globalModel: string;
+  /** The active ChannelPort — used to register commands and relay. */
+  channel: ChannelPort;
   permissionPolicy?: PermissionPolicy;
-  telegramMirror?: { handleTelegramMessage(ctx: Context): Promise<boolean> };
-  statusProvider?: { handleStatusCommand(ctx: Context): Promise<void> };
+  statusProvider?: { handleStatusCommand(channelCtx: ChannelContext): Promise<void> };
   /** Absolute path to config.json — required for /cwd commands and /new --cwd flag. */
   configPath?: string;
   logger?: CwdCommandLogger;
@@ -46,7 +45,7 @@ function defaultLogger(): CwdCommandLogger {
 }
 
 /**
- * Registers all bot commands and the catch-all relay handler.
+ * Registers all bot commands and the catch-all relay handler via the ChannelPort.
  *
  * Commands:
  *   /new <name> [--model <model>] [--cwd <alias-or-path>]
@@ -59,44 +58,32 @@ function defaultLogger(): CwdCommandLogger {
  *
  * All other text messages in forum topics are relayed to the linked session.
  */
-export function registerHandlers({ bot, registry, factory, globalModel, permissionPolicy, telegramMirror, statusProvider, configPath, logger }: HandlerOptions): Relay {
+export function registerHandlers({ registry, factory, globalModel, channel, permissionPolicy, statusProvider, configPath, logger }: HandlerOptions): Relay {
   const cwdLogger = logger ?? defaultLogger();
-  const sessionLookup: SessionLookup = { resolve: (topicId) => registry.resolve(topicId) };
+  const sessionLookup: SessionLookup = { resolve: (threadId) => registry.resolve(threadId) };
 
-  let permissionPrompter: PermissionPrompter | undefined;
-  if (permissionPolicy === 'interactiveDestructive') {
-    // Install the callback_query:data listener EAGERLY here, before bot.start()
-    // begins polling. grammY forbids bot.on() registration from within active
-    // handlers (memory-leak guard), so we must register during the setup phase
-    // alongside the other bot.command() / bot.on() calls.
-    ensurePromptRegistry(bot);
-    permissionPrompter = {
-      prompt: (chatId, topicId, toolName, args, signal) =>
-        promptUserForPermission(bot, chatId, topicId, toolName, args, signal),
-    };
-  }
+  const enablePermissionPrompts = permissionPolicy === 'interactiveDestructive';
 
-  const relay = new Relay(sessionLookup, factory, globalModel, permissionPrompter);
+  const relay = new Relay(channel, sessionLookup, factory, globalModel, enablePermissionPrompts);
 
   // Registered via the COMMAND_NAMES loop below; defined here so relay is in scope.
-  const commandHandlers: Record<CommandName, (ctx: Context) => Promise<void>> = {
+  const commandHandlers: Record<CommandName, CommandHandler> = {
     // /new <name> [--model <model>] [--cwd <alias-or-path>] — register a topic→name mapping; SDK session is created lazily on first relay
-    new: async (ctx) => {
-      const topicId = ctx.message?.message_thread_id;
-      if (!topicId) {
-        await ctx.reply('❌ /new must be used inside a forum topic.');
+    new: async (channelCtx, args) => {
+      if (!channelCtx.threadId) {
+        await channel.sendMessage(channelCtx, '❌ /new must be used inside a forum topic.');
         return;
       }
 
-      const input = (ctx.match as string | undefined)?.trim();
+      const input = args.trim();
       if (!input) {
-        await ctx.reply('❌ Usage: /new <session-name> [--model <model>] [--cwd <alias-or-path>]', { message_thread_id: topicId });
+        await channel.sendMessage(channelCtx, '❌ Usage: /new <session-name> [--model <model>] [--cwd <alias-or-path>]');
         return;
       }
 
       const parsed = parseNewFlags(input);
       if (!parsed.ok) {
-        await ctx.reply(`❌ ${parsed.error}`, { message_thread_id: topicId });
+        await channel.sendMessage(channelCtx, `❌ ${parsed.error}`);
         return;
       }
       const name = parsed.value.sessionName;
@@ -104,35 +91,31 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
       const cwdArg = parsed.value.cwd;
 
       if (!SESSION_NAME_RE.test(name)) {
-        await ctx.reply(
+        await channel.sendMessage(channelCtx,
           '❌ Invalid session name. Use lowercase letters, numbers, and hyphens (e.g. reach-myapp).',
-          { message_thread_id: topicId },
         );
         return;
       }
 
-      const existing = registry.resolve(topicId);
+      const existing = registry.resolve(channelCtx.threadId);
       if (existing) {
-        await ctx.reply(
+        await channel.sendMessage(channelCtx,
           `⚠️ Topic already linked to "${existing.sessionName}". Use /remove first.`,
-          { message_thread_id: topicId },
         );
         return;
       }
 
       const nameTaken = registry.findByName(name);
       if (nameTaken) {
-        await ctx.reply(
-          `⚠️ Session name "${name}" is already in use (topic #${nameTaken.topicId}). Choose a different name.`,
-          { message_thread_id: topicId },
+        await channel.sendMessage(channelCtx,
+          `⚠️ Session name "${name}" is already in use (topic #${nameTaken.threadId}). Choose a different name.`,
         );
         return;
       }
 
       try {
-        const chatId = ctx.chat?.id;
-        if (!chatId) {
-          await ctx.reply('❌ Could not determine chat ID.', { message_thread_id: topicId });
+        if (!channelCtx.channelId) {
+          await channel.sendMessage(channelCtx, '❌ Could not determine chat ID.');
           return;
         }
 
@@ -140,7 +123,7 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
         let resolvedCwd: string | undefined;
         if (cwdArg !== undefined) {
           if (!configPath) {
-            await ctx.reply('❌ --cwd requires a config path (daemon not fully configured).', { message_thread_id: topicId });
+            await channel.sendMessage(channelCtx, '❌ --cwd requires a config path (daemon not fully configured).');
             return;
           }
           const isPath =
@@ -150,18 +133,18 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
           if (isPath) {
             const pathResult = await validatePath(cwdArg);
             if (!pathResult.ok) {
-              await ctx.reply(`❌ Invalid path: ${pathResult.reason}. Path must be an absolute, existing directory.`, { message_thread_id: topicId });
+              await channel.sendMessage(channelCtx, `❌ Invalid path: ${pathResult.reason}. Path must be an absolute, existing directory.`);
               return;
             }
             if (pathResult.warning) {
-              await ctx.reply(`⚠️ ${pathResult.warning}`, { message_thread_id: topicId });
+              await channel.sendMessage(channelCtx, `⚠️ ${pathResult.warning}`);
             }
             resolvedCwd = pathResult.normalized;
           } else {
             const cfg = await loadConfig(configPath);
             const known = getKnownCwdByAlias(cfg, cwdArg);
             if (!known) {
-              await ctx.reply(`❌ Unknown alias '${cwdArg}'. Run /cwd list to see known cwds.`, { message_thread_id: topicId });
+              await channel.sendMessage(channelCtx, `❌ Unknown alias '${cwdArg}'. Run /cwd list to see known cwds.`);
               return;
             }
             resolvedCwd = known.path;
@@ -171,70 +154,63 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
 
         await (
           resolvedCwd === undefined
-            ? registry.register(topicId, chatId, name, model)
-            : registry.register(topicId, chatId, name, model, resolvedCwd)
+            ? registry.register(channelCtx.threadId, channelCtx.channelId, name, model)
+            : registry.register(channelCtx.threadId, channelCtx.channelId, name, model, resolvedCwd)
         );
         const modelNote = model ? ` (model: ${model})` : '';
         const cwdNote = resolvedCwd ? ` (cwd: ${resolvedCwd})` : '';
-        await ctx.reply(`✅ Session "${name}" registered and linked to this topic${modelNote}${cwdNote}.`, {
-          message_thread_id: topicId,
-        });
+        await channel.sendMessage(channelCtx, `✅ Session "${name}" registered and linked to this topic${modelNote}${cwdNote}.`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        await ctx.reply(`❌ Failed to register session "${name}": ${msg}`, {
-          message_thread_id: topicId,
-        });
+        await channel.sendMessage(channelCtx, `❌ Failed to register session "${name}": ${msg}`);
       }
     },
 
     // /list — show all registered sessions
-    list: async (ctx) => {
+    list: async (channelCtx) => {
       const sessions = registry.list();
       if (sessions.length === 0) {
-        await ctx.reply('No sessions registered yet.');
+        await channel.sendMessage(channelCtx, 'No sessions registered yet.');
         return;
       }
       const lines = sessions.map((s) => {
         const modelNote = s.model ? ` (model: ${s.model})` : '';
-        return `• ${s.sessionName} ← topic #${s.topicId}${modelNote}`;
+        return `• ${s.sessionName} ← topic #${s.threadId}${modelNote}`;
       });
-      await ctx.reply(lines.join('\n'));
+      await channel.sendMessage(channelCtx, lines.join('\n'));
     },
 
     // /remove — unlink the session from this topic
-    remove: async (ctx) => {
-      const topicId = ctx.message?.message_thread_id;
-      if (!topicId) {
-        await ctx.reply('❌ /remove must be used inside a forum topic.');
+    remove: async (channelCtx) => {
+      if (!channelCtx.threadId) {
+        await channel.sendMessage(channelCtx, '❌ /remove must be used inside a forum topic.');
         return;
       }
 
-      const removed = await registry.remove(topicId);
+      const removed = await registry.remove(channelCtx.threadId);
       if (removed) {
-        await ctx.reply('✅ Session unlinked from this topic.', { message_thread_id: topicId });
+        await channel.sendMessage(channelCtx, '✅ Session unlinked from this topic.');
       } else {
-        await ctx.reply('⚠️ No session is linked to this topic.', { message_thread_id: topicId });
+        await channel.sendMessage(channelCtx, '⚠️ No session is linked to this topic.');
       }
     },
 
     // /resume <name> — re-link a named session to the current topic (move semantics)
-    resume: async (ctx) => {
-      const topicId = ctx.message?.message_thread_id;
-      if (!topicId) {
-        await ctx.reply('❌ /resume must be used inside a forum topic. Run /resume inside the topic you want to bind.');
+    resume: async (channelCtx, args) => {
+      if (!channelCtx.threadId) {
+        await channel.sendMessage(channelCtx, '❌ /resume must be used inside a forum topic. Run /resume inside the topic you want to bind.');
         return;
       }
 
-      const name = (ctx.match as string | undefined)?.trim();
+      const name = args.trim();
       if (!name) {
-        await ctx.reply('❌ Usage: /resume <session-name>', { message_thread_id: topicId });
+        await channel.sendMessage(channelCtx, '❌ Usage: /resume <session-name>');
         return;
       }
 
       if (!SESSION_NAME_RE.test(name)) {
-        await ctx.reply(
+        await channel.sendMessage(channelCtx,
           '❌ Invalid session name. Use lowercase letters, numbers, and hyphens (e.g. reach-myapp).',
-          { message_thread_id: topicId },
         );
         return;
       }
@@ -245,65 +221,60 @@ export function registerHandlers({ bot, registry, factory, globalModel, permissi
         const close = allNames.filter((n) => n.includes(name) || name.includes(n)).slice(0, 3);
         const hint = close.length > 0
           ? ` Did you mean: ${close.map((n) => `"${n}"`).join(', ')}?`
-          : ` Use /list to see available sessions.`;
-        await ctx.reply(`❌ No session named "${name}" found.${hint}`, { message_thread_id: topicId });
+          : ' Use /list to see available sessions.';
+        await channel.sendMessage(channelCtx, `❌ No session named "${name}" found.${hint}`);
         return;
       }
 
       // F-B: refuse when legacy duplicate names exist — cannot safely pick one
       if (matches.length > 1) {
-        const lines = matches.map((e) => `  • topic #${e.topicId} (chatId ${e.chatId})`).join('\n');
-        await ctx.reply(
+        const lines = matches.map((e) => `  • topic #${e.threadId} (channelId ${e.channelId})`).join('\n');
+        await channel.sendMessage(channelCtx,
           `⚠️ Multiple sessions named "${name}" exist (legacy duplicates):\n${lines}\nCannot disambiguate. Use /remove in the topic of the entry you want to drop, then /resume here.`,
-          { message_thread_id: topicId },
         );
         return;
       }
 
       const found = matches[0]!;
 
-      if (found.topicId === topicId) {
-        await ctx.reply(`✅ Session "${name}" is already bound to this topic.`, { message_thread_id: topicId });
+      if (found.threadId === channelCtx.threadId) {
+        await channel.sendMessage(channelCtx, `✅ Session "${name}" is already bound to this topic.`);
         return;
       }
 
-      const currentBinding = registry.resolve(topicId);
+      const currentBinding = registry.resolve(channelCtx.threadId);
       if (currentBinding) {
-        await ctx.reply(
+        await channel.sendMessage(channelCtx,
           `⚠️ Topic already linked to "${currentBinding.sessionName}". Use /remove first.`,
-          { message_thread_id: topicId },
         );
         return;
       }
 
-      const oldTopicId = found.topicId;
+      const oldThreadId = found.threadId;
       try {
-        await registry.move(oldTopicId, topicId);
+        await registry.move(oldThreadId, channelCtx.threadId);
         // Migrate the live SDK session handle so the next message in the new topic
         // reuses it instead of creating a duplicate session (H-A).
-        relay.rekeySession(oldTopicId, topicId);
-        await ctx.reply(
-          `✅ Resumed session "${name}" (was bound to topic #${oldTopicId}).`,
-          { message_thread_id: topicId },
+        relay.rekeySession(oldThreadId, channelCtx.threadId);
+        await channel.sendMessage(channelCtx,
+          `✅ Resumed session "${name}" (was bound to topic #${oldThreadId}).`,
         );
       } catch (err) {
         if (err instanceof Error && err.message.includes('already bound to')) {
           // F-C: destination was bound by a concurrent operation after our pre-check
-          await ctx.reply(
-            `⚠️ Cannot resume "${name}": topic ${topicId} was just linked to another session. Use /remove first.`,
-            { message_thread_id: topicId },
+          await channel.sendMessage(channelCtx,
+            `⚠️ Cannot resume "${name}": topic ${channelCtx.threadId} was just linked to another session. Use /remove first.`,
           );
         } else {
           const msg = err instanceof Error ? err.message : String(err);
-          await ctx.reply(`❌ Failed to resume session "${name}": ${msg}`, { message_thread_id: topicId });
+          await channel.sendMessage(channelCtx, `❌ Failed to resume session "${name}": ${msg}`);
         }
       }
     },
 
     // /help — show available commands
-    help: async (ctx) => {
-      const topicId = ctx.message?.message_thread_id;
-      const helpText = `Reach — Telegram ↔ Copilot CLI bridge
+    help: async (channelCtx) => {
+      const helpText = `Reach — Copilot CLI bridge
 
 Commands:
 /new <name> [--model <model>] [--cwd <alias-or-path>] — Create a session in this topic
@@ -314,56 +285,48 @@ Commands:
 /pair <code> — Pair this chat with the Reach daemon
 /cwd list|add|remove — Manage known cwd aliases (General Topic only)
 /help — Show this message`;
-      await ctx.reply(helpText, topicId ? { message_thread_id: topicId } : undefined);
+      await channel.sendMessage(channelCtx, helpText);
     },
 
     // /pair — guide users to pair during daemon startup
-    pair: async (ctx) => {
-      const topicId = ctx.message?.message_thread_id;
-      await ctx.reply(
+    pair: async (channelCtx) => {
+      await channel.sendMessage(channelCtx,
         '⚠️ Pairing is only available during daemon startup. To re-pair: stop the daemon, delete config.json, and restart.',
-        topicId ? { message_thread_id: topicId } : undefined,
       );
     },
 
     // /status — send current session orientation message (AFK topics only)
-    status: async (ctx) => {
+    status: async (channelCtx) => {
       if (!statusProvider) {
-        const topicId = ctx.message?.message_thread_id;
-        await ctx.reply('⚠️ Status requires the extension bridge to be active.', topicId ? { message_thread_id: topicId } : undefined);
+        await channel.sendMessage(channelCtx, '⚠️ Status requires the extension bridge to be active.');
         return;
       }
-      await statusProvider.handleStatusCommand(ctx);
+      await statusProvider.handleStatusCommand(channelCtx);
     },
 
     // /cwd list|add|remove — manage the known-cwds registry (General Topic only)
-    cwd: async (ctx) => {
+    cwd: async (channelCtx, args) => {
       try {
-        await handleCwdCommand(ctx, {
+        await handleCwdCommand(channelCtx, args, channel, {
           logger: cwdLogger,
           ...(configPath !== undefined && { configPath }),
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        await ctx.reply(`❌ Failed to process /cwd command: ${msg}`);
+        await channel.sendMessage(channelCtx, `❌ Failed to process /cwd command: ${msg}`);
       }
     },
   };
 
   for (const name of COMMAND_NAMES) {
-    bot.command(name, commandHandlers[name]);
+    channel.onCommand(name, commandHandlers[name]);
   }
 
   // Relay all non-command text messages in forum topics to their linked session
-  bot.on('message:text', async (ctx) => {
-    if (!ctx.message.message_thread_id) return;
-    if (isBotCommand(ctx.message.text)) return;
-    if (await telegramMirror?.handleTelegramMessage(ctx)) return;
-    await relay.relay(ctx);
-  });
-
-  bot.catch((err) => {
-    console.error('[bot] Unhandled error:', err.message, err.error);
+  channel.onMessage(async (channelCtx, text) => {
+    if (!channelCtx.threadId) return;
+    if (isBotCommand(text)) return;
+    await relay.relay(channelCtx, text);
   });
 
   return relay;

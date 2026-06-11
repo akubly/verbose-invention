@@ -2,6 +2,7 @@ import type { Bot, Context } from 'grammy';
 import type { ISessionRegistry } from '../sessions/registry.js';
 import { ERROR_CODES, type BridgeSessionInfo, type ModeState, type RegistrationExtras } from '../bridge/protocol.js';
 import type { AfkBridgePort } from './afkBridgePort.js';
+import type { ChannelContext } from '../channel/port.js';
 import { AfkStreamRouter } from './afkStreamRouter.js';
 import { isBotCommand } from './commands.js';
 import { redactSecrets } from './redactSecrets.js';
@@ -399,7 +400,7 @@ export class AfkModeController {
         ));
         const existing = this.resolveBindingEntry(binding);
         if (existing) {
-          const backEntry = { ...existing, mode: 'back' as const, lastTopicId: binding.topicId };
+          const backEntry = { ...existing, mode: 'back' as const, lastTopicId: String(binding.topicId) };
           delete backEntry.afkSince;
           await this.registry.upsert(backEntry);
         }
@@ -428,7 +429,7 @@ export class AfkModeController {
   }
 
   private resolveBindingEntry(binding: TopicBinding) {
-    return this.registry.resolve(binding.topicId) ?? this.registry.findByName(binding.sessionName);
+    return this.registry.resolve(String(binding.topicId)) ?? this.registry.findByName(binding.sessionName);
   }
 
   private async registrationExtras(session: BridgeSessionInfo): Promise<RegistrationExtras> {
@@ -464,7 +465,12 @@ export class AfkModeController {
       console.warn(`[afk] Duplicate registry entries for "${session.sessionName}"; creating a fresh AFK topic instead of reusing lastTopicId`);
     }
     const persisted = matches.length === 1 ? matches[0] : undefined;
-    let topicId = persisted?.lastTopicId;
+    // lastTopicId is stored as a string in SessionEntry; convert to number for Telegram API.
+    // Guard against non-numeric values (e.g. 'abc' from a corrupt/hand-edited registry):
+    // Number.isFinite rejects NaN, Infinity, and non-numeric strings converted via Number().
+    const rawTopicId = persisted?.lastTopicId !== undefined ? Number(persisted.lastTopicId) : undefined;
+    const persistedTopicId = rawTopicId !== undefined && Number.isFinite(rawTopicId) ? rawTopicId : undefined;
+    let topicId: number | undefined = persistedTopicId;
     let createdNewTopicId: number | null = null;
 
     if (topicId !== undefined) {
@@ -491,14 +497,14 @@ export class AfkModeController {
     try {
       await this.registry.upsert({
         sessionName: session.sessionName,
-        topicId,
-        chatId: this.chatId,
+        threadId: String(topicId),
+        channelId: String(this.chatId),
         createdAt: persisted?.createdAt ?? new Date().toISOString(),
         cwd: session.cwd,
         ...(persisted?.model !== undefined && { model: persisted.model }),
         mode: 'afk',
         afkSince: this.mode.since,
-        lastTopicId: topicId,
+        lastTopicId: String(topicId),
       });
     } catch (err) {
       // F1: Orphan prevention — if upsert fails, close the created topic.
@@ -580,24 +586,24 @@ export class AfkModeController {
    * Sends the current orientation message regardless of whether one has been sent before.
    * Only works inside AFK-active session topics.
    */
-  async handleStatusCommand(ctx: Context): Promise<void> {
-    const topicId = ctx.message?.message_thread_id;
-    if (!topicId) {
-      await ctx.reply('⚠️ /status must be used inside a session topic.');
+  async handleStatusCommand(channelCtx: ChannelContext): Promise<void> {
+    const topicId = channelCtx.threadId !== '' ? Number(channelCtx.threadId) : undefined;
+    if (topicId === undefined) {
+      await this.bot.api.sendMessage(this.chatId, '⚠️ /status must be used inside a session topic.');
       return;
     }
     if (!this.mode.active) {
-      await ctx.reply('ℹ️ AFK mode is not active.', { message_thread_id: topicId });
+      await this.safeSendMessage('ℹ️ AFK mode is not active.', topicId);
       return;
     }
     const sessionId = this.topicSessions.get(topicId);
     if (!sessionId) {
-      await ctx.reply('⚠️ No AFK session is bound to this topic.', { message_thread_id: topicId });
+      await this.safeSendMessage('⚠️ No AFK session is bound to this topic.', topicId);
       return;
     }
     const binding = this.sessionTopics.get(sessionId);
     if (!binding) {
-      await ctx.reply('⚠️ Session binding not found.', { message_thread_id: topicId });
+      await this.safeSendMessage('⚠️ Session binding not found.', topicId);
       return;
     }
     await this.safeSendMessage(this.formatOrientationMessage(binding), topicId);
@@ -655,7 +661,7 @@ export class AfkModeController {
     this.streamRouter.cleanupSession(sessionId);
     const existing = this.resolveBindingEntry(binding);
     if (existing) {
-      const disconnectedEntry = { ...existing, mode: 'back' as const, lastTopicId: binding.topicId };
+      const disconnectedEntry = { ...existing, mode: 'back' as const, lastTopicId: String(binding.topicId) };
       delete disconnectedEntry.afkSince;
       await this.registry.upsert(disconnectedEntry);
     }
@@ -723,7 +729,7 @@ export class AfkModeController {
     controller.topicSessions.clear();
     for (const session of seed.sessions ?? []) {
       const bridgeInfo = deps.bridge.getSessionInfo(session.sessionId);
-      const registryEntry = deps.registry.resolve(session.topicId);
+      const registryEntry = deps.registry.resolve(String(session.topicId));
       const binding: TopicBinding = {
         sessionId: session.sessionId,
         sessionName: session.sessionName ?? bridgeInfo?.sessionName ?? registryEntry?.sessionName ?? session.sessionId,

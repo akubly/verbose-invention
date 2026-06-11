@@ -838,3 +838,126 @@ Per Aaron's approval of the Phase 2 Kickoff Plan, the following decisions are LO
 
 *Phase 2 plan is ready for execution. Phase 2a (open repo) kicks off next session with work items P2a-1 through P2a-6. Phase 2b (corp fork) begins after P2b-1 (Azure AD app registration) is complete.*
 
+---
+
+## Phase 2a Execution Summary (2026-06-10)
+
+**Status:** COMPLETE  
+**Branch:** `user/aaron/phase2a`  
+**Commits:** 71054e7 (Noble Six), 1b4862a (Carter), ca7a0ea + 3c4f25b (Kat), 8192f50 (Jun)  
+**Test result:** 1139 tests pass, tsc clean, lint clean
+
+### Noble Six — P2a-1: I4 Optional `createThread` Refactor (71054e7)
+
+`createThread` is now an **optional method** on `ChannelPort`:
+```typescript
+createThread?(channelId: string, title: string): Promise<ChannelContext>;
+```
+
+**Semantics:**
+- `supportsThreadCreation=true` → method MUST be present and functional
+- `supportsThreadCreation=false` → method MAY be absent; absence is correct
+
+**Caller guard (ALL callers MUST use):**
+```typescript
+if (!channel.capabilities.supportsThreadCreation || !channel.createThread) {
+  throw new Error(`[caller] createThread not supported by ${channel.name}`);
+}
+const ctx = await channel.createThread(channelId, title);
+```
+
+**Conformance kit updated:** `supportsThreadCreation=true` asserts method presence; `false` path does NOT call the method.
+
+**Files changed:** `src/channel/port.ts` (optional method + TSDoc), `tests/channel/conformance/runner.ts` (updated section 6). No caller changes needed — AFK mode uses `bot.api.createForumTopic()` directly.
+
+---
+
+### Carter — P2a-2: Teams Environment Variables (1b4862a)
+
+Five required env vars when `REACH_CHANNEL=teams`:
+
+| Env var | EnvConfig field | Graph context |
+|---------|-----------------|---------------|
+| `TEAMS_TENANT_ID` | `teamsTenantId` | Azure AD directory ID |
+| `TEAMS_CLIENT_ID` | `teamsClientId` | Azure AD application ID |
+| `TEAMS_CLIENT_SECRET` | `teamsClientSecret` | Azure AD client secret |
+| `TEAMS_TEAM_ID` | `teamsTeamId` | Teams team GUID |
+| `TEAMS_CHANNEL_ID` | `teamsChannelId` | Channel ID within team |
+
+**Validation:** Conditional on `reachChannel === 'teams'`; fail-fast with `[reach] Fatal:` prefix.
+
+---
+
+### Carter — P2a-3: TeamsChannel Stub (1b4862a)
+
+TeamsChannel satisfies `ChannelPort` with:
+- **Capabilities:** `supportsMessageEdit=false`, `supportsThreadCreation=false`, `supportsInteractivePrompts=false`, `supportsStreaming=false`, `maxMessageLength=28000`
+- **NO `createThread` method** — per I4 contract, absence is correct
+- **Self-registration:** `registerChannel('teams', factory)` in module scope
+- **Conformance:** Passes kit with `skipLifecycle=true`
+- **Methods:** All stubbed; throws `[teams] not configured for live Graph` on `start()`
+
+**Text-fallback `promptUser`:** Uses numbered options format; matches by 1-based index or case-insensitive value. Invalid replies silently ignored while prompt pending.
+
+---
+
+### Kat — P2a-4: Teams HTML Formatting (ca7a0ea)
+
+Module: `src/channel/teams/formatting.ts` → `formatForTransport(markdown: string): string`
+
+**HTML subset emitted:**
+- `<b>`, `<i>` (bold, italic)
+- `<code>`, `<pre><code>` (inline, fenced)
+- `<a href="...">` (links)
+- `<br>` (linebreaks)
+- `<ul>/<li>`, `<ol>/<li>` (lists)
+
+**Not emitted:** Adaptive Cards (Phase 2b), `class=` attributes, heading levels.
+
+**Escaping:** `escapeHtml` for body (safe entities), `escapeHtmlAttr` for `href` values.
+
+**59 tests pass** covering all tag types, edge cases, nested formatting, and escaping.
+
+---
+
+### Kat — P2a-5: `promptUser` Text-Fallback Fixes (3c4f25b)
+
+Refined text-fallback contract for `TeamsChannel.promptUser`:
+
+| Gap in stub | Fix |
+|-------------|-----|
+| No indication of what to type | Render options with "Reply with option number or name" |
+| Case-sensitive exact match only | Match by 1-based index OR case-insensitive value |
+| Unmatched text routed to `messageHandler` | Silently ignore non-matching replies while prompt pending |
+| `options=[]` hangs forever | Return `''` immediately on empty options |
+
+**Edge cases handled:** Pre-aborted signal, mid-wait abort, empty options, stray text.
+
+**26 tests pass** covering all cases.
+
+---
+
+### Jun — P2a-6: Teams Conformance Test Suite (8192f50)
+
+New file: `tests/channel/conformance/teams.conformance.test.ts`
+
+**52 tests:**
+- Mandatory tests (send, split, format, capabilities) — all pass
+- Optional capability tests (thread creation, streaming, edits, prompts) — correctly skipped per flags
+- Adapter contract enforcement — no defects
+
+**Result:** All 52 pass; Teams adapter validated against port contract.
+
+---
+
+### Health Metrics
+
+- **Commits:** 5 (one per agent + Noble Six lead)
+- **Test suite:** 1139 tests pass (baseline 1091 + 48 new)
+  - Kat: 59 (formatting) + 26 (promptUser) = 85
+  - Jun: 52 (conformance) = 52
+  - Net: 137 new; baseline regression = none
+- **Code cleanliness:** `tsc` clean, `npm run lint` clean
+- **Dependencies:** No new packages
+- **Branch readiness:** Squash-merge candidate to `main`
+

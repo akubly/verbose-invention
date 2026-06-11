@@ -95,6 +95,41 @@ The relay must gate every optional-method call on the corresponding capability f
 
 6. **8 open decisions flagged for Aaron** including supportsMessageEdit, poll interval, I4 sequencing, Adaptive Cards vs HTML, secret storage, test team target, AFK mode scope, pairing flow.
 
+## 2026-06-10 — P2a-1 (I4): Optional createThread Refactor
+
+**Branch:** `user/aaron/phase2a` (commit: 71054e7)
+
+**Mechanism chosen: TypeScript optional method (`createThread?`).**
+
+Rationale: idiomatic TS, zero runtime overhead, no discriminated union needed, and the existing capability flag (`supportsThreadCreation`) already serves as the semantic gate. A caller that respects both the flag and method presence gets the full guard.
+
+**Caller-guard pattern** (documented in port.ts TSDoc, for Carter/Jun to follow exactly):
+```typescript
+if (!channel.capabilities.supportsThreadCreation || !channel.createThread) {
+  throw new Error(`[caller] createThread not supported by ${channel.name}`);
+}
+const ctx = await channel.createThread(channelId, title);
+```
+
+**Files touched:**
+- `src/channel/port.ts` — `createThread?` (optional method), updated TSDoc with caller-guard example
+- `tests/channel/conformance/runner.ts` — section 6 conformance tests updated:
+  - `supportsThreadCreation=true`: asserts method is present on real adapter AND returns valid ChannelContext
+  - `supportsThreadCreation=false`: kit does NOT call createThread; asserts capability flag only
+  - Fallback matrix: added "method absent" test showing caller-guard pattern; clarified FakeChannel's throw is one valid implementation (absence is equally valid)
+
+**Unchanged:** `src/channel/telegram/index.ts` (still implements `createThread`; behavior byte-identical), `tests/channel/conformance/FakeChannel.ts` (still implements `createThread` and throws when `supportsThreadCreation=false`).
+
+**No production callers to update:** `afkMode.ts` calls `this.bot.api.createForumTopic()` directly; the relay never calls `createThread`. This is by design — AFK mode is Telegram-specific and bypasses the port.
+
+**Test delta:** 1002 passing (+2 net new tests). tsc + lint clean.
+
+**Downstream notes for Carter (P2a-3):** TeamsChannel must declare `supportsThreadCreation: false` and may simply omit the `createThread` method entirely — no boilerplate throwing method required.
+
+**Downstream notes for Jun (P2a-6):** The Teams conformance test will get the `supportsThreadCreation=false` path in the runner, which verifies capability=false and does NOT call createThread.
+
+---
+
 ## Learnings
 
 ### Phase 2 Planning: Contract Changes Gate the Fork

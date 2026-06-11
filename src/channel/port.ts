@@ -230,14 +230,25 @@ export interface ChannelPort {
   /**
    * Create a new thread/topic in the channel.
    *
-   * Only callable when capabilities.supportsThreadCreation is true.
-   * Core MUST check the capability before calling.
+   * This is an OPTIONAL method. Adapters with `supportsThreadCreation=false`
+   * are NOT required to implement it. Adapters with `supportsThreadCreation=true`
+   * MUST implement it and return a valid ChannelContext.
+   *
+   * Caller guard pattern (callers MUST use this before invoking):
+   * ```typescript
+   * if (!channel.capabilities.supportsThreadCreation || !channel.createThread) {
+   *   throw new Error(`[caller] createThread not supported by ${channel.name}`);
+   * }
+   * const ctx = await channel.createThread(channelId, title);
+   * ```
+   *
+   * Core MUST NOT call this method when supportsThreadCreation is false.
    *
    * @param channelId - The channel to create the thread in.
    * @param title     - Human-readable thread title / topic name.
    * @returns A ChannelContext for the newly created thread.
    */
-  createThread(channelId: string, title: string): Promise<ChannelContext>;
+  createThread?(channelId: string, title: string): Promise<ChannelContext>;
 
   // ── Inbound ─────────────────────────────────────────────────────
 

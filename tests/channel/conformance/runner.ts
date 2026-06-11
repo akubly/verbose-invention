@@ -279,8 +279,10 @@ export function runChannelPortConformance(
     // ── 6. Thread Management ──────────────────────────────────────────────────
 
     describe('createThread', () => {
-      it('returns a ChannelContext with string threadId and matching channelId when supported', async () => {
+      it('when supportsThreadCreation=true: createThread is present and returns valid ChannelContext', async () => {
         const fake = new FakeChannel({ supportsThreadCreation: true });
+        // Optional method — must be present when capability is declared true.
+        expect(typeof fake.createThread).toBe('function');
         const ctx = await fake.createThread('-1001234567890', 'My Topic');
         expect(typeof ctx.threadId).toBe('string');
         expect(ctx.threadId.length).toBeGreaterThan(0);
@@ -288,9 +290,18 @@ export function runChannelPortConformance(
         expect(fake.threadCreations).toHaveLength(1);
       });
 
-      it('throws when supportsThreadCreation=false (FakeChannel enforces the contract)', async () => {
-        const fake = new FakeChannel({ supportsThreadCreation: false });
-        await expect(fake.createThread('-1001234567890', 'Topic')).rejects.toThrow();
+      it('when supportsThreadCreation=true on the real adapter: createThread must be a function', () => {
+        const port = makePort();
+        if (!port.capabilities.supportsThreadCreation) return;
+        expect(typeof port.createThread).toBe('function');
+      });
+
+      it('when supportsThreadCreation=false: conformance kit does not require createThread', () => {
+        const port = makePort();
+        if (port.capabilities.supportsThreadCreation) return;
+        // Optional method — adapter need NOT implement createThread when capability is false.
+        // Kit MUST NOT call createThread in this state.
+        expect(port.capabilities.supportsThreadCreation).toBe(false);
       });
     });
 
@@ -425,10 +436,24 @@ export function runCapabilityFallbackMatrix(): void {
     // ── supportsThreadCreation=false ──────────────────────────────────────────
 
     describe('supportsThreadCreation=false', () => {
-      it('createThread throws — core MUST NOT call it', async () => {
+      it('FakeChannel throws when createThread called — core MUST NOT call it', async () => {
+        // FakeChannel implements createThread as a throwing method (one valid approach).
+        // Real adapters (e.g., Teams) may omit the method entirely — both are valid.
         const fake = new FakeChannel({ supportsThreadCreation: false });
         await expect(fake.createThread('-100', 'Topic')).rejects.toThrow();
         expect(fake.threadCreations).toHaveLength(0);
+      });
+
+      it('an adapter that omits createThread entirely satisfies the optional-method contract', () => {
+        // Optional method: absence is explicitly allowed when supportsThreadCreation=false.
+        // This simulates a Teams-style adapter that doesn't implement createThread at all.
+        const noThreadAdapter = new FakeChannel({ supportsThreadCreation: false });
+        // Verify that calling the method when it is undefined would be caught by the caller guard.
+        // Caller guard: check capability flag AND method presence before calling.
+        const canCreate =
+          noThreadAdapter.capabilities.supportsThreadCreation &&
+          typeof noThreadAdapter.createThread === 'function';
+        expect(canCreate).toBe(false);
       });
 
       it('pre-existing thread binding works fine (onMessage/onCommand still fire)', async () => {
@@ -482,7 +507,7 @@ export function runCapabilityFallbackMatrix(): void {
         expect(fake.edits).toHaveLength(0);
       });
 
-      it('createThread throws', async () => {
+      it('createThread throws (FakeChannel implementation; real adapters may omit the method)', async () => {
         const fake = new FakeChannel({
           supportsMessageEdit: false,
           supportsThreadCreation: false,

@@ -130,9 +130,13 @@ export class TeamsChannel implements ChannelPort {
     signal?: AbortSignal,
   ): Promise<string> {
     if (signal?.aborted) return '';
+    if (options.length === 0) return '';
 
-    const optionLines = options.map((o) => `  ${o.value}: ${o.label}`).join('\n');
-    await this.sendMessage(ctx, `${question}\n\nOptions:\n${optionLines}`);
+    const optionLines = options.map((o, i) => `  ${i + 1}. ${o.label}`).join('\n');
+    await this.sendMessage(
+      ctx,
+      `${question}\n\nOptions:\n${optionLines}\n\nReply with the option number or name.`,
+    );
 
     return new Promise<string>((resolve) => {
       this.pendingTextPrompt = { options, resolve };
@@ -168,13 +172,24 @@ export class TeamsChannel implements ChannelPort {
    */
   protected dispatchInboundMessage(ctx: ChannelContext, text: string): Promise<void> {
     if (this.pendingTextPrompt) {
-      const matched = this.pendingTextPrompt.options.find((o) => o.value === text);
+      const { options, resolve } = this.pendingTextPrompt;
+      const normalised = text.trim().toLowerCase();
+
+      // Match by 1-based index ("1", "2", …) or by option value (case-insensitive).
+      const byIndex = /^\d+$/.test(normalised)
+        ? options[parseInt(normalised, 10) - 1]
+        : undefined;
+      const matched = byIndex ?? options.find((o) => o.value.toLowerCase() === normalised);
+
       if (matched) {
-        const { resolve } = this.pendingTextPrompt;
         delete this.pendingTextPrompt;
         resolve(matched.value);
         return Promise.resolve();
       }
+
+      // Invalid reply while a prompt is pending: silently ignore — do NOT route
+      // to the message handler, which would confuse the relay with a stray message.
+      return Promise.resolve();
     }
 
     if (this.messageHandler) {

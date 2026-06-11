@@ -92,3 +92,73 @@ Permissive "numeric key" branch in `load()` let mismatched entries silently re-k
 - PR #11 round-4 (2026-06-09): tightened toTelegramTopicId() to positive-integer-only (Number.isInteger(n) && n > 0), rejecting '0', whitespace, negatives, and non-integers that Number.isFinite() previously accepted; doc-only fix to port.ts supportsInteractivePrompts=false note to reflect that the adapter owns the text-fallback in promptUser(), not the core.
 - PR #11 round-5 (2026-06-09): log 'Channel starting' BEFORE await channel.start() and 'Channel started' AFTER it resolves — "started" should only print when startup actually succeeded, not before it completes.
 - PR #11 round-6 (2026-06-09): added validateEntry() guards on register() and move() write paths — fail-fast with a clear Error before persisting, symmetric with the load-path guard; prevents invalid entries from reaching disk and being silently dropped on next load().
+
+### P2a-2 + P2a-3 — Teams env config and adapter stub (2026-06-10, commit 1b4862a)
+
+**TEAMS_* env var names (P2a-2):**
+- `TEAMS_TENANT_ID` → `cfg.teamsTenantId` — Azure AD tenant ID
+- `TEAMS_CLIENT_ID` → `cfg.teamsClientId` — Azure AD application (client) ID
+- `TEAMS_CLIENT_SECRET` → `cfg.teamsClientSecret` — Azure AD client secret
+- `TEAMS_TEAM_ID` → `cfg.teamsTeamId` — Teams team ID (GUID); needed for Graph endpoint /teams/{team-id}/channels/{channel-id}/messages
+- `TEAMS_CHANNEL_ID` → `cfg.teamsChannelId` — Teams channel ID within the team
+
+All five fields are type `string | undefined` (required properties, NOT optional `?`) in `EnvConfig`. They are populated only when `reachChannel === 'teams'`; otherwise remain `undefined`. Validation uses the same fail-fast `[reach] Fatal:` pattern as the Telegram block.
+
+**File paths:**
+- `src/config/env.ts` — EnvConfig interface extended + parseEnv() Teams block
+- `.env.example` — Teams section added (all five vars documented with comments)
+- `src/channel/teams/index.ts` — TeamsChannel class + self-registration
+- `src/main.ts` — `import './channel/teams/index.js'` side-effect import added
+- `tests/integration/main-composition.test.ts` — added `vi.mock` for teams index to suppress registerChannel during registry mock
+
+**TeamsChannel capability descriptor (P2a-3):**
+```
+supportsMessageEdit:       false   (OD-1)
+supportsThreadCreation:    false   (I4 optional method — createThread is OMITTED entirely)
+supportsInteractivePrompts: false  (text-fallback; Adaptive Cards in Phase 2b)
+supportsStreaming:          false   (OD-2)
+maxMessageLength:          28000
+```
+
+**Stub method list and behavior:**
+- `start()` → throws `Error('[teams] not configured for live Graph')` — Phase 2b wires Graph polling
+- `stop()` → resolves (no-op; no connection in stub mode)
+- `sendMessage(ctx, text)` → returns `{ id: String(++counter) }` — in-memory, no Graph call
+- `editMessage(ctx, ref, text)` → returns `false` — supportsMessageEdit=false
+- `formatForTransport(markdown)` → identity (returns input unchanged)
+- `splitMessage(text, footer?)` → character-boundary split at maxMessageLength (28000)
+- `promptUser(ctx, question, options, signal?)` → text-fallback: sends question+options as plain text, waits for matching inbound text or abort
+- `onMessage(handler)` → stores handler
+- `onCommand(command, handler)` → stores in Map
+- `dispatchInboundMessage(ctx, text)` → internal: resolves pending prompt or fires message handler (Phase 2b polling will call this)
+- `dispatchInboundCommand(command, ctx, args)` → internal: dispatches to registered command handler
+- NO `createThread()` — omitted per I4 optional-method contract (supportsThreadCreation=false)
+
+**promptUser signature (for Kat, P2a-5 text fallback):**
+```typescript
+async promptUser(
+  ctx: ChannelContext,
+  question: string,
+  options: readonly PromptOption[],
+  signal?: AbortSignal,
+): Promise<string>
+```
+The stub sends `question + "\n\nOptions:\n" + option lines` via sendMessage, then waits. `dispatchInboundMessage` resolves the pending prompt when text matches an option value.
+
+**registerChannel pattern:**
+```typescript
+registerChannel('teams', (cfg) => {
+  if (!cfg.teamsTenantId || !cfg.teamsClientId || !cfg.teamsClientSecret) {
+    throw new Error('[teams] TEAMS_TENANT_ID, TEAMS_CLIENT_ID, and TEAMS_CLIENT_SECRET are required when REACH_CHANNEL=teams');
+  }
+  if (!cfg.teamsTeamId || !cfg.teamsChannelId) {
+    throw new Error('[teams] TEAMS_TEAM_ID and TEAMS_CHANNEL_ID are required when REACH_CHANNEL=teams');
+  }
+  return new TeamsChannel();
+});
+```
+
+**exactOptionalPropertyTypes gotcha:** `src/` is checked with `exactOptionalPropertyTypes: true`. Assigning `= undefined` to an optional property (`?`) fails. Use `delete this.prop` instead. FakeChannel.ts (in tests/) avoids this because tests are excluded from tsconfig.
+
+**main-composition.test.ts pattern:** When adding a side-effect import to main.ts that calls `registerChannel`, the integration test that mocks `registry.js` without `registerChannel` will fail. Fix by adding `vi.mock('../../src/channel/teams/index.js', () => ({}))` alongside the existing Telegram mock.
+

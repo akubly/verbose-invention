@@ -32,4 +32,26 @@ F1 blocker verified in commit 2b5e4a2 (9 new relay capability tests). Reference:
 
 **PR #11 mock-contract fix (2026-06-07):** Fixed `editMessage: vi.fn().mockResolvedValue(undefined)` → `mockResolvedValue(true)` in 6 test files (cloud-review-1.test.ts, handlers.slashGuard.test.ts, cwdCommand.test.ts, handlers.test.ts, newCwdFlag.test.ts, resume.test.ts) to match ChannelPort's `Promise<boolean>` contract and prevent undefined-as-falsy from triggering relay fallback paths in tests. 972 tests green, tsc+lint clean.
 
+**P2a-6 Teams conformance wiring (2026-06-10):** Created `tests/channel/conformance/teams.conformance.test.ts` — 52 new tests green. Full suite: 1139 passing, tsc+lint clean.
+
+---
+
+## Learnings
+
+**P2a-6: conformance kit against a stub adapter (skipLifecycle + no-dependency pattern, 2026-06-10):**
+
+1. **skipLifecycle + no mock injection.** `TeamsChannel` has no constructor parameters — it is self-contained in-memory. `runChannelPortConformance(() => new TeamsChannel(), { name: 'TeamsChannel', skipLifecycle: true })` is sufficient for the generic kit. The `skipLifecycle: true` flag causes lifecycle `it` blocks to return early without calling `start()`/`stop()`, so the deliberate start-throws behavior does not fail those tests.
+
+2. **I4 optional-createThread assertions.** When `supportsThreadCreation=false` and `createThread` is absent, three assertions lock in the I4 contract:
+   - `expect(ch.capabilities.supportsThreadCreation).toBe(false)` — capability flag
+   - `expect(ch.createThread).toBeUndefined()` — method absence (not just throws)
+   - Caller-guard evaluation: `ch.capabilities.supportsThreadCreation && typeof ch.createThread === 'function'` → `false`
+   These are in a dedicated describe block so they are visible and can be adapted for any future absent-method adapter.
+
+3. **Protected dispatch via subclass (TestableTeamsChannel).** `dispatchInboundMessage` and `dispatchInboundCommand` are `protected` on `TeamsChannel`. A minimal `TestableTeamsChannel extends TeamsChannel` subclass that exposes `injectInboundText` and `injectCommand` wrappers allows prompt/inbound tests without touching src/. This is cleaner than `(ch as any).dispatch`.
+
+4. **Microtask flush required for promptUser timing.** `TeamsChannel.promptUser` does `await this.sendMessage(...)` before setting `pendingTextPrompt` and registering the AbortSignal listener. Tests that inject inbound text or fire an abort signal must flush the microtask queue first (via `await new Promise<void>(resolve => setTimeout(resolve, 0))`) or the inject/abort races ahead of the setup and the promise never resolves.
+
+**Test file path:** `tests/channel/conformance/teams.conformance.test.ts`
+
 ---

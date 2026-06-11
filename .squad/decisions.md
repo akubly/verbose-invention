@@ -480,3 +480,361 @@ Per Aaron's Option A dispositions, the following items are deferred to Phase 2:
 - **Test suite:** 963 tests green, tsc+lint clean
 - **Final verdict:** PHASE-1 COMPLETE, READY FOR SHIP-TO-PR
 
+---
+
+## Phase 2 — Teams Adapter (Corp-Fork) — Kickoff Plan [APPROVED]
+
+**Status:** APPROVED (Aaron, 2026-06-10)
+**Author:** Noble Six (Lead/Architect)
+**Date drafted:** 2026-06-10
+**Branch base:** main (Phase 1 merged as ddf023c)
+
+### 2.1 Pre-reqs / Corp Environment Checklist
+
+Everything below must exist in the corp tenant before the adapter can authenticate or send messages.
+
+#### 2.1.1 Azure AD App Registration
+
+| Step | Detail |
+|------|--------|
+| Register app | Azure Portal → App registrations → New registration. Single-tenant (corp tenant only). No redirect URI needed (daemon/client-credentials flow). |
+| Authentication | Client-credentials flow (OAuth 2.0 client_credentials grant). No user sign-in; the app acts as itself. |
+| Certificate or secret | **Recommended: certificate** for production (longer lifetime, non-extractable). Client secret acceptable for initial development (shorter rotation). |
+| Record IDs | Tenant ID (`TEAMS_TENANT_ID`), Application/Client ID (`TEAMS_CLIENT_ID`). |
+
+#### 2.1.2 Microsoft Graph API Permissions (Application)
+
+All permissions are **Application** type (not Delegated), requiring **admin consent**.
+
+| Permission | Type | Justification |
+|------------|------|---------------|
+| `ChannelMessage.Read.All` | Application | Poll inbound messages from the target Teams channel. |
+| `ChannelMessage.Send` | Application | Send outbound messages (bot responses) to the channel. |
+| `Chat.ReadWrite.All` | Application | Required if targeting 1:1 or group chats instead of/in addition to team channels. Can be omitted if only targeting team channels. |
+| `ChannelMessage.ReadWrite.All` | Application | Required for editing sent messages (PATCH). Superset of Send+Read. **Use this instead of the two individual Read/Send permissions if supportsMessageEdit=true.** |
+
+#### 2.1.3 Admin Consent
+
+One-time admin consent required for application permissions via Azure Portal → Enterprise applications → Permissions → Grant admin consent.
+
+#### 2.1.4 Secret/Certificate Storage
+
+- **Secrets MUST NOT be in the repo** (not in `.env`, not in config.json, not in source).
+- Corp environment options (Aaron to confirm which):
+  - Azure Key Vault (preferred — auto-rotation, audit trail)
+  - Environment variables set by the corp deployment pipeline
+  - Local `.env.local` file excluded via `.gitignore` (development only)
+- The adapter reads credentials from `EnvConfig` (resolved at startup by `parseEnv()`), never from `process.env` directly.
+
+#### 2.1.5 Test Team/Channel
+
+| Item | Detail |
+|------|--------|
+| Target Team | A dedicated test Team (or existing team with a test channel). |
+| Target Channel | A specific channel within the team for Reach messages. |
+| Record IDs | Team ID (`TEAMS_TEAM_ID`), Channel ID (`TEAMS_CHANNEL_ID`). Both are GUIDs from Graph. |
+| Verification | Post a test message via Graph Explorer to confirm permissions work before writing adapter code. |
+
+### 2.2 TeamsChannel Adapter Design
+
+#### 2.2.1 Module Structure
+
+```
+src/channel/teams/
+├── index.ts          # TeamsChannel class + registerChannel('teams', factory)
+├── graphClient.ts    # Graph REST HTTP client (auth, send, edit, poll)
+├── formatting.ts     # HTML/Adaptive Card formatting helpers
+└── types.ts          # Teams-specific types (GraphMessage, etc.)
+```
+
+#### 2.2.2 ChannelPort Method-by-Method Implementation
+
+| Method | Teams Implementation |
+|--------|---------------------|
+| `name` | `'teams'` |
+| `capabilities` | See §2.3 |
+| `start()` | Acquire OAuth token (client-credentials), validate permissions with a test Graph call, start the polling loop. |
+| `stop()` | Stop the polling loop, cancel any pending token refresh timers. |
+| `sendMessage(ctx, text)` | `POST /teams/{teamId}/channels/{channelId}/messages` with `body.content = formatForTransport(text)`, `body.contentType = 'html'`. Returns `MessageRef { id: graphMessageId }`. |
+| `editMessage(ctx, ref, text)` | `PATCH /teams/{teamId}/channels/{channelId}/messages/{messageId}` with updated `body.content`. Returns `true` on success, `false` on 429/failure. |
+| `formatForTransport(markdown)` | Convert raw markdown to Teams-compatible HTML. Teams supports a subset of HTML (`<b>`, `<i>`, `<code>`, `<pre>`, `<a>`, `<br>`, lists). |
+| `splitMessage(text, footer?)` | Split at `maxMessageLength` (28,000 chars for Graph messages). Simple character-boundary split with paragraph-break preference. |
+| `promptUser(ctx, question, options, signal?)` | `supportsInteractivePrompts=false` for v1 → **text-fallback path**: post the question + numbered options as a plain-text message, then wait for a matching inbound reply. Resolve on match or `''` on abort signal. |
+| `createThread(channelId, title)` | `supportsThreadCreation=false` → throws `Error('[teams] createThread not supported')`. |
+| `onMessage(handler)` | Stores the handler. The polling loop dispatches to it. |
+| `onCommand(command, handler)` | Stores the handler. The polling loop parses `/command args` prefix from inbound messages and dispatches. |
+
+#### 2.2.3 Capabilities Descriptor
+
+```typescript
+readonly capabilities: ChannelCapabilities = {
+  supportsMessageEdit: false,      // ← See locked decision below
+  supportsThreadCreation: false,
+  supportsInteractivePrompts: false, // text-fallback; Adaptive Cards in v2
+  supportsStreaming: false,
+  maxMessageLength: 28_000,
+};
+```
+
+#### 2.2.4 Formatting: HTML for v1, Adaptive Cards Deferred
+
+**v1 approach:** `formatForTransport()` converts raw markdown to Teams HTML subset:
+- `**bold**` → `<b>bold</b>`
+- `` `code` `` → `<code>code</code>`
+- Code fences → `<pre>code</pre>`
+- Links → `<a href="...">text</a>`
+- Line breaks → `<br>`
+- Lists → `<ul><li>` / `<ol><li>`
+
+Full Adaptive Card formatting is Phase 3 scope.
+
+#### 2.2.5 promptUser Text-Fallback Flow
+
+1. Post a message: `"🔐 Permission required: {question}\n\n1️⃣ {options[0].label}\n2️⃣ {options[1].label}\n\nReply with the number or value to choose."`
+2. Register a one-shot interceptor on the polling loop that watches for a reply matching an option value (or number).
+3. On match → resolve the promise with the matched option's `value`.
+4. On AbortSignal → resolve with `''`.
+5. Timeout (configurable, default 5 minutes) → resolve with `''` (same as abort).
+
+#### 2.2.6 Teams Concept Mapping
+
+| ChannelPort Concept | Teams Concept | Type |
+|---------------------|---------------|------|
+| `channelId` | Teams Channel ID (GUID) | Opaque string |
+| `threadId` | Reply chain root message ID (or `''` for top-level) | Opaque string |
+| `MessageRef.id` | Graph message ID | Opaque string |
+
+### 2.3 Inbound Polling Design
+
+#### 2.3.1 Polling Mechanism
+
+**Option A: Delta query** — `GET /teams/{teamId}/channels/{channelId}/messages/delta`
+- Returns only new/changed messages since last delta token (preferred).
+
+**Option B: List with filter** — `GET /teams/{teamId}/channels/{channelId}/messages?$top=25&$orderby=createdDateTime desc`
+- Requires client-side de-duplication (simpler but higher bandwidth).
+
+**Recommendation: Option A (delta query).** Falls back to Option B if delta is unavailable.
+
+#### 2.3.2 Poll Interval & Rate Budget
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| Poll interval | **3 seconds** | Balances responsiveness (~3s input latency) against rate limits. |
+| Rate budget (polling) | ~0.33 req/sec (1 request per 3s) | Leaves ~1.67 req/sec for outbound (send, token refresh). |
+| Rate budget (outbound) | ~1.5 req/sec | Sufficient for typical Reach response patterns (1–3 messages per interaction). |
+| Backoff on 429 | Exponential: 5s → 10s → 20s → 60s cap | Honor `Retry-After` header when present. |
+| Backoff on 5xx | Same exponential, reset on success. | |
+
+#### 2.3.3 De-duplication & Cursor Persistence
+
+- **Delta token** persisted to the same config directory as the session registry (`getReachDataDir()`). File: `teams-delta-token.json`.
+- On startup, if a persisted delta token exists, resume from it. If not (first run or token expired), do a full sync and discard historical messages.
+- **Edge case:** Delta tokens expire after ~30 days. If expired, fall back to full sync with timestamp filter.
+
+#### 2.3.4 Polling Loop → Handler Dispatch
+
+```
+poll() → parse messages → for each new message:
+  1. Extract text content from message body (strip HTML tags)
+  2. If text starts with '/command' → parse command name + args → dispatch to onCommand handler
+  3. Otherwise → dispatch to onMessage handler
+  4. Build ChannelContext: { channelId: teams channel ID, threadId: reply chain root ID or '' }
+```
+
+- The polling loop runs on a `setInterval` / recursive `setTimeout` with drift correction.
+- Errors in the polling loop are logged and retried; they do not crash the daemon.
+- The polling loop shares a rate-limiter with outbound calls (single token bucket for the app's Graph quota).
+
+### 2.4 Config & Selection
+
+#### 2.4.1 Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `REACH_CHANNEL=teams` | Yes | Selects the Teams transport. |
+| `TEAMS_TENANT_ID` | Yes | Azure AD tenant ID (GUID). |
+| `TEAMS_CLIENT_ID` | Yes | App registration client ID (GUID). |
+| `TEAMS_CLIENT_SECRET` | Yes* | Client secret (use `TEAMS_CLIENT_CERT_PATH` for cert-based auth instead). |
+| `TEAMS_CLIENT_CERT_PATH` | Alt* | Path to PFX/PEM certificate for client-credentials auth. |
+| `TEAMS_TEAM_ID` | Yes | Target Team ID (GUID). |
+| `TEAMS_CHANNEL_ID` | Yes | Target Channel ID within the Team (GUID). |
+
+\* One of `TEAMS_CLIENT_SECRET` or `TEAMS_CLIENT_CERT_PATH` is required. Validation enforces mutual exclusivity.
+
+#### 2.4.2 EnvConfig Extension
+
+```typescript
+export interface EnvConfig {
+  // ... existing fields ...
+  
+  // Teams-specific (defined when reachChannel === 'teams'; undefined otherwise)
+  teamsTenantId: string | undefined;
+  teamsClientId: string | undefined;
+  teamsClientSecret: string | undefined;
+  teamsClientCertPath: string | undefined;
+  teamsTeamId: string | undefined;
+  teamsChannelId: string | undefined;
+}
+```
+
+#### 2.4.3 Factory Registration
+
+```typescript
+registerChannel('teams', (cfg) => {
+  if (!cfg.teamsTenantId || !cfg.teamsClientId || !cfg.teamsTeamId || !cfg.teamsChannelId) {
+    throw new Error('[teams] Teams credentials are required (TEAMS_TENANT_ID, TEAMS_CLIENT_ID, TEAMS_TEAM_ID, TEAMS_CHANNEL_ID)');
+  }
+  if (!cfg.teamsClientSecret && !cfg.teamsClientCertPath) {
+    throw new Error('[teams] One of TEAMS_CLIENT_SECRET or TEAMS_CLIENT_CERT_PATH is required');
+  }
+  return new TeamsChannel(cfg);
+});
+```
+
+### 2.5 Corp-Fork Branching / Sync Strategy
+
+#### 2.5.1 Branch Model
+
+```
+main (open repo)
+  │
+  ├── feature/teams-contract    ← I4/I5 contract refactors (open, PR'd to main)
+  │
+  └── corp/teams-adapter        ← Corp fork branch
+        ├── rebases on main
+        ├── Adds: src/channel/teams/ (full adapter)
+        ├── Adds: Teams env config in src/config/env.ts
+        ├── Adds: import './channel/teams/index.js' in main.ts
+        └── Adds: .env.local.example (with placeholder TEAMS_* vars)
+```
+
+#### 2.5.2 What Lives Where
+
+| Component | Open Repo | Corp Fork |
+|-----------|-----------|-----------|
+| ChannelPort contract (port.ts) | ✅ Source of truth | Inherited via rebase |
+| I4/I5 contract changes | ✅ PR'd to main first | Inherited via rebase |
+| Transport registry | ✅ Source of truth | Inherited |
+| Conformance kit | ✅ Source of truth | Inherited + Teams conformance test added |
+| TeamsChannel adapter stub | ✅ (optional — can land as a types-only stub) | Full implementation |
+| TeamsChannel live implementation | ❌ | ✅ (graphClient, polling, formatting) |
+| Teams env config validation | ✅ (parseEnv Teams block) | Inherited |
+| Secrets / tenant config | ❌ Never | ✅ (.env.local, Key Vault) |
+| Integration tests (live Graph) | ❌ | ✅ Corp-only test suite |
+
+#### 2.5.3 Keeping the Diff Minimal
+
+- Corp branch diffs from main should be **only**:
+  1. `src/channel/teams/` directory (new files)
+  2. `src/config/env.ts` — Teams credential block (additive, no Telegram changes)
+  3. `src/main.ts` — one import line + one `if (cfg.reachChannel === 'teams')` guard
+  4. `tests/channel/conformance/teams.conformance.test.ts` (new file)
+  5. `.env.local.example` (new file)
+- No modifications to existing Telegram code, relay, session management, or core logic.
+
+### 2.6 How I4 & I5 Fold In
+
+#### 2.6.1 I4: Optional createThread Interface
+
+**Current state:** `createThread()` is a required method on ChannelPort. When `supportsThreadCreation=false`, the adapter must still implement the method (throwing an error).
+
+**Desired state:** Make `createThread` truly optional (discriminated union or conditional interface).
+
+**Recommendation: Refactor FIRST (in the open repo, before Teams adapter).**
+
+Reasoning:
+- The Teams adapter will have `supportsThreadCreation=false`. Under the current contract, it must implement a throwing `createThread()` — boilerplate that the I4 refactor eliminates.
+- Doing it in the open repo first means the conformance kit is updated once, and both Telegram and Teams adapters benefit.
+- Doing it opportunistically during Phase 2 risks the corp branch diverging from main on the contract file, creating rebase conflicts.
+
+**Scope:** Small refactor — ~50 lines in port.ts, ~20 lines in runner.ts, ~10 lines in TelegramChannel. Can be a single PR.
+
+#### 2.6.2 I5: ChannelMessage Union for Adaptive Cards
+
+**Current state:** `sendMessage()` and `editMessage()` accept `text: string`. There's no way to pass structured content (Adaptive Card JSON) through the port.
+
+**Recommendation: DEFER (do NOT refactor first).**
+
+Reasoning:
+- The Teams v1 adapter uses HTML formatting via `formatForTransport()` — it doesn't need Adaptive Cards yet.
+- The `ChannelMessage` union design depends on understanding what structured payloads Teams/Slack/Discord actually need. Designing it in the abstract risks over-engineering.
+- When Adaptive Cards become a real requirement (Phase 3), we'll have concrete use cases to drive the design.
+
+### 2.7 Phased Work Items with Owners
+
+#### 2.7.1 Phase 2a — Open Repo (no corp access required)
+
+| ID | Item | Owner | Description | Blocked? |
+|----|------|-------|-------------|----------|
+| P2a-1 | I4 contract refactor | Noble Six | Make `createThread` optional on ChannelPort. Update conformance kit. PR to main. | No |
+| P2a-2 | Teams env config | Carter | Add `TEAMS_*` validation block to `parseEnv()`, extend `EnvConfig` interface. Conditional on `reachChannel === 'teams'`. | No |
+| P2a-3 | Teams adapter stub | Carter | `src/channel/teams/index.ts` with `TeamsChannel` class, all methods stubbed (throw "not configured for live Graph"), capabilities declared. Passes conformance kit with `skipLifecycle: true`. `registerChannel('teams', factory)`. | Depends on P2a-1 |
+| P2a-4 | HTML formatting module | Kat | `src/channel/teams/formatting.ts` — markdown-to-HTML converter for Teams HTML subset. Unit-testable in open repo, no Graph dependency. | No |
+| P2a-5 | Text-prompt fallback design | Kat | Implement `promptUser` text-fallback in the adapter stub. Testable against FakeChannel pattern. | No |
+| P2a-6 | Conformance wiring | Jun | `tests/channel/conformance/teams.conformance.test.ts` — run conformance kit against TeamsChannel stub with mock Graph client. | Depends on P2a-3 |
+
+#### 2.7.2 Phase 2b — Corp Fork (requires corp access)
+
+| ID | Item | Owner | Description | Blocked? |
+|----|------|-------|-------------|----------|
+| P2b-1 | Azure AD app registration | Corp-side | Register app, configure permissions, admin consent. Record tenant/client IDs. | **Corp access** |
+| P2b-2 | Graph REST client | Carter | `src/channel/teams/graphClient.ts` — OAuth token acquisition (client-credentials), send, edit (if enabled), poll. Rate-limit-aware with shared token bucket. | **Corp access** (for live testing) |
+| P2b-3 | Polling loop | Carter | Delta query polling, cursor persistence, dispatch to onMessage/onCommand. Backoff on 429/5xx. | **Corp access** |
+| P2b-4 | Live adapter wiring | Carter | Connect graphClient to TeamsChannel methods. Replace stubs with real Graph calls. | Depends on P2b-1, P2b-2, P2b-3 |
+| P2b-5 | Teams formatting validation | Kat | Test HTML formatting in live Teams channel. Iterate on edge cases (code blocks, long messages, unicode). | **Corp access** |
+| P2b-6 | Integration testing | Jun | Run conformance kit against live TeamsChannel in corp. Validate polling latency, rate limits, message round-trip. | **Corp access**, depends on P2b-4 |
+| P2b-7 | Streaming UX validation | Noble Six | Confirm S1 (single final message, no edits) is acceptable UX. Measure actual latency. Document whether S2 (edit-based) is worth pursuing. | **Corp access** |
+| P2b-8 | ADR update | Noble Six | Update decisions.md with Phase 2 outcomes, lock capability decisions, document rate-limit findings. | After P2b-6/P2b-7 |
+
+### 2.8 Risks & Mitigations
+
+| Risk | Likelihood | Impact | Mitigation |
+|------|-----------|--------|------------|
+| Graph rate limits are tighter than documented | Medium | Polling becomes unreliable; outbound messages fail | Start with conservative 3s interval; implement adaptive backoff; monitor 429 response rates |
+| Delta query not available for channel messages with application permissions | Low | Must fall back to list+filter (Option B), higher bandwidth | Validate in corp before building the polling loop |
+| Admin consent blocked by corp IT policy | Low | Cannot proceed at all | Escalate early; have the app registration request ready before coding starts |
+| Corp branch diverges too far from main | Medium | Rebase pain | Keep diff minimal; land I4/env config in open repo first; frequent rebases |
+| Teams HTML rendering differs from documentation | Medium | Formatting looks wrong | Kat validates formatting in live Teams early (P2b-5); iterate |
+
+---
+
+## Phase 2 Locked Decisions (Aaron, 2026-06-10)
+
+Per Aaron's approval of the Phase 2 Kickoff Plan, the following decisions are LOCKED and supersede any conflicting recommendations:
+
+### OD-1: supportsMessageEdit = FALSE (v1)
+
+**Decision:** `supportsMessageEdit: false` for Teams adapter v1.
+
+**Rationale:** Rate-limit risk outweighs UX benefit when streaming is already disabled. With 3-second polling consuming ~0.33 req/sec, adding edits would consume additional budget. Graph API rate limits are ~2 req/sec shared across all operations. Revisit in Phase 3 with production rate-limit data.
+
+**Implication:** 
+- Require only `ChannelMessage.Read.All` + `ChannelMessage.Send` Graph permissions (narrower scope than `ChannelMessage.ReadWrite.All`).
+- Relay never calls `editMessage()` on Teams adapter (capability flag gates all calls).
+- HUD footer updates unavailable in v1; revisit if rate budget allows in Phase 3.
+
+### OD-2: Poll Interval = 3 Seconds
+
+**Decision:** Use 3-second polling interval as the default.
+
+**Rationale:** Balances UX responsiveness (~3s input latency) against rate-limit headroom. 1–2s risks throttling; 5–10s feels sluggish. Implement exponential backoff (5s → 10s → 20s → 60s) on 429/5xx errors.
+
+### OD-3: I4 Refactor First (in open repo)
+
+**Decision:** Refactor `createThread()` to optional in the open repo BEFORE the corp fork branches off.
+
+**Rationale:** Small PR (~80 lines total). Prevents the Teams adapter from implementing a boilerplate throwing method. Keeps both Telegram and Teams adapters clean. Doing it in the open repo first avoids rebase conflicts when the corp branch inherits the updated ChannelPort contract.
+
+**Implication:** P2a-1 (I4 refactor) is the first work item in Phase 2a; P2a-3 (Teams adapter stub) depends on it.
+
+### OD-4: I5 Deferred to Phase 3
+
+**Decision:** DEFER the `ChannelMessage` union (I5) to Phase 3. Do not refactor in Phase 2.
+
+**Rationale:** Teams v1 uses HTML formatting via `formatForTransport()` — no need for structured payloads yet. Designing a `ChannelMessage` union in the abstract risks over-engineering. Adaptive Cards require concrete use cases (interactive prompts, rich formatting) that we don't have yet. Revisit in Phase 3 when Teams interactive features are in scope.
+
+---
+
+*Phase 2 plan is ready for execution. Phase 2a (open repo) kicks off next session with work items P2a-1 through P2a-6. Phase 2b (corp fork) begins after P2b-1 (Azure AD app registration) is complete.*
+

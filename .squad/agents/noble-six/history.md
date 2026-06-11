@@ -77,6 +77,37 @@ The relay must gate every optional-method call on the corresponding capability f
 
 ---
 
+## 2026-06-10 — Phase 2 Teams Adapter Kickoff Plan
+
+**Status:** DRAFT plan written to `.squad/decisions/inbox/noble-six-phase2-teams-kickoff.md`, pending Aaron's approval.
+
+**Key planning conclusions:**
+
+1. **Capabilities:** Recommended `supportsMessageEdit=false` for v1 (rate-limit risk outweighs benefit when streaming is already disabled), `supportsInteractivePrompts=false` (text-fallback; Adaptive Cards deferred), `supportsThreadCreation=false`, `supportsStreaming=false`. maxMessageLength=28,000.
+
+2. **I4/I5 disposition:** Recommended I4 (optional createThread) as a refactor-first in the open repo — small PR, prevents boilerplate throwing method in Teams adapter. I5 (ChannelMessage union for Adaptive Cards) deferred — no concrete use case yet, risk of premature abstraction.
+
+3. **Polling design:** Delta query preferred over list+filter. 3-second poll interval balances UX latency vs rate budget (~0.33 req/sec polling, ~1.67 req/sec outbound).
+
+4. **Corp-fork strategy:** Minimal diff — only `src/channel/teams/`, env config block, one import line in main.ts. Rebase on main. I4 and env config land in open repo first to minimize divergence.
+
+5. **Work split:** Phase 2a (open repo, no corp access) vs Phase 2b (corp fork). Carter owns adapter/relay/polling/config, Kat owns formatting/UX, Jun owns conformance/integration, Noble Six owns I4 contract change + ADR, corp-side owns app registration/secrets/validation.
+
+6. **8 open decisions flagged for Aaron** including supportsMessageEdit, poll interval, I4 sequencing, Adaptive Cards vs HTML, secret storage, test team target, AFK mode scope, pairing flow.
+
+## Learnings
+
+### Phase 2 Planning: Contract Changes Gate the Fork
+I4/I5 are open-repo changes to the shipped ChannelPort contract. Doing I4 first (before the corp fork branches) prevents rebase conflicts on port.ts. I5 can safely defer because the v1 adapter doesn't need structured payloads.
+
+### Rate-Limit Budget Is a Shared Resource
+Graph API rate limits are per-app, not per-endpoint. The polling loop and outbound sends share the same budget. This means capability decisions (supportsMessageEdit, supportsStreaming) have rate-budget implications — not just UX implications.
+
+### Corp-Fork Diff Discipline
+The fewer files the corp branch touches in shared code, the cleaner rebases are. Landing env config and contract refactors in the open repo first means the corp branch only adds new files (src/channel/teams/*) plus one import line.
+
+---
+
 ## Archive
 
 Earlier phases (1–9), orchestration details, and detailed learnings from Phase 7–9 work archived in history-archive.md (40.4 KB).

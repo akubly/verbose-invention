@@ -1,6 +1,8 @@
-# Kat — History (Phase 1 Complete 2026-06-06, commit e69e50b; Persona Review Cycle 2 PASSED 2026-06-07)
+# Kat — History (Phase 1 Complete 2026-06-06, commit e69e50b; Persona Review Cycle 2 PASSED 2026-06-07; Phase 2 Queued 2026-06-11)
 
 ---
+
+**PHASE 2 KICKOFF (2026-06-11):** Phase 2 Teams adapter plan APPROVED by Aaron. Kat assigned to **P2a-4 (HTML formatting module)** and **P2a-5 (Text-prompt fallback design)** in Phase 2a (open repo, no corp access). P2a-4 creates `src/channel/teams/formatting.ts` — markdown-to-HTML converter for Teams HTML subset (`<b>`, `<i>`, `<code>`, `<pre>`, `<a>`, `<br>`, lists). Unit-testable in open repo, no Graph dependency. P2a-5 implements `promptUser` text-fallback in the adapter stub: post question + numbered options as plain-text message, resolve on polling match. Testable against FakeChannel pattern. Kat also assigned to P2b-5 (Teams formatting validation) in Phase 2b (corp fork, after corp access) — validate HTML formatting in live Teams channel, iterate on edge cases. Locked decisions: OD-1 (edit=false), OD-2 (poll 3s), OD-3 (I4 refactor-first), OD-4 (I5 defer). Adaptive Cards deferred to Phase 3.
 
 **PHASE 1 COMPLETE + PERSONA REVIEW CYCLE PASSED (2026-06-07):** Shipped handler migration onto ChannelPort. Single-bot consolidation complete; TelegramChannel owns only grammY Bot instance. All 8 commands registered via channel.onCommand(); relay catch-all via channel.onMessage(). Synthetic context adapters for /status and /cwd maintain handler API compatibility. F1 blocker (relay capability branching) resolved by Carter + verified by Jun. **Two-cycle persona review completed:**
 - **Cycle 1 findings:** 3 blocking, 5 important, 4 minor

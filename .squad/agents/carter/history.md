@@ -1,6 +1,8 @@
-# Carter — History (Phase 1 Complete 2026-06-06, commit d84dc0c; Persona Review Cycle 2 PASSED 2026-06-07)
+# Carter — History (Phase 1 Complete 2026-06-06, commit d84dc0c; Persona Review Cycle 2 PASSED 2026-06-07; Phase 2 Queued 2026-06-11)
 
 ---
+
+**PHASE 2 KICKOFF (2026-06-11):** Phase 2 Teams adapter plan APPROVED by Aaron. Carter assigned to **P2a-2 (Teams env config)** and **P2a-3 (Teams adapter stub)** in Phase 2a (open repo, no corp access). P2a-2 adds `TEAMS_*` validation block to `parseEnv()`, extends `EnvConfig` interface with Teams-specific fields (teamsTenantId, teamsClientId, etc.), conditional on `reachChannel === 'teams'`. P2a-3 creates `src/channel/teams/index.ts` with `TeamsChannel` class, all methods stubbed (throw "not configured for live Graph"), capabilities declared (`supportsMessageEdit=false`, `supportsThreadCreation=false`, `supportsInteractivePrompts=false`, `supportsStreaming=false`, `maxMessageLength=28000`). P2a-3 passes conformance kit with `skipLifecycle: true`. Carter also assigned to P2b-2 (graphClient), P2b-3 (polling loop), P2b-4 (live wiring) in Phase 2b (corp fork, after corp access). Locked decisions: OD-1 (edit=false), OD-2 (poll 3s), OD-3 (I4 refactor-first), OD-4 (I5 defer).
 
 **PHASE 1 COMPLETE + PERSONA REVIEW CYCLE PASSED (2026-06-07):** Shipped core rewire for channel abstraction. SessionEntry IDs migrated to strings (threadId, channelId); TelegramChannel adapter implements ChannelPort interface with full capability descriptor; relay refactored onto ChannelPort with capability-aware branching; startup wiring complete for REACH_CHANNEL env var. **Two-cycle persona review completed:**
 - **Cycle 1 findings:** 3 blocking, 5 important, 4 minor

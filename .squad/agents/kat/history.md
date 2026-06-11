@@ -57,3 +57,39 @@ The duplicate `bot.catch()` in `handlers.ts` was removed. The single canonical e
 **Three contract violations fixed.** (1) **Abort→''**: `runPermissionPrompt` now resolves with `PromptOutcome` ('approve'|'deny'|'aborted') instead of `boolean`, so `promptUserVerbatimOutcome` can surface the 'aborted' value. `TelegramChannel.promptUser` maps 'aborted'→'' per the ChannelPort spec — previously both deny and abort were collapsing to `false`/`'deny'`, making them indistinguishable. (2) **Real option values**: adapter now returns `approveOption.value` / `denyOption.value` from the passed options array rather than hardcoding string literals, so if the relay ever changes its option values the adapter follows automatically. (3) **Runtime guard**: `promptUser` validates that `options` is exactly `[{value:'approve',...},{value:'deny',...}]` and throws `'[telegram] promptUser only supports a two-option approve/deny prompt'` for anything else — protects against future non-permission callers silently getting mis-rendered output. Relay alignment verified: relay passes `[{value:'approve',...},{value:'deny',...}]` and checks `result === 'approve'` — the returned values match exactly.
 
 ---
+
+### P2a-4 — Teams HTML formatting module (2026-06-10, commit ca7a0ea)
+
+Created `src/channel/teams/formatting.ts` — a pure markdown-to-HTML converter for Teams channel messages.
+
+**Exported public API:**
+```typescript
+export function formatForTransport(markdown: string): string
+```
+Single export. Accepts raw markdown; returns Teams-compatible HTML ready for `body.content` with `body.contentType = 'html'`. No Graph / SDK dependencies.
+
+**Teams HTML subset targeted:**
+`<b>`, `<i>`, `<code>`, `<pre><code>`, `<a href="...">`, `<br>`, `<ul>/<li>`, `<ol>/<li>`
+
+**Markdown conversions:**
+- `**text**` / `__text__` → `<b>text</b>`
+- `*text*` / `_text_` → `<i>text</i>`
+- `` `code` `` → `<code>code</code>` (content HTML-escaped, no inner formatting)
+- ` ```[lang]\ncode\n``` ` → `<pre><code>code</code></pre>` (lang attribute stripped for safety)
+- `[text](url)` → `<a href="url">text</a>` (href uses `escapeHtmlAttr` — `&`, `<`, `>`, `"` all escaped)
+- `- item` / `* item` → `<ul><li>item</li></ul>` (consecutive lines grouped)
+- `1. item` → `<ol><li>item</li></ol>` (consecutive lines grouped)
+- Plain-text newline → `<br>` (paragraph lines joined)
+- Blank line → `<br>` (double-break paragraph separator via paragraph trailing `<br>` + blank's `<br>`)
+
+**Escaping approach:**
+- `escapeHtml()` for body text: `&` → `&amp;`, `<` → `&lt;`, `>` → `&gt;`
+- `escapeHtmlAttr()` for `href` values: adds `"` → `&quot;`
+- Code blocks and inline code escape with `escapeHtml()` — content verbatim but entities safe
+- Inline processing uses a character-scanner loop (`processInline`) with recursive calls for nested formatting (e.g., bold containing italic)
+
+**Test file:** `tests/channel/teams/formatting.test.ts` — 59 tests.
+
+**Note for P2a-5:** The adapter stub (`src/channel/teams/index.ts`, Carter) has `formatForTransport` as an identity stub. When wiring P2a-5 (or P2b-5 corp validation), replace the stub's `formatForTransport` with a delegation to this module's `formatForTransport`. Import: `import { formatForTransport } from './formatting.js';`
+
+---

@@ -93,3 +93,49 @@ Single export. Accepts raw markdown; returns Teams-compatible HTML ready for `bo
 **Note for P2a-5:** The adapter stub (`src/channel/teams/index.ts`, Carter) has `formatForTransport` as an identity stub. When wiring P2a-5 (or P2b-5 corp validation), replace the stub's `formatForTransport` with a delegation to this module's `formatForTransport`. Import: `import { formatForTransport } from './formatting.js';`
 
 ---
+
+### P2a-5 — TeamsChannel.promptUser text-fallback design + coverage (2026-06-10, commit 3c4f25b)
+
+Reviewed and fixed Carter's `promptUser` stub in `src/channel/teams/index.ts`. Created `tests/channel/teams/promptUser.test.ts` — 26 tests.
+
+**Changes made to `src/channel/teams/index.ts`:**
+
+1. **`promptUser` — rendering format changed:**
+   - Options rendered as 1-based numbered list: `  1. ✅ Approve`, `  2. ❌ Deny`
+   - Footer appended: `\n\nReply with the option number or name.`
+   - Added early-return `''` for empty `options` array (would have hung forever)
+
+2. **`dispatchInboundMessage` — matching hardened:**
+   - Normalises input: `text.trim().toLowerCase()`
+   - Accepts 1-based index reply: `"1"` selects `options[0]`, `"2"` selects `options[1]`, etc.
+   - Accepts option value case-insensitively: `"APPROVE"`, `"Deny"`, `"  deny  "` all match
+   - Invalid/unmatched replies while a prompt is pending are **silently ignored** — the message is NOT routed to the registered `onMessage` handler (prevents relay seeing stray "typed wrong thing" messages as session input)
+
+**Text-fallback contract summary:**
+- Sent message format: `${question}\n\nOptions:\n${numberedList}\n\nReply with the option number or name.`
+- Matching: 1-based index OR option value, case-insensitive, whitespace-trimmed
+- Invalid reply: silently ignored, prompt stays open
+- Abort signal: resolves `''` (pre-abort returns `''` immediately without sending)
+- Empty options: resolves `''` immediately without sending
+- Abort after resolution: safe (guard prevents double-resolve)
+
+**Test file:** `tests/channel/teams/promptUser.test.ts` — 26 tests covering:
+- Rendering (question, option labels, numbering, reply instruction, correct ctx)
+- Valid reply: exact value, by index "1"/"2"/"3"
+- Case-insensitive: UPPERCASE, mixed-case, whitespace-padded values and indices
+- Invalid reply: stays pending, no messageHandler call, accepts valid after invalid, out-of-range indices ignored
+- Abort signal: pre-aborted, mid-wait, no double-resolve
+- No-options edge case: resolves `''` instantly, no message sent (with and without signal)
+- onMessage interaction: routes normally when no prompt pending; does not fire for matched prompt reply
+
+**Public signature (stable — unchanged):**
+```typescript
+async promptUser(
+  ctx: ChannelContext,
+  question: string,
+  options: readonly PromptOption[],
+  signal?: AbortSignal,
+): Promise<string>
+```
+
+---

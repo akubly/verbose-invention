@@ -7,6 +7,7 @@
 
 import 'dotenv/config';
 import { TelegramChannel } from './channel/telegram/index.js'; // side-effect: registers 'telegram' channel factory
+import './channel/teams/index.js'; // side-effect: registers 'teams' channel factory
 import { createChannel } from './channel/registry.js';
 import { registerHandlers } from './bot/handlers.js';
 import { SessionRegistry } from './sessions/registry.js';

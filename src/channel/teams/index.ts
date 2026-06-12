@@ -87,8 +87,8 @@ export class TeamsChannel implements ChannelPort {
 
   /**
    * Identity transform in stub mode.
-   * Phase 2b will delegate to src/channel/teams/formatting.ts (Kat, P2a-5)
-   * which produces the Teams HTML / Adaptive Card JSON.
+   * Phase 2b will delegate to src/channel/teams/formatting.ts,
+   * which produces Teams HTML.
    */
   formatForTransport(markdown: string): string {
     return markdown;
@@ -117,10 +117,26 @@ export class TeamsChannel implements ChannelPort {
       return chunks;
     }
 
-    // Footer present and split needed: reserve footer space so it is never
-    // split across a chunk boundary. Append it only to the last chunk.
+    // Footer present and split needed.
     const footerReserve = separator.length + footer.length;
-    const bodyCapacity = Math.max(1, max - footerReserve);
+
+    if (footerReserve >= max) {
+      // Footer alone can't share a chunk with any body content: split body at
+      // max, then split the footer block (separator + footer text) at max too.
+      const chunks: string[] = [];
+      for (let i = 0; i < text.length; i += max) {
+        chunks.push(text.slice(i, i + max));
+      }
+      const footerBlock = `${separator}${footer}`;
+      for (let i = 0; i < footerBlock.length; i += max) {
+        chunks.push(footerBlock.slice(i, i + max));
+      }
+      return chunks;
+    }
+
+    // Footer fits alongside body: reserve footer space so it is never split
+    // across a chunk boundary. Append it only to the last chunk.
+    const bodyCapacity = max - footerReserve;
     const chunks: string[] = [];
     for (let i = 0; i < text.length; i += bodyCapacity) {
       chunks.push(text.slice(i, i + bodyCapacity));
@@ -171,10 +187,6 @@ export class TeamsChannel implements ChannelPort {
     }
 
     const optionLines = options.map((o, i) => `  ${i + 1}. ${o.label}`).join('\n');
-    await this.sendMessage(
-      ctx,
-      `${question}\n\nOptions:\n${optionLines}\n\nReply with the option number or name.`,
-    );
 
     return new Promise<string>((resolve) => {
       const entry: PendingPromptEntry = { options, resolve };
@@ -191,7 +203,23 @@ export class TeamsChannel implements ChannelPort {
         signal.addEventListener('abort', abortHandler, { once: true });
       }
 
+      // Register BEFORE sending so that any inbound reply or abort that
+      // arrives during the sendMessage round-trip is not missed.
       this.pendingPrompts.set(key, entry);
+
+      this.sendMessage(
+        ctx,
+        `${question}\n\nOptions:\n${optionLines}\n\nReply with the option number or name.`,
+      ).catch(() => {
+        // If send fails, clean up the entry so the prompt doesn't hang.
+        if (this.pendingPrompts.get(key) === entry) {
+          this.pendingPrompts.delete(key);
+        }
+        if (entry.abortHandler !== undefined) {
+          entry.signal?.removeEventListener('abort', entry.abortHandler);
+        }
+        resolve('');
+      });
     });
   }
 
@@ -209,8 +237,16 @@ export class TeamsChannel implements ChannelPort {
 
   /**
    * Dispatch an inbound text message from the polling loop (Phase 2b) or
-   * from test helpers. Resolves any pending text-fallback prompt whose options
-   * match the text value, then fires the registered onMessage handler.
+   * from test helpers. Routing rules:
+   *
+   * - If a prompt is pending for this message's context key (channelId:threadId)
+   *   and the text matches an option (by value or 1-based index), the pending
+   *   prompt is resolved with that option's value and the message is consumed
+   *   (NOT forwarded to the onMessage handler).
+   * - If a prompt is pending but the text does not match any option, the message
+   *   is silently ignored — it is NOT forwarded to the onMessage handler.
+   * - If no prompt is pending for this context, the message is forwarded to the
+   *   registered onMessage handler.
    *
    * This method is package-internal: the Phase 2b polling client will call it
    * for every message fetched from the Graph API.

@@ -18,6 +18,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { ChannelPort, ChannelContext, PromptOption } from '../../../src/channel/port.js';
+import { canCreateThread } from '../../../src/channel/port.js';
 import { FakeChannel } from './FakeChannel.js';
 
 // ── Shared context constants ──────────────────────────────────────────────────
@@ -513,15 +514,16 @@ export function runCapabilityFallbackMatrix(): void {
       });
 
       it('an adapter that omits createThread entirely satisfies the optional-method contract', () => {
-        // Optional method: absence is explicitly allowed when supportsThreadCreation=false.
-        // This simulates a Teams-style adapter that doesn't implement createThread at all.
-        const noThreadAdapter = new FakeChannel({ supportsThreadCreation: false });
-        // Verify that calling the method when it is undefined would be caught by the caller guard.
-        // Caller guard: check capability flag AND method presence before calling.
-        const canCreate =
-          noThreadAdapter.capabilities.supportsThreadCreation &&
-          typeof noThreadAdapter.createThread === 'function';
-        expect(canCreate).toBe(false);
+        // Uses a plain-object minimal port with NO createThread property at all —
+        // this genuinely exercises the absent-method path, unlike FakeChannel which
+        // defines createThread as a throwing method (typeof createThread === 'function').
+        const port = makeMinimalNoThreadPort();
+        // The method must be absent, not just disabled by the flag.
+        expect(typeof port.createThread).toBe('undefined');
+        // The canonical caller guard (canCreateThread) must return false.
+        expect(canCreateThread(port)).toBe(false);
+        // The conformance kit must not require the method when supportsThreadCreation=false.
+        expect(port.capabilities.supportsThreadCreation).toBe(false);
       });
 
       it('pre-existing thread binding works fine (onMessage/onCommand still fire)', async () => {

@@ -393,6 +393,12 @@ describe('formatForTransport — link scheme allowlist (XSS prevention)', () => 
     expect(out).toBe('x');
   });
 
+  it('trims leading space from https URL — href has no leading whitespace', () => {
+    const out = formatForTransport('[x]( https://example.com)');
+    expect(out).toBe('<a href="https://example.com">x</a>');
+    expect(out).not.toContain('href=" ');
+  });
+
   it('blocks data: scheme', () => {
     const out = formatForTransport('[x](data:text/html,payload)');
     expect(out).not.toContain('data:');

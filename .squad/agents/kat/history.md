@@ -149,3 +149,7 @@ Added `isSafeUrl()` helper. URL scheme extracted by trimming leading whitespace 
 Added `isWordChar()` helper (`/\w/.test(ch)`). Single `*` and `_` italic only fires when: (1) the char immediately BEFORE the opening marker is not `\w` (or is absent), AND (2) the char immediately AFTER the closing marker is not `\w` (or is absent). `snake_case_var`, `TEAMS_CLIENT_ID`, `a_b_c` are now literal. `_italic_` and `*italic*` as standalone words still produce `<i>`. `**bold**` / `__bold__` are unaffected (handled in the `**`/`__` branch before single-marker code is reached).
 
 ---
+
+### PR #12 Copilot review — href and isSafeUrl must use the same trimmed URL (2026-06-11)
+
+`isSafeUrl` internally trimmed the raw URL before scheme extraction, but the emitted `href` used the untrimmed `rawUrl`. A link like `[x]( https://example.com)` passed the allowlist check but produced `href=" https://example.com"` (leading space). Fix: trim once at the call site (`text.slice(...).trim()`), then pass the trimmed value to both `isSafeUrl` and `escapeHtmlAttr`. The validated scheme and the emitted href now always refer to the identical string.

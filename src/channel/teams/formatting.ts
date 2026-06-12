@@ -135,10 +135,10 @@ function processInline(text: string): string {
       if (textEnd !== -1 && text[textEnd + 1] === '(') {
         const urlEnd = text.indexOf(')', textEnd + 2);
         if (urlEnd !== -1) {
-          const rawUrl = text.slice(textEnd + 2, urlEnd);
+          const url = text.slice(textEnd + 2, urlEnd).trim();
           const linkText = processInline(text.slice(i + 1, textEnd));
-          if (isSafeUrl(rawUrl)) {
-            result += `<a href="${escapeHtmlAttr(rawUrl)}">${linkText}</a>`;
+          if (isSafeUrl(url)) {
+            result += `<a href="${escapeHtmlAttr(url)}">${linkText}</a>`;
           } else {
             // Disallowed scheme (e.g. javascript:, data:, vbscript:) — render text only
             result += linkText;

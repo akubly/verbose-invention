@@ -162,3 +162,17 @@ registerChannel('teams', (cfg) => {
 
 **main-composition.test.ts pattern:** When adding a side-effect import to main.ts that calls `registerChannel`, the integration test that mocks `registry.js` without `registerChannel` will fail. Fix by adding `vi.mock('../../src/channel/teams/index.js', () => ({}))` alongside the existing Telegram mock.
 
+### Review Cycle 1 — Context-scoped prompt state + splitMessage footer reserve (2026-06-11, commit 0d8a063)
+
+**Prompt state map key format:** `${ctx.channelId}:${ctx.threadId}` — both fields are `readonly string` on `ChannelContext`. The key is computed at the top of `promptUser` and `dispatchInboundMessage`; it scopes pending prompts so replies on context A never resolve a prompt on context B.
+
+**PendingPromptEntry stores signal + abortHandler** so the overwrite path can call `prior.signal?.removeEventListener('abort', prior.abortHandler)` before resolving the prior promise with `''`. Without this the abort listener would remain registered on the prior signal; with `{ once: true }` it would fire as a no-op guarded by the identity check, but removing it eagerly is cleaner and explicitly requested.
+
+**No-unsettled-promise guarantee:** four paths exist for each map entry:
+1. **Match** — `dispatchInboundMessage` deletes the entry and calls `resolve(value)`.
+2. **Abort** — `{ once: true }` handler checks `pendingPrompts.get(key) === entry` (guards against a race where match fires first), deletes, calls `resolve('')`.
+3. **Overwrite** — new `promptUser` call for the same key deletes prior entry, removes its abort listener, calls `prior.resolve('')` synchronously before the await.
+4. **Pre-abort** — `signal?.aborted` fast-path at method entry returns `''` immediately; no entry ever enters the map.
+
+**splitMessage footer-reserve behavior:** when a footer is present and the combined length exceeds `maxMessageLength`, body capacity is computed as `Math.max(1, max - separator.length - footer.length)`. The body is chunked at that capacity; the footer (with separator) is appended to the **last chunk only**. When no footer is present the original character-boundary split runs unchanged. When the combined length fits in one chunk, the original single-element return applies.
+

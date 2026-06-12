@@ -60,7 +60,7 @@ describe('TeamsChannel.splitMessage — chunk-length invariant', () => {
     expect(chunks.join('')).toBe(body + '\n\n' + footer);
   });
 
-  it('footer just barely does not fit (footerReserve === max − 1): footer on own chunk, invariant held', () => {
+  it('footer at boundary (footerReserve === max − 1): still fits, appended to fill last chunk exactly', () => {
     // max = 20, separator = '\n\n' (2), footer = 'F'.repeat(17) = 17 chars
     // footerReserve = 19 < 20 → still the footer-fits path; last chunk = bodyCapacity 1 + 19 = 20 ≤ 20 ✓
     // (The threshold for own-chunk is footerReserve >= max, i.e. footer.length >= max − 2)

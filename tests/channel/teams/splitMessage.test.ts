@@ -43,21 +43,35 @@ describe('TeamsChannel.splitMessage — chunk-length invariant', () => {
     expect(chunks.join('')).toBe('abcdefghijklmnopqrst');
   });
 
-  it('footer that just barely does not fit alongside the last body chunk: placed on own chunk', () => {
+  it('footer fits alongside last body chunk: body splits and footer is appended to last chunk', () => {
     // max = 20, separator = '\n\n' (2), footer = 'F'.repeat(16) = 16 chars
-    // footerReserve = 18 < 20, bodyCapacity = 2
-    // body = 'X'.repeat(5) → 3 body chunks of capacity 2 ('XX','XX','X')
-    // last body chunk: 'X' + '\n\nFFFFFFFFFFFFFFFF' = 1 + 18 = 19 <= 20 ✓
+    // footerReserve = 18 < 20 → footer-FITS path (not split to its own chunk)
+    // bodyCapacity = 20 - 18 = 2, body = 'X'.repeat(5) → body chunks: 'XX','XX','X'
+    // last chunk appends footer: 'X' + '\n\nFFFFFFFFFFFFFFFF' = 19 chars ≤ 20 ✓
     const max = 20;
-    const footer = 'F'.repeat(16);  // footerReserve = 18 < 20
+    const footer = 'F'.repeat(16);  // footerReserve = 18 < 20 → fits
     const body = 'X'.repeat(5);
     const ch = makeChannel(max);
     const chunks = ch.splitMessage(body, footer);
     assertInvariant(chunks, max);
-    // Reconstruct and verify content is preserved
-    const full = chunks.join('');
-    expect(full).toContain(body);
-    expect(full).toContain(footer);
+    // Footer must be APPENDED to the last body chunk, not placed on its own chunk
+    expect(chunks[chunks.length - 1]).toContain(footer);
+    expect(chunks[chunks.length - 1]).toContain('\n\n');
+    expect(chunks.join('')).toBe(body + '\n\n' + footer);
+  });
+
+  it('footer just barely does not fit (footerReserve === max − 1): footer on own chunk, invariant held', () => {
+    // max = 20, separator = '\n\n' (2), footer = 'F'.repeat(17) = 17 chars
+    // footerReserve = 19 < 20 → still the footer-fits path; last chunk = bodyCapacity 1 + 19 = 20 ≤ 20 ✓
+    // (The threshold for own-chunk is footerReserve >= max, i.e. footer.length >= max − 2)
+    const max = 20;
+    const footer = 'F'.repeat(17);  // footerReserve = 19 < 20 → fits (last chunk = 20 chars exactly)
+    const body = 'X'.repeat(5);
+    const ch = makeChannel(max);
+    const chunks = ch.splitMessage(body, footer);
+    assertInvariant(chunks, max);
+    expect(chunks[chunks.length - 1]).toContain(footer);
+    expect(chunks.join('')).toBe(body + '\n\n' + footer);
   });
 
   it('footer exactly equal to maxMessageLength: footer goes on its own chunk', () => {

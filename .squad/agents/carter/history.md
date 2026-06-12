@@ -182,5 +182,8 @@ The old code `await this.sendMessage(...)` before `this.pendingPrompts.set(key, 
 3. **Overwrite** — new `promptUser` call for the same key deletes prior entry, removes its abort listener, calls `prior.resolve('')` synchronously before the await.
 4. **Pre-abort** — `signal?.aborted` fast-path at method entry returns `''` immediately; no entry ever enters the map.
 
-**splitMessage footer-reserve behavior:** when a footer is present and the combined length exceeds `maxMessageLength`, body capacity is computed as `Math.max(1, max - separator.length - footer.length)`. The body is chunked at that capacity; the footer (with separator) is appended to the **last chunk only**. When no footer is present the original character-boundary split runs unchanged. When the combined length fits in one chunk, the original single-element return applies.
+**splitMessage footer-reserve behavior:** two distinct paths when a footer is present and the combined length exceeds `maxMessageLength`:
+1. **Footer fits** (`footerReserve < max`, where `footerReserve = separator.length + footer.length`): body capacity is reduced to `max - footerReserve`; the body is chunked at that capacity and the footer (with separator) is appended to the **last body chunk only**.
+2. **Footer does not fit** (`footerReserve >= max`): the body is chunked at `max` without any footer reserve, then the footer block (`separator + footer`) is chunked separately at `max` and appended as additional chunks. This guarantees every chunk satisfies `chunk.length <= max` even when the footer alone exceeds `maxMessageLength`.
+When no footer is present the original character-boundary split at `max` runs unchanged. When the combined length fits in one chunk, a single-element array is returned immediately.
 

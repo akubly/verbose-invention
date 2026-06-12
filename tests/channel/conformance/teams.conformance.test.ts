@@ -149,9 +149,11 @@ describe('TeamsChannel — editMessage always false (OD-1)', () => {
 
 // ── promptUser text-fallback (supportsInteractivePrompts=false) ───────────────
 //
-// TeamsChannel.promptUser awaits this.sendMessage() before setting
-// pendingTextPrompt/abort-listener. Tests flush the microtask queue via
-// await Promise.resolve() so that internal await completes before we inject input.
+// TeamsChannel.promptUser registers the pending prompt entry synchronously
+// BEFORE calling sendMessage (sendMessage is not awaited). The entry is
+// therefore set by the time promptUser's call returns to the test. Any
+// await Promise.resolve() below is a defensive microtask flush — it is not
+// required for registration but guards against future async refactors.
 
 describe('TeamsChannel — promptUser text-fallback', () => {
   const OPTIONS = [
@@ -172,7 +174,7 @@ describe('TeamsChannel — promptUser text-fallback', () => {
     const ch = new TestableTeamsChannel();
     const ctx: ChannelContext = { threadId: '1', channelId: 'channel-1' };
     const promptPromise = ch.promptUser(ctx, 'Allow?', OPTIONS);
-    // flush so promptUser's sendMessage await completes and pendingTextPrompt is set
+    // pending prompt is registered synchronously before sendMessage; flush is a defensive guard
     await Promise.resolve();
     await ch.injectInboundText(ctx, 'approve');
     expect(await promptPromise).toBe('approve');

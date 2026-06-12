@@ -12,8 +12,7 @@
  *   supportsStreaming         = false  (OD-2: single send after full accumulation)
  *   maxMessageLength          = 28000  (Teams channel message limit)
  *
- * Do NOT import src/channel/teams/formatting.ts here — that module is owned by
- * Kat (P2a-5) and will be wired in Phase 2b. Keep this stub self-contained.
+ * Formatting is delegated to ./formatting.ts and wired in Phase 2b; the stub keeps formatForTransport as identity.
  */
 
 import type {
@@ -26,6 +25,13 @@ import type {
   CommandHandler,
 } from '../port.js';
 import { registerChannel } from '../registry.js';
+
+interface PendingPromptEntry {
+  options: readonly PromptOption[];
+  resolve: (value: string) => void;
+  signal?: AbortSignal;
+  abortHandler?: () => void;
+}
 
 export class TeamsChannel implements ChannelPort {
   readonly name = 'teams';
@@ -40,10 +46,7 @@ export class TeamsChannel implements ChannelPort {
 
   private messageHandler: MessageHandler | undefined;
   private readonly commandHandlers = new Map<string, CommandHandler>();
-  private pendingTextPrompt?: {
-    options: readonly PromptOption[];
-    resolve: (value: string) => void;
-  };
+  private readonly pendingPrompts = new Map<string, PendingPromptEntry>();
   private nextMessageId = 1;
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -67,6 +70,7 @@ export class TeamsChannel implements ChannelPort {
    */
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async sendMessage(ctx: ChannelContext, text: string): Promise<MessageRef> {
+    // TODO Phase 2b: apply formatForTransport(text) before POSTing to Graph (contentType: html).
     return { id: String(this.nextMessageId++) };
   }
 
@@ -92,17 +96,36 @@ export class TeamsChannel implements ChannelPort {
 
   /**
    * Simple character-boundary split respecting maxMessageLength (28 000).
+   * When a footer is present and a split is needed, body capacity is reduced
+   * to reserve space for the footer so it always lands intact on the last chunk.
    * Phase 2b may replace with word-boundary or HTML-aware splitting.
    */
   splitMessage(text: string, footer?: string): string[] {
     const max = this.capabilities.maxMessageLength;
-    const full = footer ? `${text}\n\n${footer}` : text;
+    const separator = '\n\n';
+    const full = footer ? `${text}${separator}${footer}` : text;
+
+    // No split needed (common case — most messages fit in one chunk).
     if (full.length <= max) return [full];
 
-    const chunks: string[] = [];
-    for (let i = 0; i < full.length; i += max) {
-      chunks.push(full.slice(i, i + max));
+    if (!footer) {
+      // No footer: simple character-boundary split.
+      const chunks: string[] = [];
+      for (let i = 0; i < text.length; i += max) {
+        chunks.push(text.slice(i, i + max));
+      }
+      return chunks;
     }
+
+    // Footer present and split needed: reserve footer space so it is never
+    // split across a chunk boundary. Append it only to the last chunk.
+    const footerReserve = separator.length + footer.length;
+    const bodyCapacity = Math.max(1, max - footerReserve);
+    const chunks: string[] = [];
+    for (let i = 0; i < text.length; i += bodyCapacity) {
+      chunks.push(text.slice(i, i + bodyCapacity));
+    }
+    chunks[chunks.length - 1] += `${separator}${footer}`;
     return chunks;
   }
 
@@ -112,8 +135,11 @@ export class TeamsChannel implements ChannelPort {
    * Text-based prompt fallback (supportsInteractivePrompts=false).
    *
    * Posts the question and options as a plain text message, then waits for a
-   * matching inbound reply (dispatched via dispatchInboundMessage). Resolves
-   * with '' when the AbortSignal fires (aborted / session evicted).
+   * matching inbound reply (dispatched via dispatchInboundMessage). Prompt
+   * state is scoped by context key ("channelId:threadId") so concurrent
+   * prompts on different threads do not interfere. If a prompt is already
+   * pending for the same context, it is resolved with '' before the new one
+   * is registered. Resolves with '' when the AbortSignal fires.
    *
    * Phase 2b will replace this with Adaptive Card action buttons once Kat's
    * formatting module is wired in and supportsInteractivePrompts is set true.
@@ -132,6 +158,18 @@ export class TeamsChannel implements ChannelPort {
     if (signal?.aborted) return '';
     if (options.length === 0) return '';
 
+    const key = `${ctx.channelId}:${ctx.threadId}`;
+
+    // Evict any prior pending prompt for this context without leaving it unsettled.
+    const prior = this.pendingPrompts.get(key);
+    if (prior) {
+      this.pendingPrompts.delete(key);
+      if (prior.abortHandler !== undefined) {
+        prior.signal?.removeEventListener('abort', prior.abortHandler);
+      }
+      prior.resolve('');
+    }
+
     const optionLines = options.map((o, i) => `  ${i + 1}. ${o.label}`).join('\n');
     await this.sendMessage(
       ctx,
@@ -139,14 +177,21 @@ export class TeamsChannel implements ChannelPort {
     );
 
     return new Promise<string>((resolve) => {
-      this.pendingTextPrompt = { options, resolve };
+      const entry: PendingPromptEntry = { options, resolve };
 
-      signal?.addEventListener('abort', () => {
-        if (this.pendingTextPrompt) {
-          delete this.pendingTextPrompt;
+      if (signal) {
+        const abortHandler = (): void => {
+          if (this.pendingPrompts.get(key) === entry) {
+            this.pendingPrompts.delete(key);
+          }
           resolve('');
-        }
-      });
+        };
+        entry.signal = signal;
+        entry.abortHandler = abortHandler;
+        signal.addEventListener('abort', abortHandler, { once: true });
+      }
+
+      this.pendingPrompts.set(key, entry);
     });
   }
 
@@ -171,8 +216,11 @@ export class TeamsChannel implements ChannelPort {
    * for every message fetched from the Graph API.
    */
   protected dispatchInboundMessage(ctx: ChannelContext, text: string): Promise<void> {
-    if (this.pendingTextPrompt) {
-      const { options, resolve } = this.pendingTextPrompt;
+    const key = `${ctx.channelId}:${ctx.threadId}`;
+    const pending = this.pendingPrompts.get(key);
+
+    if (pending) {
+      const { options, resolve } = pending;
       const normalised = text.trim().toLowerCase();
 
       // Match by 1-based index ("1", "2", …) or by option value (case-insensitive).
@@ -182,7 +230,7 @@ export class TeamsChannel implements ChannelPort {
       const matched = byIndex ?? options.find((o) => o.value.toLowerCase() === normalised);
 
       if (matched) {
-        delete this.pendingTextPrompt;
+        this.pendingPrompts.delete(key);
         resolve(matched.value);
         return Promise.resolve();
       }

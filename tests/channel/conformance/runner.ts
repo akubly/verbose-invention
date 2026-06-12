@@ -16,7 +16,7 @@
  * test fails clearly — routing the fix to the right owner.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { ChannelPort, ChannelContext, PromptOption } from '../../../src/channel/port.js';
 import { FakeChannel } from './FakeChannel.js';
 
@@ -24,6 +24,36 @@ import { FakeChannel } from './FakeChannel.js';
 
 export const TEST_CTX: ChannelContext = { threadId: '42', channelId: '-1001234567890' };
 export const EMPTY_TOPIC_CTX: ChannelContext = { threadId: '', channelId: '-1001234567890' };
+
+// ── Minimal no-createThread adapter ──────────────────────────────────────────
+//
+// Used by the I4 optional-method test to verify the conformance kit and caller
+// guard work correctly when createThread is ABSENT (not just throwing).
+// This is a more faithful simulation of a Teams-style adapter than FakeChannel,
+// which still defines createThread as a throwing method.
+
+function makeMinimalNoThreadPort(): ChannelPort {
+  return {
+    name: 'minimal-no-thread',
+    capabilities: {
+      supportsMessageEdit: false,
+      supportsThreadCreation: false,
+      supportsInteractivePrompts: false,
+      supportsStreaming: false,
+      maxMessageLength: 1000,
+    },
+    start: async () => undefined,
+    stop: async () => undefined,
+    sendMessage: async () => ({ id: '1' }),
+    editMessage: async () => false,
+    formatForTransport: (markdown) => markdown,
+    splitMessage: (text, footer) => (footer ? [`${text}\n\n${footer}`] : [text]),
+    promptUser: async (_ctx, _q, _opts, signal) => (signal?.aborted ? '' : ''),
+    onMessage: () => undefined,
+    onCommand: () => undefined,
+    // createThread intentionally absent — satisfies the optional-method contract
+  };
+}
 
 // ── Suite options ─────────────────────────────────────────────────────────────
 
@@ -430,6 +460,44 @@ export function runCapabilityFallbackMatrix(): void {
         const OPTIONS: readonly PromptOption[] = [{ value: 'ok', label: 'OK' }];
         const result = await fake.promptUser(TEST_CTX, 'Q?', OPTIONS, controller.signal);
         expect(result).toBe('');
+      });
+
+      it('text-fallback CONTRACT: resolves via 1-based option index', async () => {
+        const fake = new FakeChannel({ supportsInteractivePrompts: false });
+        const OPTIONS: readonly PromptOption[] = [
+          { value: 'approve', label: '✅ Approve' },
+          { value: 'deny', label: '❌ Deny' },
+        ];
+        const promptP = fake.promptUser(TEST_CTX, 'Allow?', OPTIONS);
+        await fake.injectInboundText(TEST_CTX, '2');
+        expect(await promptP).toBe('deny');
+      });
+
+      it('text-fallback CONTRACT: resolves via case-insensitive option value', async () => {
+        const fake = new FakeChannel({ supportsInteractivePrompts: false });
+        const OPTIONS: readonly PromptOption[] = [
+          { value: 'approve', label: '✅ Approve' },
+          { value: 'deny', label: '❌ Deny' },
+        ];
+        const promptP = fake.promptUser(TEST_CTX, 'Allow?', OPTIONS);
+        await fake.injectInboundText(TEST_CTX, 'APPROVE');
+        expect(await promptP).toBe('approve');
+      });
+
+      it('text-fallback CONTRACT: unmatched reply while prompt pending is silently ignored — NOT routed to message handler', async () => {
+        const fake = new FakeChannel({ supportsInteractivePrompts: false });
+        const OPTIONS: readonly PromptOption[] = [
+          { value: 'yes', label: 'Yes' },
+          { value: 'no', label: 'No' },
+        ];
+        const handler = vi.fn();
+        fake.onMessage(handler);
+        const promptP = fake.promptUser(TEST_CTX, 'Proceed?', OPTIONS);
+        await fake.injectInboundText(TEST_CTX, 'unrelated-gibberish');
+        expect(handler).not.toHaveBeenCalled();
+        // clean up: resolve prompt so no dangling promise
+        await fake.injectInboundText(TEST_CTX, 'yes');
+        await promptP;
       });
     });
 

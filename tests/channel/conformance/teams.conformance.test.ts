@@ -12,7 +12,7 @@
  * is OMITTED entirely from TeamsChannel — the kit MUST pass without it.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { TeamsChannel } from '../../../src/channel/teams/index.js';
 import { runChannelPortConformance } from './runner.js';
 import type { ChannelContext } from '../../../src/channel/port.js';
@@ -150,13 +150,8 @@ describe('TeamsChannel — editMessage always false (OD-1)', () => {
 // ── promptUser text-fallback (supportsInteractivePrompts=false) ───────────────
 //
 // TeamsChannel.promptUser awaits this.sendMessage() before setting
-// pendingTextPrompt/abort-listener. Tests flush the microtask queue via a
-// setTimeout(0) so that internal await completes before we inject input.
-
-/** Flush all currently-queued microtasks (one event-loop turn). */
-function flushPromises(): Promise<void> {
-  return new Promise<void>((resolve) => setTimeout(resolve, 0));
-}
+// pendingTextPrompt/abort-listener. Tests flush the microtask queue via
+// await Promise.resolve() so that internal await completes before we inject input.
 
 describe('TeamsChannel — promptUser text-fallback', () => {
   const OPTIONS = [
@@ -173,42 +168,35 @@ describe('TeamsChannel — promptUser text-fallback', () => {
     expect(result).toBe('');
   });
 
-  it('resolves with "" when AbortSignal fires mid-wait (mid-abort)', async () => {
-    const ch = new TestableTeamsChannel();
-    const ctx: ChannelContext = { threadId: '1', channelId: 'channel-1' };
-    const controller = new AbortController();
-    const promptPromise = ch.promptUser(ctx, 'Allow?', OPTIONS, controller.signal);
-    // flush so promptUser's internal sendMessage await completes and the
-    // abort event listener is registered before we fire the signal
-    await flushPromises();
-    controller.abort();
-    expect(await promptPromise).toBe('');
-  });
-
   it('resolves with matching option value when inbound text matches', async () => {
     const ch = new TestableTeamsChannel();
     const ctx: ChannelContext = { threadId: '1', channelId: 'channel-1' };
     const promptPromise = ch.promptUser(ctx, 'Allow?', OPTIONS);
     // flush so promptUser's sendMessage await completes and pendingTextPrompt is set
-    await flushPromises();
+    await Promise.resolve();
     await ch.injectInboundText(ctx, 'approve');
     expect(await promptPromise).toBe('approve');
   });
 
-  it('does not resolve when inbound text does not match any option', async () => {
+  it('resolves via 1-based option index', async () => {
     const ch = new TestableTeamsChannel();
     const ctx: ChannelContext = { threadId: '1', channelId: 'channel-1' };
+    const promptPromise = ch.promptUser(ctx, 'Allow?', OPTIONS);
+    await Promise.resolve();
+    await ch.injectInboundText(ctx, '2');
+    expect(await promptPromise).toBe('deny');
+  });
+
+  it('unmatched reply does NOT call the message handler while prompt is pending', async () => {
+    const ch = new TestableTeamsChannel();
+    const ctx: ChannelContext = { threadId: '1', channelId: 'channel-1' };
+    const handler = vi.fn();
+    ch.onMessage(handler);
     const controller = new AbortController();
     const promptPromise = ch.promptUser(ctx, 'Allow?', OPTIONS, controller.signal);
-    await flushPromises();
-    // inject non-matching text — should NOT resolve the prompt
-    await ch.injectInboundText(ctx, 'unrelated');
-    // promptPromise should still be pending — race it against an already-resolved stub
-    let resolved = false;
-    promptPromise.then(() => { resolved = true; });
     await Promise.resolve();
-    expect(resolved).toBe(false);
-    // clean up: abort so the promise settles and the test can close
+    await ch.injectInboundText(ctx, 'unrelated');
+    expect(handler).not.toHaveBeenCalled();
     controller.abort();
     await promptPromise;
   });

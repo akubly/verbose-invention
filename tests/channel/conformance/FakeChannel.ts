@@ -161,18 +161,30 @@ export class FakeChannel implements ChannelPort {
 
   /**
    * Simulate an inbound text message from the user.
-   * Fires the registered onMessage handler AND resolves any pending text prompt.
+   *
+   * LOCKED CONTRACT (matches TeamsChannel.dispatchInboundMessage):
+   *   - While a prompt is pending: match trimmed+case-insensitive against option values
+   *     OR as a 1-based option index. If matched, resolves the prompt. If UNMATCHED,
+   *     the message is SILENTLY IGNORED — it is NOT routed to the messageHandler.
+   *   - When no prompt is pending: routes to the registered messageHandler as normal.
    */
   async injectInboundText(ctx: ChannelContext, text: string): Promise<void> {
-    // Resolve pending text-prompt if text matches an option value.
     if (this.pendingTextPrompt) {
-      const matched = this.pendingTextPrompt.options.find((o) => o.value === text);
+      const { options, resolve } = this.pendingTextPrompt;
+      const normalised = text.trim().toLowerCase();
+
+      // Match by 1-based index ("1", "2", …) or by option value (case-insensitive).
+      const byIndex = /^\d+$/.test(normalised)
+        ? options[parseInt(normalised, 10) - 1]
+        : undefined;
+      const matched = byIndex ?? options.find((o) => o.value.toLowerCase() === normalised);
+
       if (matched) {
-        const { resolve } = this.pendingTextPrompt;
         this.pendingTextPrompt = undefined;
         resolve(matched.value);
-        return;
       }
+      // Unmatched reply while prompt pending: silently ignore — do NOT route to messageHandler.
+      return;
     }
 
     if (this.messageHandler) {

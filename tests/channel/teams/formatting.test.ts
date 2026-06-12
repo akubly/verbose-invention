@@ -344,8 +344,115 @@ describe('formatForTransport — nested and mixed inline', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Full realistic messages
+// Link scheme allowlist (XSS prevention — Finding B)
 // ---------------------------------------------------------------------------
+
+describe('formatForTransport — link scheme allowlist (XSS prevention)', () => {
+  it('allows http: links', () => {
+    expect(formatForTransport('[link](http://example.com)')).toBe(
+      '<a href="http://example.com">link</a>',
+    );
+  });
+
+  it('allows https: links', () => {
+    expect(formatForTransport('[link](https://example.com)')).toBe(
+      '<a href="https://example.com">link</a>',
+    );
+  });
+
+  it('allows mailto: links', () => {
+    expect(formatForTransport('[email](mailto:user@example.com)')).toBe(
+      '<a href="mailto:user@example.com">email</a>',
+    );
+  });
+
+  it('allows tel: links', () => {
+    expect(formatForTransport('[call](tel:+15551234567)')).toBe(
+      '<a href="tel:+15551234567">call</a>',
+    );
+  });
+
+  it('blocks javascript: scheme — renders link text only', () => {
+    const out = formatForTransport('[x](javascript:alert)');
+    expect(out).not.toContain('javascript:');
+    expect(out).not.toContain('<a ');
+    expect(out).toBe('x');
+  });
+
+  it('blocks JAVASCRIPT: (uppercase) scheme', () => {
+    const out = formatForTransport('[x](JAVASCRIPT:alert)');
+    expect(out).not.toContain('JAVASCRIPT:');
+    expect(out).not.toContain('<a ');
+    expect(out).toBe('x');
+  });
+
+  it('blocks javascript: with leading space bypass', () => {
+    const out = formatForTransport('[x]( javascript:alert)');
+    expect(out).not.toContain('javascript:');
+    expect(out).not.toContain('<a ');
+    expect(out).toBe('x');
+  });
+
+  it('blocks data: scheme', () => {
+    const out = formatForTransport('[x](data:text/html,payload)');
+    expect(out).not.toContain('data:');
+    expect(out).not.toContain('<a ');
+    expect(out).toBe('x');
+  });
+
+  it('blocks vbscript: scheme', () => {
+    const out = formatForTransport('[x](vbscript:msgbox)');
+    expect(out).not.toContain('vbscript:');
+    expect(out).not.toContain('<a ');
+    expect(out).toBe('x');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Italic word-boundary guard (Finding C)
+// ---------------------------------------------------------------------------
+
+describe('formatForTransport — italic word-boundary guard', () => {
+  it('leaves snake_case_var unchanged', () => {
+    expect(formatForTransport('snake_case_var')).toBe('snake_case_var');
+  });
+
+  it('leaves TEAMS_CLIENT_ID unchanged', () => {
+    expect(formatForTransport('TEAMS_CLIENT_ID')).toBe('TEAMS_CLIENT_ID');
+  });
+
+  it('leaves a_b_c unchanged', () => {
+    expect(formatForTransport('a_b_c')).toBe('a_b_c');
+  });
+
+  it('italicizes standalone _italic_ word', () => {
+    expect(formatForTransport('_italic_ word')).toBe('<i>italic</i> word');
+  });
+
+  it('italicizes _italic_ at start of string', () => {
+    expect(formatForTransport('_italic_')).toBe('<i>italic</i>');
+  });
+
+  it('italicizes standalone *italic* word', () => {
+    expect(formatForTransport('*italic* word')).toBe('<i>italic</i> word');
+  });
+
+  it('bold **text** still works (unaffected)', () => {
+    expect(formatForTransport('**bold**')).toBe('<b>bold</b>');
+  });
+
+  it('bold __text__ still works (unaffected)', () => {
+    expect(formatForTransport('__bold__')).toBe('<b>bold</b>');
+  });
+
+  it('bold mid-sentence still works with surrounding word chars', () => {
+    expect(formatForTransport('pre**bold**post')).toBe('pre<b>bold</b>post');
+  });
+
+  it('italic preceded/followed by non-word chars still italicizes', () => {
+    expect(formatForTransport('(_italic_)')).toBe('(<i>italic</i>)');
+  });
+});
 
 describe('formatForTransport — realistic full messages', () => {
   it('converts a message with heading-like bold, paragraph, and code', () => {

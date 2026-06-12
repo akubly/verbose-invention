@@ -30,6 +30,30 @@ function escapeHtmlAttr(s: string): string {
   return escapeHtml(s).replace(/"/g, '&quot;');
 }
 
+/** Returns true if ch is an alphanumeric character or underscore (word character). */
+function isWordChar(ch: string | undefined): boolean {
+  return ch !== undefined && /\w/.test(ch);
+}
+
+/**
+ * Returns true if the URL scheme is in the safe allowlist: http, https, mailto, tel.
+ *
+ * Robust against bypass attempts:
+ *   - Leading whitespace / control chars: trimStart() before scheme extraction
+ *   - Mixed case: tested case-insensitively
+ *   - Embedded non-letter chars in scheme (e.g. "java\x00script:"): won't match allowlist
+ */
+function isSafeUrl(url: string): boolean {
+  // trimStart strips leading whitespace (handles " javascript:" bypass)
+  const trimmed = url.trimStart();
+  const colonIdx = trimmed.indexOf(':');
+  if (colonIdx === -1) return false;
+  // Any non-letter character embedded in the scheme (e.g. control chars) will
+  // prevent a match, so no extra stripping is needed.
+  const scheme = trimmed.slice(0, colonIdx);
+  return /^(https?|mailto|tel)$/i.test(scheme);
+}
+
 /**
  * Apply inline markdown formatting to a plain-text segment.
  *
@@ -66,12 +90,16 @@ function processInline(text: string): string {
           continue;
         }
       } else {
-        // Italic: *text*
+        // Italic: *text* — only when not intra-word (e.g. a*b*c stays literal)
         const close = text.indexOf('*', i + 1);
         if (close !== -1) {
-          result += `<i>${processInline(text.slice(i + 1, close))}</i>`;
-          i = close + 1;
-          continue;
+          const before = i > 0 ? text[i - 1] : undefined;
+          const after = text[close + 1];
+          if (!isWordChar(before) && !isWordChar(after)) {
+            result += `<i>${processInline(text.slice(i + 1, close))}</i>`;
+            i = close + 1;
+            continue;
+          }
         }
       }
     }
@@ -87,12 +115,16 @@ function processInline(text: string): string {
           continue;
         }
       } else {
-        // Italic: _text_
+        // Italic: _text_ — only when not intra-word (e.g. snake_case stays literal)
         const close = text.indexOf('_', i + 1);
         if (close !== -1) {
-          result += `<i>${processInline(text.slice(i + 1, close))}</i>`;
-          i = close + 1;
-          continue;
+          const before = i > 0 ? text[i - 1] : undefined;
+          const after = text[close + 1];
+          if (!isWordChar(before) && !isWordChar(after)) {
+            result += `<i>${processInline(text.slice(i + 1, close))}</i>`;
+            i = close + 1;
+            continue;
+          }
         }
       }
     }
@@ -103,9 +135,14 @@ function processInline(text: string): string {
       if (textEnd !== -1 && text[textEnd + 1] === '(') {
         const urlEnd = text.indexOf(')', textEnd + 2);
         if (urlEnd !== -1) {
+          const rawUrl = text.slice(textEnd + 2, urlEnd);
           const linkText = processInline(text.slice(i + 1, textEnd));
-          const href = escapeHtmlAttr(text.slice(textEnd + 2, urlEnd));
-          result += `<a href="${href}">${linkText}</a>`;
+          if (isSafeUrl(rawUrl)) {
+            result += `<a href="${escapeHtmlAttr(rawUrl)}">${linkText}</a>`;
+          } else {
+            // Disallowed scheme (e.g. javascript:, data:, vbscript:) — render text only
+            result += linkText;
+          }
           i = urlEnd + 1;
           continue;
         }

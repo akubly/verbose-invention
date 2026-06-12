@@ -141,6 +141,20 @@ Graph API rate limits are per-app, not per-endpoint. The polling loop and outbou
 ### Corp-Fork Diff Discipline
 The fewer files the corp branch touches in shared code, the cleaner rebases are. Landing env config and contract refactors in the open repo first means the corp branch only adds new files (src/channel/teams/*) plus one import line.
 
+### canCreateThread Type Guard (Phase 2a review cycle 1, 2026-06-11)
+Added exported helper to port.ts that centralizes the dual-check callers need before invoking `createThread?`. Canonical signature:
+```typescript
+export function canCreateThread(
+  channel: ChannelPort,
+): channel is ChannelPort & { createThread: NonNullable<ChannelPort['createThread']> } {
+  return channel.capabilities.supportsThreadCreation && typeof channel.createThread === 'function';
+}
+```
+`createThread?` stays optional (OD-3 preserved). The TSDoc on `createThread?` now points at this guard instead of documenting a hand-written pattern.
+
+### promptUser Text-Fallback Contract Codified (Phase 2a review cycle 1, 2026-06-11)
+The LOCKED matching contract is now authoritative in port.ts TSDoc: text-fallback adapters match replies (trimmed, case-insensitive) against `PromptOption.value` OR a 1-based index string; replies matching neither are SILENTLY IGNORED (not forwarded to the message handler) while a prompt is pending. Future adapter authors and FakeChannel have a single source of truth.
+
 ---
 
 ## Archive

@@ -162,7 +162,15 @@ registerChannel('teams', (cfg) => {
 
 **main-composition.test.ts pattern:** When adding a side-effect import to main.ts that calls `registerChannel`, the integration test that mocks `registry.js` without `registerChannel` will fail. Fix by adding `vi.mock('../../src/channel/teams/index.js', () => ({}))` alongside the existing Telegram mock.
 
-### Review Cycle 1 — Context-scoped prompt state + splitMessage footer reserve (2026-06-11, commit 0d8a063)
+### PR #12 Copilot Review — splitMessage invariant + promptUser registration ordering (2026-06-11, commit 990f94b)
+
+**splitMessage footer-invariant fix:**  
+The old code had `bodyCapacity = Math.max(1, max - footerReserve)` which bottomed out at 1 when `footerReserve >= max`. Appending `separator + footer` to the last body chunk then produced a chunk of length `1 + footerReserve >= max + 1`, violating the each-chunk<=maxMessageLength invariant. Fix: gate on `footerReserve >= max`; when true, split body at `max` normally and then split the footer block (`separator + footer`) into its own `max`-sized chunks, appending them after all body chunks. The common-case path (footer fits) and no-footer path are unchanged.
+
+**promptUser register-before-send ordering fix:**  
+The old code `await this.sendMessage(...)` before `this.pendingPrompts.set(key, entry)`. Any inbound reply or abort signal that arrived during the sendMessage round-trip would find no pending entry and be silently lost. Fix: move the `pendingPrompts.set` and abort handler registration into the `new Promise` constructor (which runs synchronously), BEFORE `sendMessage` is called. `sendMessage` is called without `await` inside the constructor; a `.catch` handler cleans up the entry and resolves `''` if send fails. All four settlement paths (match, abort, overwrite, pre-abort) remain intact.
+
+
 
 **Prompt state map key format:** `${ctx.channelId}:${ctx.threadId}` — both fields are `readonly string` on `ChannelContext`. The key is computed at the top of `promptUser` and `dispatchInboundMessage`; it scopes pending prompts so replies on context A never resolve a prompt on context B.
 

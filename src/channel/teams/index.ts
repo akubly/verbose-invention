@@ -231,6 +231,9 @@ export class TeamsChannel implements ChannelPort {
 
       if (matched) {
         this.pendingPrompts.delete(key);
+        if (pending.abortHandler !== undefined) {
+          pending.signal?.removeEventListener('abort', pending.abortHandler);
+        }
         resolve(matched.value);
         return Promise.resolve();
       }

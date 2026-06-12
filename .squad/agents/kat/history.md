@@ -139,3 +139,13 @@ async promptUser(
 ```
 
 ---
+
+### Review Cycle 1 — B + C fixes in formatting.ts (2026-06-11, commit 674ee11)
+
+**Finding B (BLOCKING — XSS, link scheme allowlist):**
+Added `isSafeUrl()` helper. URL scheme extracted by trimming leading whitespace (`trimStart()`), finding the first `:`, and testing the scheme against `/^(https?|mailto|tel)$/i`. Allowed schemes: `http`, `https`, `mailto`, `tel` (case-insensitive). Disallowed schemes (javascript:, data:, vbscript:, and bypasses like leading spaces or mixed case) cause the link to render as plain escaped text — no `<a>` element is emitted. Embedded non-letter chars in the scheme prevent allowlist match naturally.
+
+**Finding C (important — italic word-boundary guard):**
+Added `isWordChar()` helper (`/\w/.test(ch)`). Single `*` and `_` italic only fires when: (1) the char immediately BEFORE the opening marker is not `\w` (or is absent), AND (2) the char immediately AFTER the closing marker is not `\w` (or is absent). `snake_case_var`, `TEAMS_CLIENT_ID`, `a_b_c` are now literal. `_italic_` and `*italic*` as standalone words still produce `<i>`. `**bold**` / `__bold__` are unaffected (handled in the `**`/`__` branch before single-marker code is reached).
+
+---

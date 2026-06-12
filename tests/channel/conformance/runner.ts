@@ -49,7 +49,8 @@ function makeMinimalNoThreadPort(): ChannelPort {
     editMessage: async () => false,
     formatForTransport: (markdown) => markdown,
     splitMessage: (text, footer) => (footer ? [`${text}\n\n${footer}`] : [text]),
-    promptUser: async (_ctx, _q, _opts, signal) => (signal?.aborted ? '' : ''),
+    // Minimal conformance helper: aborted or no options → ''; otherwise first option's value.
+    promptUser: async (_ctx, _q, opts, signal) => (signal?.aborted || opts.length === 0 ? '' : opts[0].value),
     onMessage: () => undefined,
     onCommand: () => undefined,
     // createThread intentionally absent — satisfies the optional-method contract

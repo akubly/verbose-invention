@@ -50,7 +50,7 @@ F1 blocker verified in commit 2b5e4a2 (9 new relay capability tests). Reference:
 
 3. **Protected dispatch via subclass (TestableTeamsChannel).** `dispatchInboundMessage` and `dispatchInboundCommand` are `protected` on `TeamsChannel`. A minimal `TestableTeamsChannel extends TeamsChannel` subclass that exposes `injectInboundText` and `injectCommand` wrappers allows prompt/inbound tests without touching src/. This is cleaner than `(ch as any).dispatch`.
 
-4. **Microtask flush required for promptUser timing.** `TeamsChannel.promptUser` does `await this.sendMessage(...)` before setting `pendingTextPrompt` and registering the AbortSignal listener. Tests that inject inbound text or fire an abort signal must flush the microtask queue first. `await Promise.resolve()` (one microtask tick) is sufficient — `setTimeout(resolve, 0)` (macrotask) was overkill. The single `await sendMessage()` schedules its continuation before the test's own `await Promise.resolve()`, so microtask ordering guarantees `pendingTextPrompt` is set by the time the test continues.
+4. **Microtask flush required for promptUser timing.** `TeamsChannel.promptUser` registers `pendingTextPrompt` and the AbortSignal listener **synchronously** (before `await this.sendMessage(...)`). Tests that inject inbound text or fire an abort signal do not need a microtask flush for the registration itself, but `await Promise.resolve()` is retained as a defensive guard to let any async setup in promptUser settle before the test acts. `await Promise.resolve()` (one microtask tick) is sufficient — `setTimeout(resolve, 0)` (macrotask) was overkill.
 
 **Test file path:** `tests/channel/conformance/teams.conformance.test.ts`
 
@@ -62,7 +62,7 @@ F1 blocker verified in commit 2b5e4a2 (9 new relay capability tests). Reference:
 
 6. **Minimal no-createThread adapter for I4 optional-method contract (Finding D1b).** `makeMinimalNoThreadPort()` in runner.ts returns a plain object implementing ChannelPort with NO `createThread` property at all. FakeChannel's throwing stub gave false confidence about the "method omitted" path — the new test drives the genuinely absent path (`typeof port.createThread === 'undefined'`). This is how Teams-style adapters work in practice.
 
-7. **flushPromises (setTimeout(0)) → await Promise.resolve() (Finding K).** Real timers in a conformance test were unnecessary. One microtask tick suffices because promptUser's internal `await sendMessage()` schedules its continuation before the test's flush, so ordering is guaranteed without a macrotask. Changed in teams.conformance.test.ts; promptUser.test.ts already used the microtask pattern.
+7. **flushPromises (setTimeout(0)) → await Promise.resolve() (Finding K).** Real timers in a conformance test were unnecessary. `pendingTextPrompt` is now set **synchronously** at the top of `promptUser` (before `sendMessage` is called), so a macrotask flush was never required for ordering. `await Promise.resolve()` is kept as a lightweight defensive guard — one microtask tick to let promptUser's async frame initialize — but it is not load-bearing for registration ordering. Changed in teams.conformance.test.ts; promptUser.test.ts already used the microtask pattern.
 
 8. **Minimal promptUser block in teams.conformance.test.ts (Finding L).** Trimmed to 4 assertions: pre-abort→'', matching value, matching index (1-based), unmatched→handler not called. Mid-abort and pending-resolution edge cases left in promptUser.test.ts. Rule: conformance kit = minimal contract; unit tests = exhaustive edge cases.
 

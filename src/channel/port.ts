@@ -271,22 +271,22 @@ export interface ChannelPort {
   // ── Inbound ─────────────────────────────────────────────────────
 
   /**
-  * Register a handler for inbound text messages (non-command).
-  * The adapter calls this handler for every user message in a thread.
-  * Multiple calls replace the previous handler (single handler model).
-  */
+   * Register a handler for inbound text messages (non-command).
+   * The adapter calls this handler for every user message in a thread.
+   * Multiple calls replace the previous handler (single handler model).
+   */
   onMessage(handler: MessageHandler): void;
 
   /**
-  * Register a handler for a specific slash command (e.g., 'new', 'list').
-  * The adapter parses the command prefix and dispatches to the matching
-  * handler. Commands not registered are ignored or passed through as
-  * regular messages (adapter decides; Telegram pass-through is documented
-  * in src/bot/commands.ts Phase 9 rationale).
-  *
-  * @param command - Command name without the leading slash (e.g., 'new').
-  * @param handler - Called with the ChannelContext and the args string.
-  */
+   * Register a handler for a specific slash command (e.g., 'new', 'list').
+   * The adapter parses the command prefix and dispatches to the matching
+   * handler. Commands not registered are ignored or passed through as
+   * regular messages (adapter decides; Telegram pass-through is documented
+   * in src/bot/commands.ts Phase 9 rationale).
+   *
+   * @param command - Command name without the leading slash (e.g., 'new').
+   * @param handler - Called with the ChannelContext and the args string.
+   */
   onCommand(command: string, handler: CommandHandler): void;
 }
 

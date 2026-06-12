@@ -560,7 +560,7 @@ src/channel/teams/
 | `formatForTransport(markdown)` | Convert raw markdown to Teams-compatible HTML. Teams supports a subset of HTML (`<b>`, `<i>`, `<code>`, `<pre>`, `<a>`, `<br>`, lists). |
 | `splitMessage(text, footer?)` | Split at `maxMessageLength` (28,000 chars for Graph messages). Simple character-boundary split with paragraph-break preference. |
 | `promptUser(ctx, question, options, signal?)` | `supportsInteractivePrompts=false` for v1 → **text-fallback path**: post the question + numbered options as a plain-text message, then wait for a matching inbound reply. Resolve on match or `''` on abort signal. |
-| `createThread(channelId, title)` | `supportsThreadCreation=false` → throws `Error('[teams] createThread not supported')`. |
+| `createThread(channelId, title)` | Method **omitted** — `supportsThreadCreation=false`; TeamsChannel does not implement `createThread` (it is optional in ChannelPort). Core MUST NOT call this method. |
 | `onMessage(handler)` | Stores the handler. The polling loop dispatches to it. |
 | `onCommand(command, handler)` | Stores the handler. The polling loop parses `/command args` prefix from inbound messages and dispatches. |
 
@@ -655,24 +655,22 @@ poll() → parse messages → for each new message:
 | `REACH_CHANNEL=teams` | Yes | Selects the Teams transport. |
 | `TEAMS_TENANT_ID` | Yes | Azure AD tenant ID (GUID). |
 | `TEAMS_CLIENT_ID` | Yes | App registration client ID (GUID). |
-| `TEAMS_CLIENT_SECRET` | Yes* | Client secret (use `TEAMS_CLIENT_CERT_PATH` for cert-based auth instead). |
-| `TEAMS_CLIENT_CERT_PATH` | Alt* | Path to PFX/PEM certificate for client-credentials auth. |
+| `TEAMS_CLIENT_SECRET` | Yes | Client secret for client-credentials OAuth2 auth. Phase 2a requires this. |
+| `TEAMS_CLIENT_CERT_PATH` | — | **Phase 2b / future** (NOT implemented in open repo). Cert-based client-credentials auth. Phase 2a uses `TEAMS_CLIENT_SECRET` only. |
 | `TEAMS_TEAM_ID` | Yes | Target Team ID (GUID). |
 | `TEAMS_CHANNEL_ID` | Yes | Target Channel ID within the Team (GUID). |
-
-\* One of `TEAMS_CLIENT_SECRET` or `TEAMS_CLIENT_CERT_PATH` is required. Validation enforces mutual exclusivity.
 
 #### 2.4.2 EnvConfig Extension
 
 ```typescript
 export interface EnvConfig {
   // ... existing fields ...
-  
+
   // Teams-specific (defined when reachChannel === 'teams'; undefined otherwise)
   teamsTenantId: string | undefined;
   teamsClientId: string | undefined;
-  teamsClientSecret: string | undefined;
-  teamsClientCertPath: string | undefined;
+  teamsClientSecret: string | undefined;        // Phase 2a: client-secret auth only
+  // teamsClientCertPath: string | undefined;   // Phase 2b / future: cert-based auth (not in open repo)
   teamsTeamId: string | undefined;
   teamsChannelId: string | undefined;
 }
@@ -682,13 +680,18 @@ export interface EnvConfig {
 
 ```typescript
 registerChannel('teams', (cfg) => {
-  if (!cfg.teamsTenantId || !cfg.teamsClientId || !cfg.teamsTeamId || !cfg.teamsChannelId) {
-    throw new Error('[teams] Teams credentials are required (TEAMS_TENANT_ID, TEAMS_CLIENT_ID, TEAMS_TEAM_ID, TEAMS_CHANNEL_ID)');
+  if (!cfg.teamsTenantId || !cfg.teamsClientId || !cfg.teamsClientSecret) {
+    throw new Error(
+      '[teams] TEAMS_TENANT_ID, TEAMS_CLIENT_ID, and TEAMS_CLIENT_SECRET are required ' +
+      'when REACH_CHANNEL=teams',
+    );
   }
-  if (!cfg.teamsClientSecret && !cfg.teamsClientCertPath) {
-    throw new Error('[teams] One of TEAMS_CLIENT_SECRET or TEAMS_CLIENT_CERT_PATH is required');
+  if (!cfg.teamsTeamId || !cfg.teamsChannelId) {
+    throw new Error(
+      '[teams] TEAMS_TEAM_ID and TEAMS_CHANNEL_ID are required when REACH_CHANNEL=teams',
+    );
   }
-  return new TeamsChannel(cfg);
+  return new TeamsChannel();
 });
 ```
 

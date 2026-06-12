@@ -211,6 +211,23 @@ export interface ChannelPort {
    * Returns the `value` field of the selected PromptOption, or a raw text
    * response if interactive prompts are not supported.
    *
+   * **Text-fallback matching contract (LOCKED — applies when supportsInteractivePrompts=false):**
+   *
+   * A pending prompt is resolved when an inbound reply matches, where matching
+   * is performed on the reply trimmed of leading/trailing whitespace and
+   * compared case-insensitively against:
+   *   1. A `PromptOption.value` (exact match after trim+lowercase), OR
+   *   2. A 1-based option index as a decimal string ("1" selects options[0],
+   *      "2" selects options[1], etc.).
+   *
+   * While a prompt is pending, any reply that matches NEITHER criterion is
+   * **silently ignored** — it is NOT forwarded to the `onMessage` handler.
+   * This prevents stray messages from polluting the session transcript while
+   * the user is responding to a prompt.
+   *
+   * Adapters implementing the text-fallback MUST follow this contract exactly
+   * so that FakeChannel and all text-based transports behave identically.
+   *
    * @param ctx      - Thread/channel context.
    * @param question - The prompt question text.
    * @param options  - Available choices.
@@ -234,9 +251,10 @@ export interface ChannelPort {
    * are NOT required to implement it. Adapters with `supportsThreadCreation=true`
    * MUST implement it and return a valid ChannelContext.
    *
-   * Caller guard pattern (callers MUST use this before invoking):
+   * Use the {@link canCreateThread} type guard as the canonical way to check
+   * both the capability flag and method presence before calling:
    * ```typescript
-   * if (!channel.capabilities.supportsThreadCreation || !channel.createThread) {
+   * if (!canCreateThread(channel)) {
    *   throw new Error(`[caller] createThread not supported by ${channel.name}`);
    * }
    * const ctx = await channel.createThread(channelId, title);
@@ -253,21 +271,46 @@ export interface ChannelPort {
   // ── Inbound ─────────────────────────────────────────────────────
 
   /**
-   * Register a handler for inbound text messages (non-command).
-   * The adapter calls this handler for every user message in a thread.
-   * Multiple calls replace the previous handler (single handler model).
-   */
+  * Register a handler for inbound text messages (non-command).
+  * The adapter calls this handler for every user message in a thread.
+  * Multiple calls replace the previous handler (single handler model).
+  */
   onMessage(handler: MessageHandler): void;
 
   /**
-   * Register a handler for a specific slash command (e.g., 'new', 'list').
-   * The adapter parses the command prefix and dispatches to the matching
-   * handler. Commands not registered are ignored or passed through as
-   * regular messages (adapter decides; Telegram pass-through is documented
-   * in src/bot/commands.ts Phase 9 rationale).
-   *
-   * @param command - Command name without the leading slash (e.g., 'new').
-   * @param handler - Called with the ChannelContext and the args string.
-   */
+  * Register a handler for a specific slash command (e.g., 'new', 'list').
+  * The adapter parses the command prefix and dispatches to the matching
+  * handler. Commands not registered are ignored or passed through as
+  * regular messages (adapter decides; Telegram pass-through is documented
+  * in src/bot/commands.ts Phase 9 rationale).
+  *
+  * @param command - Command name without the leading slash (e.g., 'new').
+  * @param handler - Called with the ChannelContext and the args string.
+  */
   onCommand(command: string, handler: CommandHandler): void;
+}
+
+// ── Type Guards ─────────────────────────────────────────────────────
+
+/**
+ * Type guard that confirms a channel both declares `supportsThreadCreation=true`
+ * AND has a callable `createThread` method.
+ *
+ * Use this instead of hand-writing the dual-check
+ * `channel.capabilities.supportsThreadCreation && channel.createThread`:
+ *
+ * ```typescript
+ * if (!canCreateThread(channel)) {
+ *   throw new Error(`[caller] createThread not supported by ${channel.name}`);
+ * }
+ * const ctx = await channel.createThread(channelId, title);
+ * ```
+ *
+ * @param channel - Any ChannelPort instance.
+ * @returns `true` when the channel supports thread creation and the method is present.
+ */
+export function canCreateThread(
+  channel: ChannelPort,
+): channel is ChannelPort & { createThread: NonNullable<ChannelPort['createThread']> } {
+  return channel.capabilities.supportsThreadCreation && typeof channel.createThread === 'function';
 }

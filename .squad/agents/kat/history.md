@@ -1,6 +1,8 @@
-# Kat — History (Phase 1 Complete 2026-06-06, commit e69e50b; Persona Review Cycle 2 PASSED 2026-06-07)
+# Kat — History (Phase 1 Complete 2026-06-06, commit e69e50b; Persona Review Cycle 2 PASSED 2026-06-07; Phase 2 Queued 2026-06-11)
 
 ---
+
+**PHASE 2 KICKOFF (2026-06-11):** Phase 2 Teams adapter plan APPROVED by Aaron. Kat assigned to **P2a-4 (HTML formatting module)** and **P2a-5 (Text-prompt fallback design)** in Phase 2a (open repo, no corp access). P2a-4 creates `src/channel/teams/formatting.ts` — markdown-to-HTML converter for Teams HTML subset (`<b>`, `<i>`, `<code>`, `<pre>`, `<a>`, `<br>`, lists). Unit-testable in open repo, no Graph dependency. P2a-5 implements `promptUser` text-fallback in the adapter stub: post question + numbered options as plain-text message, resolve on polling match. Testable against FakeChannel pattern. Kat also assigned to P2b-5 (Teams formatting validation) in Phase 2b (corp fork, after corp access) — validate HTML formatting in live Teams channel, iterate on edge cases. Locked decisions: OD-1 (edit=false), OD-2 (poll 3s), OD-3 (I4 refactor-first), OD-4 (I5 defer). Adaptive Cards deferred to Phase 3.
 
 **PHASE 1 COMPLETE + PERSONA REVIEW CYCLE PASSED (2026-06-07):** Shipped handler migration onto ChannelPort. Single-bot consolidation complete; TelegramChannel owns only grammY Bot instance. All 8 commands registered via channel.onCommand(); relay catch-all via channel.onMessage(). Synthetic context adapters for /status and /cwd maintain handler API compatibility. F1 blocker (relay capability branching) resolved by Carter + verified by Jun. **Two-cycle persona review completed:**
 - **Cycle 1 findings:** 3 blocking, 5 important, 4 minor
@@ -55,3 +57,99 @@ The duplicate `bot.catch()` in `handlers.ts` was removed. The single canonical e
 **Three contract violations fixed.** (1) **Abort→''**: `runPermissionPrompt` now resolves with `PromptOutcome` ('approve'|'deny'|'aborted') instead of `boolean`, so `promptUserVerbatimOutcome` can surface the 'aborted' value. `TelegramChannel.promptUser` maps 'aborted'→'' per the ChannelPort spec — previously both deny and abort were collapsing to `false`/`'deny'`, making them indistinguishable. (2) **Real option values**: adapter now returns `approveOption.value` / `denyOption.value` from the passed options array rather than hardcoding string literals, so if the relay ever changes its option values the adapter follows automatically. (3) **Runtime guard**: `promptUser` validates that `options` is exactly `[{value:'approve',...},{value:'deny',...}]` and throws `'[telegram] promptUser only supports a two-option approve/deny prompt'` for anything else — protects against future non-permission callers silently getting mis-rendered output. Relay alignment verified: relay passes `[{value:'approve',...},{value:'deny',...}]` and checks `result === 'approve'` — the returned values match exactly.
 
 ---
+
+### P2a-4 — Teams HTML formatting module (2026-06-10, commit ca7a0ea)
+
+Created `src/channel/teams/formatting.ts` — a pure markdown-to-HTML converter for Teams channel messages.
+
+**Exported public API:**
+```typescript
+export function formatForTransport(markdown: string): string
+```
+Single export. Accepts raw markdown; returns Teams-compatible HTML ready for `body.content` with `body.contentType = 'html'`. No Graph / SDK dependencies.
+
+**Teams HTML subset targeted:**
+`<b>`, `<i>`, `<code>`, `<pre><code>`, `<a href="...">`, `<br>`, `<ul>/<li>`, `<ol>/<li>`
+
+**Markdown conversions:**
+- `**text**` / `__text__` → `<b>text</b>`
+- `*text*` / `_text_` → `<i>text</i>`
+- `` `code` `` → `<code>code</code>` (content HTML-escaped, no inner formatting)
+- ` ```[lang]\ncode\n``` ` → `<pre><code>code</code></pre>` (lang attribute stripped for safety)
+- `[text](url)` → `<a href="url">text</a>` (href uses `escapeHtmlAttr` — `&`, `<`, `>`, `"` all escaped)
+- `- item` / `* item` → `<ul><li>item</li></ul>` (consecutive lines grouped)
+- `1. item` → `<ol><li>item</li></ol>` (consecutive lines grouped)
+- Plain-text newline → `<br>` (paragraph lines joined)
+- Blank line → `<br>` (double-break paragraph separator via paragraph trailing `<br>` + blank's `<br>`)
+
+**Escaping approach:**
+- `escapeHtml()` for body text: `&` → `&amp;`, `<` → `&lt;`, `>` → `&gt;`
+- `escapeHtmlAttr()` for `href` values: adds `"` → `&quot;`
+- Code blocks and inline code escape with `escapeHtml()` — content verbatim but entities safe
+- Inline processing uses a character-scanner loop (`processInline`) with recursive calls for nested formatting (e.g., bold containing italic)
+
+**Test file:** `tests/channel/teams/formatting.test.ts` — 59 tests.
+
+**Note for P2a-5:** The adapter stub (`src/channel/teams/index.ts`, Carter) has `formatForTransport` as an identity stub. When wiring P2a-5 (or P2b-5 corp validation), replace the stub's `formatForTransport` with a delegation to this module's `formatForTransport`. Import: `import { formatForTransport } from './formatting.js';`
+
+---
+
+### P2a-5 — TeamsChannel.promptUser text-fallback design + coverage (2026-06-10, commit 3c4f25b)
+
+Reviewed and fixed Carter's `promptUser` stub in `src/channel/teams/index.ts`. Created `tests/channel/teams/promptUser.test.ts` — 26 tests.
+
+**Changes made to `src/channel/teams/index.ts`:**
+
+1. **`promptUser` — rendering format changed:**
+   - Options rendered as 1-based numbered list: `  1. ✅ Approve`, `  2. ❌ Deny`
+   - Footer appended: `\n\nReply with the option number or name.`
+   - Added early-return `''` for empty `options` array (would have hung forever)
+
+2. **`dispatchInboundMessage` — matching hardened:**
+   - Normalises input: `text.trim().toLowerCase()`
+   - Accepts 1-based index reply: `"1"` selects `options[0]`, `"2"` selects `options[1]`, etc.
+   - Accepts option value case-insensitively: `"APPROVE"`, `"Deny"`, `"  deny  "` all match
+   - Invalid/unmatched replies while a prompt is pending are **silently ignored** — the message is NOT routed to the registered `onMessage` handler (prevents relay seeing stray "typed wrong thing" messages as session input)
+
+**Text-fallback contract summary:**
+- Sent message format: `${question}\n\nOptions:\n${numberedList}\n\nReply with the option number or name.`
+- Matching: 1-based index OR option value, case-insensitive, whitespace-trimmed
+- Invalid reply: silently ignored, prompt stays open
+- Abort signal: resolves `''` (pre-abort returns `''` immediately without sending)
+- Empty options: resolves `''` immediately without sending
+- Abort after resolution: safe (guard prevents double-resolve)
+
+**Test file:** `tests/channel/teams/promptUser.test.ts` — 26 tests covering:
+- Rendering (question, option labels, numbering, reply instruction, correct ctx)
+- Valid reply: exact value, by index "1"/"2"/"3"
+- Case-insensitive: UPPERCASE, mixed-case, whitespace-padded values and indices
+- Invalid reply: stays pending, no messageHandler call, accepts valid after invalid, out-of-range indices ignored
+- Abort signal: pre-aborted, mid-wait, no double-resolve
+- No-options edge case: resolves `''` instantly, no message sent (with and without signal)
+- onMessage interaction: routes normally when no prompt pending; does not fire for matched prompt reply
+
+**Public signature (stable — unchanged):**
+```typescript
+async promptUser(
+  ctx: ChannelContext,
+  question: string,
+  options: readonly PromptOption[],
+  signal?: AbortSignal,
+): Promise<string>
+```
+
+---
+
+### Review Cycle 1 — B + C fixes in formatting.ts (2026-06-11, commit 674ee11)
+
+**Finding B (BLOCKING — XSS, link scheme allowlist):**
+Added `isSafeUrl()` helper. URL scheme extracted by trimming leading whitespace (`trimStart()`), finding the first `:`, and testing the scheme against `/^(https?|mailto|tel)$/i`. Allowed schemes: `http`, `https`, `mailto`, `tel` (case-insensitive). Disallowed schemes (javascript:, data:, vbscript:, and bypasses like leading spaces or mixed case) cause the link to render as plain escaped text — no `<a>` element is emitted. Embedded non-letter chars in the scheme prevent allowlist match naturally.
+
+**Finding C (important — italic word-boundary guard):**
+Added `isWordChar()` helper (`/\w/.test(ch)`). Single `*` and `_` italic only fires when: (1) the char immediately BEFORE the opening marker is not `\w` (or is absent), AND (2) the char immediately AFTER the closing marker is not `\w` (or is absent). `snake_case_var`, `TEAMS_CLIENT_ID`, `a_b_c` are now literal. `_italic_` and `*italic*` as standalone words still produce `<i>`. `**bold**` / `__bold__` are unaffected (handled in the `**`/`__` branch before single-marker code is reached).
+
+---
+
+### PR #12 Copilot review — href and isSafeUrl must use the same trimmed URL (2026-06-11)
+
+`isSafeUrl` internally trimmed the raw URL before scheme extraction, but the emitted `href` used the untrimmed `rawUrl`. A link like `[x]( https://example.com)` passed the allowlist check but produced `href=" https://example.com"` (leading space). Fix: trim once at the call site (`text.slice(...).trim()`), then pass the trimmed value to both `isSafeUrl` and `escapeHtmlAttr`. The validated scheme and the emitted href now always refer to the identical string.

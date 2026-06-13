@@ -26,6 +26,37 @@ export interface EnvConfig {
   registryPath: string;
   /** The transport channel to use. Defaults to 'telegram'. */
   reachChannel: string;
+
+  // ── Teams credentials (defined only when reachChannel === 'teams') ──────────
+
+  /**
+   * Azure AD tenant ID. Required when reachChannel is 'teams'.
+   * Used as the authority in the client-credentials OAuth2 token request.
+   * Env var: TEAMS_TENANT_ID.
+   */
+  teamsTenantId: string | undefined;
+  /**
+   * Azure AD application (client) ID. Required when reachChannel is 'teams'.
+   * Env var: TEAMS_CLIENT_ID.
+   */
+  teamsClientId: string | undefined;
+  /**
+   * Azure AD client secret. Required when reachChannel is 'teams'.
+   * Env var: TEAMS_CLIENT_SECRET.
+   */
+  teamsClientSecret: string | undefined;
+  /**
+   * Microsoft Teams team ID (GUID). Required when reachChannel is 'teams'.
+   * Used as {team-id} in Graph API paths: /teams/{team-id}/channels/{channel-id}/messages.
+   * Env var: TEAMS_TEAM_ID.
+   */
+  teamsTeamId: string | undefined;
+  /**
+   * Microsoft Teams channel ID within the team. Required when reachChannel is 'teams'.
+   * Used as {channel-id} in Graph API paths: /teams/{team-id}/channels/{channel-id}/messages.
+   * Env var: TEAMS_CHANNEL_ID.
+   */
+  teamsChannelId: string | undefined;
 }
 
 /** Returns true iff id is a usable Telegram chat ID: a non-zero integer. */
@@ -126,6 +157,45 @@ export async function parseEnv(): Promise<EnvConfig> {
     }
   }
 
+  // Teams-specific credential resolution — only required when the teams transport is selected.
+  let teamsTenantId: string | undefined;
+  let teamsClientId: string | undefined;
+  let teamsClientSecret: string | undefined;
+  let teamsTeamId: string | undefined;
+  let teamsChannelId: string | undefined;
+
+  if (reachChannel === 'teams') {
+    teamsTenantId = process.env.TEAMS_TENANT_ID;
+    if (!teamsTenantId) {
+      console.error('[reach] Fatal: TEAMS_TENANT_ID is required when REACH_CHANNEL=teams');
+      process.exit(1);
+    }
+
+    teamsClientId = process.env.TEAMS_CLIENT_ID;
+    if (!teamsClientId) {
+      console.error('[reach] Fatal: TEAMS_CLIENT_ID is required when REACH_CHANNEL=teams');
+      process.exit(1);
+    }
+
+    teamsClientSecret = process.env.TEAMS_CLIENT_SECRET;
+    if (!teamsClientSecret) {
+      console.error('[reach] Fatal: TEAMS_CLIENT_SECRET is required when REACH_CHANNEL=teams');
+      process.exit(1);
+    }
+
+    teamsTeamId = process.env.TEAMS_TEAM_ID;
+    if (!teamsTeamId) {
+      console.error('[reach] Fatal: TEAMS_TEAM_ID is required when REACH_CHANNEL=teams');
+      process.exit(1);
+    }
+
+    teamsChannelId = process.env.TEAMS_CHANNEL_ID;
+    if (!teamsChannelId) {
+      console.error('[reach] Fatal: TEAMS_CHANNEL_ID is required when REACH_CHANNEL=teams');
+      process.exit(1);
+    }
+  }
+
   return {
     token,
     chatId,
@@ -136,5 +206,10 @@ export async function parseEnv(): Promise<EnvConfig> {
     configPath,
     registryPath,
     reachChannel,
+    teamsTenantId,
+    teamsClientId,
+    teamsClientSecret,
+    teamsTeamId,
+    teamsChannelId,
   };
 }

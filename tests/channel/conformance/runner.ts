@@ -16,14 +16,46 @@
  * test fails clearly — routing the fix to the right owner.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { ChannelPort, ChannelContext, PromptOption } from '../../../src/channel/port.js';
+import { canCreateThread } from '../../../src/channel/port.js';
 import { FakeChannel } from './FakeChannel.js';
 
 // ── Shared context constants ──────────────────────────────────────────────────
 
 export const TEST_CTX: ChannelContext = { threadId: '42', channelId: '-1001234567890' };
 export const EMPTY_TOPIC_CTX: ChannelContext = { threadId: '', channelId: '-1001234567890' };
+
+// ── Minimal no-createThread adapter ──────────────────────────────────────────
+//
+// Used by the I4 optional-method test to verify the conformance kit and caller
+// guard work correctly when createThread is ABSENT (not just throwing).
+// This is a more faithful simulation of a Teams-style adapter than FakeChannel,
+// which still defines createThread as a throwing method.
+
+function makeMinimalNoThreadPort(): ChannelPort {
+  return {
+    name: 'minimal-no-thread',
+    capabilities: {
+      supportsMessageEdit: false,
+      supportsThreadCreation: false,
+      supportsInteractivePrompts: false,
+      supportsStreaming: false,
+      maxMessageLength: 1000,
+    },
+    start: async () => undefined,
+    stop: async () => undefined,
+    sendMessage: async () => ({ id: '1' }),
+    editMessage: async () => false,
+    formatForTransport: (markdown) => markdown,
+    splitMessage: (text, footer) => (footer ? [`${text}\n\n${footer}`] : [text]),
+    // Minimal conformance helper: aborted or no options → ''; otherwise first option's value.
+    promptUser: async (_ctx, _q, opts, signal) => (signal?.aborted || opts.length === 0 ? '' : opts[0].value),
+    onMessage: () => undefined,
+    onCommand: () => undefined,
+    // createThread intentionally absent — satisfies the optional-method contract
+  };
+}
 
 // ── Suite options ─────────────────────────────────────────────────────────────
 
@@ -279,8 +311,10 @@ export function runChannelPortConformance(
     // ── 6. Thread Management ──────────────────────────────────────────────────
 
     describe('createThread', () => {
-      it('returns a ChannelContext with string threadId and matching channelId when supported', async () => {
+      it('when supportsThreadCreation=true: createThread is present and returns valid ChannelContext', async () => {
         const fake = new FakeChannel({ supportsThreadCreation: true });
+        // Optional method — must be present when capability is declared true.
+        expect(typeof fake.createThread).toBe('function');
         const ctx = await fake.createThread('-1001234567890', 'My Topic');
         expect(typeof ctx.threadId).toBe('string');
         expect(ctx.threadId.length).toBeGreaterThan(0);
@@ -288,9 +322,18 @@ export function runChannelPortConformance(
         expect(fake.threadCreations).toHaveLength(1);
       });
 
-      it('throws when supportsThreadCreation=false (FakeChannel enforces the contract)', async () => {
-        const fake = new FakeChannel({ supportsThreadCreation: false });
-        await expect(fake.createThread('-1001234567890', 'Topic')).rejects.toThrow();
+      it('when supportsThreadCreation=true on the real adapter: createThread must be a function', () => {
+        const port = makePort();
+        if (!port.capabilities.supportsThreadCreation) return;
+        expect(typeof port.createThread).toBe('function');
+      });
+
+      it('when supportsThreadCreation=false: conformance kit does not require createThread', () => {
+        const port = makePort();
+        if (port.capabilities.supportsThreadCreation) return;
+        // Optional method — adapter need NOT implement createThread when capability is false.
+        // Kit MUST NOT call createThread in this state.
+        expect(port.capabilities.supportsThreadCreation).toBe(false);
       });
     });
 
@@ -420,15 +463,68 @@ export function runCapabilityFallbackMatrix(): void {
         const result = await fake.promptUser(TEST_CTX, 'Q?', OPTIONS, controller.signal);
         expect(result).toBe('');
       });
+
+      it('text-fallback CONTRACT: resolves via 1-based option index', async () => {
+        const fake = new FakeChannel({ supportsInteractivePrompts: false });
+        const OPTIONS: readonly PromptOption[] = [
+          { value: 'approve', label: '✅ Approve' },
+          { value: 'deny', label: '❌ Deny' },
+        ];
+        const promptP = fake.promptUser(TEST_CTX, 'Allow?', OPTIONS);
+        await fake.injectInboundText(TEST_CTX, '2');
+        expect(await promptP).toBe('deny');
+      });
+
+      it('text-fallback CONTRACT: resolves via case-insensitive option value', async () => {
+        const fake = new FakeChannel({ supportsInteractivePrompts: false });
+        const OPTIONS: readonly PromptOption[] = [
+          { value: 'approve', label: '✅ Approve' },
+          { value: 'deny', label: '❌ Deny' },
+        ];
+        const promptP = fake.promptUser(TEST_CTX, 'Allow?', OPTIONS);
+        await fake.injectInboundText(TEST_CTX, 'APPROVE');
+        expect(await promptP).toBe('approve');
+      });
+
+      it('text-fallback CONTRACT: unmatched reply while prompt pending is silently ignored — NOT routed to message handler', async () => {
+        const fake = new FakeChannel({ supportsInteractivePrompts: false });
+        const OPTIONS: readonly PromptOption[] = [
+          { value: 'yes', label: 'Yes' },
+          { value: 'no', label: 'No' },
+        ];
+        const handler = vi.fn();
+        fake.onMessage(handler);
+        const promptP = fake.promptUser(TEST_CTX, 'Proceed?', OPTIONS);
+        await fake.injectInboundText(TEST_CTX, 'unrelated-gibberish');
+        expect(handler).not.toHaveBeenCalled();
+        // clean up: resolve prompt so no dangling promise
+        await fake.injectInboundText(TEST_CTX, 'yes');
+        await promptP;
+      });
     });
 
     // ── supportsThreadCreation=false ──────────────────────────────────────────
 
     describe('supportsThreadCreation=false', () => {
-      it('createThread throws — core MUST NOT call it', async () => {
+      it('FakeChannel throws when createThread called — core MUST NOT call it', async () => {
+        // FakeChannel implements createThread as a throwing method (one valid approach).
+        // Real adapters (e.g., Teams) may omit the method entirely — both are valid.
         const fake = new FakeChannel({ supportsThreadCreation: false });
         await expect(fake.createThread('-100', 'Topic')).rejects.toThrow();
         expect(fake.threadCreations).toHaveLength(0);
+      });
+
+      it('an adapter that omits createThread entirely satisfies the optional-method contract', () => {
+        // Uses a plain-object minimal port with NO createThread property at all —
+        // this genuinely exercises the absent-method path, unlike FakeChannel which
+        // defines createThread as a throwing method (typeof createThread === 'function').
+        const port = makeMinimalNoThreadPort();
+        // The method must be absent, not just disabled by the flag.
+        expect(typeof port.createThread).toBe('undefined');
+        // The canonical caller guard (canCreateThread) must return false.
+        expect(canCreateThread(port)).toBe(false);
+        // The conformance kit must not require the method when supportsThreadCreation=false.
+        expect(port.capabilities.supportsThreadCreation).toBe(false);
       });
 
       it('pre-existing thread binding works fine (onMessage/onCommand still fire)', async () => {
@@ -482,7 +578,7 @@ export function runCapabilityFallbackMatrix(): void {
         expect(fake.edits).toHaveLength(0);
       });
 
-      it('createThread throws', async () => {
+      it('createThread throws (FakeChannel implementation; real adapters may omit the method)', async () => {
         const fake = new FakeChannel({
           supportsMessageEdit: false,
           supportsThreadCreation: false,

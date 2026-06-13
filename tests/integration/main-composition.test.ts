@@ -81,6 +81,7 @@ const {
 
 vi.mock('dotenv/config', () => ({}));
 vi.mock('../../src/channel/telegram/index.js', () => ({ TelegramChannel: MockTelegramChannelClass }));
+vi.mock('../../src/channel/teams/index.js', () => ({}));
 vi.mock('../../src/channel/registry.js', () => ({
   createChannel: vi.fn().mockImplementation(() => new MockTelegramChannelClass()),
 }));

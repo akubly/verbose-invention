@@ -9,6 +9,8 @@
 
 ## Current Status
 
+**PHASE 2a SHIPPED (2026-06-12, PR#12 squash 56e21ce).** Teams adapter foundation in open repo: optional createThread, conditional config, HTML formatting, promptUser fallback. Closed 21 cloud-review threads. Test suite: 1171 green. Phase 2b gated on Azure AD app registration.
+
 **PHASE 1 COMPLETE + APPROVED + PERSONA REVIEW CYCLE PASSED (2026-06-07).** Channel Abstraction Phase 1 architecture review complete. Verdict: APPROVE-WITH-NITS. F1 blocker (relay capability branching) resolved by Carter in e1f3f4d, verified by Jun in 2b5e4a2. **Two-cycle persona review completed:**
 - **Cycle 1 findings:** 3 blocking, 5 important, 4 minor
 - **Cycle 2 outcome:** 0 blocking, all 6 prior important findings verified resolved by all Code Panel personas

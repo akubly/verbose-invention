@@ -1,4 +1,4 @@
-# Carter — History (Phase 1 Complete 2026-06-06, commit d84dc0c; Persona Review Cycle 2 PASSED 2026-06-07; Phase 2 Queued 2026-06-11)
+# Carter — History (Phase 1 Complete 2026-06-06, commit d84dc0c; Persona Review Cycle 2 PASSED 2026-06-07; Phase 2a Shipped 2026-06-12 PR#12 squash 56e21ce)
 
 ---
 

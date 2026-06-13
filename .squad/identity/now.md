@@ -1,13 +1,12 @@
 ---
-updated_at: 2026-06-11T05:28:19Z
-focus_area: Phase 2a execution complete on branch user/aaron/phase2a. P2a-1..P2a-6 all done (1139 tests green, tsc+lint clean). Teams adapter foundation locked. Ready for ship/PR review.
+updated_at: 2026-06-12T22:24:29Z
+focus_area: Phase 2a SHIPPED (PR #12 squash-merged 56e21ce, 21 cloud-review threads resolved, 1171 tests green)
 active_issues:
-  - "Phase 2b pending: Azure AD app registration in corp tenant (P2b-1)"
-  - "Phase 2b pending: Graph API polling + send clients (P2b-3/4 corp-side)"
-  - "Phase 2b pending: Adaptive Cards integration (P2b-6, Phase 2b wiring)"
-branch_state: user/aaron/phase2a — 5 commits (P2a-1..6), ready for squash-merge to main.
+  - "Phase 2b gated: Azure AD app registration in corp tenant (P2b-1)"
+  - "Phase 10 Phase 10 follow-ups (if any still listed in Phase 1 review notes)"
+branch_state: main clean, in sync with origin/main
 ---
 
-# Current Focus — Phase 2a Complete (2026-06-11)
+# Current Focus — Phase 2a Shipped (2026-06-12)
 
-Teams adapter foundation shipped. ChannelPort contract finalized (I4 optional createThread), Teams stub + env config deployed, HTML formatting + text-fallback prompts fully tested (137 new tests), conformance wiring validated (52 tests). All agents complete, no blockers. Next: PR review and Phase 2b (corp Graph API).
+Teams adapter foundation merged to main via PR #12 (squash commit 56e21ce). Local and cloud review completed (21 threads resolved). Test suite: 1171 green. Conformance validation passed. Phase 2b awaits Azure AD app registration (corp-side, P2b-1).
